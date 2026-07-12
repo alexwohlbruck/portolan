@@ -1,0 +1,631 @@
+<!doctype html><meta charset=utf-8><title>network sketch</title>
+<link rel=stylesheet href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+ html,body{height:100%;overflow:hidden}
+ body{margin:0;font:13px system-ui;display:flex;background:#15171b;color:#e9eaec}
+ /* above every leaflet pane/control (leaflet tops out at z-index 1000) */
+ #panel{width:330px;padding:12px 14px;overflow-y:auto;border-right:1px solid #2c3038;flex:0 0 auto;
+  position:relative;z-index:1100;background:#15171b;height:100%;box-sizing:border-box}
+ #map{flex:1;height:100%}
+ #map.drawing{cursor:crosshair}
+ h1{font-size:15px;margin:0 0 2px}.sub{color:#868d96;margin:0 0 8px;font-size:12px}
+ select,input[type=text]{width:100%;padding:6px;background:#1e2127;color:#e9eaec;border:1px solid #2c3038;border-radius:6px;box-sizing:border-box}
+ button{padding:6px 9px;background:#1e2127;color:#e9eaec;border:1px solid #3a4049;border-radius:7px;cursor:pointer;font:inherit;font-size:12.5px}
+ button:hover{border-color:#45c1b0;color:#fff}
+ button.on{border-color:#f6bc26;color:#f6bc26}
+ button:disabled{opacity:.4;cursor:default}
+ .row{display:flex;gap:6px;margin:7px 0;align-items:center}
+ .sw{width:20px;height:20px;border-radius:5px;cursor:pointer;border:2px solid transparent;flex:0 0 auto}
+ .sw.on{border-color:#fff}
+ #swatches{display:flex;flex-wrap:wrap;gap:5px}
+ .line{display:flex;align-items:center;gap:7px;padding:5px 7px;border:1px solid #2c3038;border-radius:7px;margin:5px 0;cursor:pointer}
+ .line.on{border-color:#f6bc26}
+ .chip{width:13px;height:13px;border-radius:4px;flex:0 0 auto}
+ .line .meta{flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .line .del{color:#e05252;cursor:pointer;padding:0 3px}
+ .rchip{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border:1px solid #2c3038;border-radius:12px;margin:2px 3px 2px 0;font-size:11.5px}
+ .rchip b{width:10px;height:10px;border-radius:3px;display:inline-block}
+ .rchip span{cursor:pointer;color:#e05252}
+ label{display:block;margin:9px 0 3px;color:#e3e5e8;font-weight:500;font-size:12.5px}
+ .hint{color:#868d96;font-size:11px;line-height:1.5;margin-top:8px}
+ kbd{background:#23262c;border:1px solid #3a4049;border-radius:4px;padding:0 4px;font-size:10.5px}
+ #status{color:#45c1b0;font-size:12px;min-height:15px;margin-top:6px}
+ #seldiv{border:1px solid #2c3038;border-radius:8px;padding:8px;margin-top:8px;display:none}
+</style>
+<div id=panel>
+ <h1>network sketch</h1><p class=sub>hand-drawn ground truth · autosaves to disk</p>
+ <div class=row>
+  <select id=feed style="width:110px"><option value="5">NYC</option><option value="29">Chicago</option></select>
+  <select id=loc style="flex:1"></select>
+ </div>
+ <div class=row><input type=text id=build value="nyc:pipeline" style="flex:1">
+  <button id=toggleov>build: on</button><button id=togglerail>tracks: on</button></div>
+ <div class=row>
+  <button id=newline title="draw a new line (N or D)" style="flex:1">＋ new line</button>
+  <button id=undo title="undo (Z / Cmd-Z)">↶</button>
+  <button id=redo title="redo (Shift-Z / Cmd-Shift-Z)">↷</button>
+ </div>
+ <label>Draw colour <span style="color:#868d96;font-weight:400">(first route of the new line)</span></label>
+ <div id=swatches></div>
+ <div class=row><input type=text id=hex placeholder="hex"><input type=text id=lbl placeholder="route label" style="width:90px"></div>
+ <div id=seldiv>
+  <label style="margin-top:0">Selected line — routes (interlining)</label>
+  <div id=routes></div>
+  <div id=selsw style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0"
+   title="toggle a colour on/off this line"></div>
+  <div class=row><input type=text id=addlbl placeholder="label" style="width:70px">
+   <input type=text id=addhex placeholder="hex" style="flex:1"><button id=addroute>+ route</button></div>
+  <div class=row>
+   <button id=split title="split at selected anchor (X)">✂ split</button>
+   <button id=merge title="merge with another line (M) — then click the other line">⋈ merge</button>
+   <button id=revline title="reverse direction">⇄</button>
+  </div>
+ </div>
+ <label>Lines <span id=linecount style="color:#868d96;font-weight:400"></span></label>
+ <div id=lines></div>
+ <div class=hint>
+  <b>Everything is direct:</b> select a line and every node shows its directional
+  handles. Dragging a handle keeps the pair's ANGLE locked but each side's LENGTH
+  independent (smooth point); <kbd>alt</kbd>-drag a handle breaks the angle link —
+  once broken it stays independent (dbl-click twice to re-smooth).
+  Drag nodes to move them, <kbd>alt</kbd>-drag a node to pull fresh handles out,
+  <kbd>dbl-click</kbd> node = smooth ⇄ corner, <kbd>right-click</kbd> node = delete,
+  click mid-segment = insert node.<br>
+  <b>＋ new line</b> <kbd>N</kbd> (pen): <b>click</b> = corner node (sharp angle) ·
+  <b>click-drag</b> = pull the curve out (continues the previous curvature) ·
+  hold <kbd>space</kbd> to pan · <kbd>Enter</kbd>/<kbd>dbl-click</kbd> finish · <kbd>Esc</kbd> cancel.<br>
+  <b>Continue a line:</b> <kbd>C</kbd> (extends the end nearest your cursor), or click its round end anchor twice.
+  <b>Interline:</b> select a line, toggle colours in its panel (one line, many routes).
+  <b>Split</b> <kbd>X</kbd> · <b>Merge</b> <kbd>M</kbd> (joins two lines end-to-end) · <kbd>⌫</kbd> delete line · <kbd>Z</kbd>/<kbd>⇧Z</kbd> undo/redo.<br>
+  Drawing snaps to other lines' endpoints — build one continuous network across locations.
+ </div>
+ <div id=status></div>
+</div>
+<div id=map></div>
+<script>
+const LOCS=%LOCS%, SW=%SWATCHES%;
+const $=id=>document.getElementById(id);
+const map=L.map('map',{doubleClickZoom:false});
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'&copy; OSM &copy; CARTO',maxZoom:20}).addTo(map);
+const railLayer=L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',{attribution:'&copy; OpenRailwayMap',maxZoom:19,opacity:0.72}).addTo(map);
+let showRail=true,showOv=true;
+const ovLayer=L.layerGroup().addTo(map),lineLayer=L.layerGroup().addTo(map),editLayer=L.layerGroup().addTo(map);
+
+// ------------------------------------------------------------ state
+let NET={feed:'5',lines:[]};
+let tool='idle';             // idle | draw | merge (idle = always-on editing)
+let selId=null, selAnchor=-1, drawTarget=null; // drawTarget: {id, end:'head'|'tail'}
+let undoStack=[],redoStack=[];
+let color='D82233';
+let altHeld=false;
+document.addEventListener('keydown',e=>{if(e.key==='Alt')altHeld=true});
+document.addEventListener('keyup',e=>{if(e.key==='Alt')altHeld=false});
+window.addEventListener('blur',()=>{altHeld=false});
+const isAlt=e=>altHeld||!!(e&&e.originalEvent&&e.originalEvent.altKey);
+const uid=()=>'l'+Math.random().toString(36).slice(2,9);
+const lineById=id=>NET.lines.find(l=>l.id===id);
+
+// ------------------------------------------------------------ bezier
+function autoHandles(anchors,i){
+  // Catmull-Rom tangent for anchor i (used when hin/hout are null = smooth auto)
+  const n=anchors.length,p=anchors[i].p;
+  const prev=anchors[Math.max(0,i-1)].p, next=anchors[Math.min(n-1,i+1)].p;
+  const tx=(next[0]-prev[0])/6, ty=(next[1]-prev[1])/6;
+  return {hout:[p[0]+tx,p[1]+ty], hin:[p[0]-tx,p[1]-ty]};
+}
+function handlesOf(l,i){
+  const a=l.anchors[i], auto=autoHandles(l.anchors,i);
+  return {hin:a.hin||auto.hin, hout:a.hout||auto.hout};
+}
+function bake(l){
+  const A=l.anchors;
+  if(A.length<2){l.coords=A.map(a=>a.p);return}
+  const out=[A[0].p];
+  for(let i=0;i<A.length-1;i++){
+    const h0=handlesOf(l,i).hout, h1=handlesOf(l,i+1).hin;
+    const p0=A[i].p,p1=A[i+1].p;
+    for(let k=1;k<=16;k++){
+      const t=k/16,u=1-t;
+      out.push([u*u*u*p0[0]+3*u*u*t*h0[0]+3*u*t*t*h1[0]+t*t*t*p1[0],
+                u*u*u*p0[1]+3*u*u*t*h0[1]+3*u*t*t*h1[1]+t*t*t*p1[1]]);
+    }
+  }
+  l.coords=out;
+}
+
+// ------------------------------------------------------------ undo/autosave
+function snap(){return JSON.stringify(NET)}
+function push(){undoStack.push(snap());if(undoStack.length>120)undoStack.shift();redoStack=[];changed()}
+function afterHistory(){
+  selAnchor=-1;
+  if(tool==='draw'&&drawTarget&&!lineById(drawTarget.id)){
+    drawTarget=null;pull=null;
+    if(previewPl){map.removeLayer(previewPl);previewPl=null}
+    map.dragging.enable();toIdle();
+  }
+  render();changed(false);
+}
+function undo(){if(!undoStack.length)return;redoStack.push(snap());NET=JSON.parse(undoStack.pop());afterHistory()}
+function redo(){if(!redoStack.length)return;undoStack.push(snap());NET=JSON.parse(redoStack.pop());afterHistory()}
+let saveT=null;
+function changed(rebake=true){
+  clearTimeout(saveT);saveT=setTimeout(async()=>{
+    const r=await fetch('/api/network',{method:'POST',headers:{'Content-Type':'application/json'},body:snap()});
+    status(r.ok?'saved '+new Date().toLocaleTimeString():'SAVE FAILED');
+  },900);
+}
+function status(t){$('status').textContent=t}
+
+// ------------------------------------------------------------ render
+let selPl=null, anchorMs=[], hGfx=[];   // live refs: no rebuild during drag
+function dispColor(l){return '#'+(l.routes[0]?l.routes[0].color:'888')}
+function render(){
+  lineLayer.clearLayers();selPl=null;
+  NET.lines.forEach(l=>{
+    if(!l.coords||l.coords.length<2)bake(l);
+    const latlngs=l.coords.map(c=>[c[1],c[0]]);
+    const pl=L.polyline(latlngs,{color:dispColor(l),weight:l.id===selId?6:4,opacity:.95});
+    pl.on('click',e=>{L.DomEvent.stop(e);onLineClick(l,e)});
+    pl.bindTooltip(l.routes.map(r=>r.label||r.color).join(' · '),{sticky:true});
+    pl.addTo(lineLayer);
+    if(l.id===selId)selPl=pl;
+  });
+  buildEditLayer();
+  renderPanel();
+}
+
+function buildEditLayer(){
+  editLayer.clearLayers();anchorMs=[];hGfx=[];
+  // ALL edit graphics are pure visuals (interactive:false) — every gesture is
+  // handled by the map-level hit-test below. Leaflet marker Draggables proved
+  // unreliable (stale drag state corrupts clearLayers, drags die mid-gesture);
+  // owning the pointer pipeline the same way the pen tool does is bulletproof.
+  NET.lines.forEach(ln=>{
+    if(ln.id===selId&&tool!=='draw')return;
+    ln.anchors.forEach(a=>{
+      L.circleMarker([a.p[1],a.p[0]],{radius:3.5,color:'#333',weight:1.5,
+        fillColor:'#fff',fillOpacity:1,interactive:false}).addTo(editLayer);
+    });
+  });
+  const l=lineById(selId);
+  if(!l||tool==='draw')return;
+  buildHandles(l);
+  l.anchors.forEach((a,i)=>{
+    const isEnd=(i===0||i===l.anchors.length-1);
+    const am=L.marker([a.p[1],a.p[0]],{interactive:false,icon:L.divIcon({className:'',
+      html:'<div style="width:'+(isEnd?13:10)+'px;height:'+(isEnd?13:10)+'px;background:'+(i===selAnchor?'#f6bc26':'#fff')+
+           ';border:2px solid #333;border-radius:'+(isEnd?'7px':'2px')+'"></div>',
+      iconSize:[13,13],iconAnchor:[7,7]})}).addTo(editLayer);
+    anchorMs[i]=am;
+  });
+}
+
+function handleSpecs(l){
+  const n=l.anchors.length,s=[];
+  for(let i=0;i<n;i++){
+    if(i>0)s.push([i,'hin']);
+    if(i<n-1)s.push([i,'hout']);
+  }
+  return s;
+}
+function buildHandles(l){
+  hGfx=[];
+  if(!l||l.anchors.length<2)return;
+  handleSpecs(l).forEach(([i,kk])=>{
+    const a=l.anchors[i],hp=handlesOf(l,i)[kk];
+    if(hp[0]===a.p[0]&&hp[1]===a.p[1])return;   // corner side: no handle to grab
+    const ln=L.polyline([[a.p[1],a.p[0]],[hp[1],hp[0]]],{color:'#8ad',weight:1.2,opacity:.9,interactive:false}).addTo(editLayer);
+    const m=L.marker([hp[1],hp[0]],{interactive:false,icon:L.divIcon({className:'',
+      html:'<div style="width:10px;height:10px;border-radius:6px;background:#8ad;border:1.5px solid #fff"></div>',
+      iconSize:[10,10],iconAnchor:[6,6]})}).addTo(editLayer);
+    hGfx.push({m:m,ln:ln,i:i,kk:kk});
+  });
+}
+
+// ---------------------------------------------- map-level editing gestures
+// One pointer pipeline for everything (same approach as the pen tool):
+// hit-test the MODEL in container pixels; run our own drag loop.
+const HIT_PX=9;
+let dragState=null,lastCursor=null;
+map.on('mousemove',e=>{lastCursor=e.latlng});                    // {kind:'anchor'|'handle', l,i,kk,...}
+function pxOf(ll){return map.latLngToContainerPoint([ll[1],ll[0]])}
+function hitTest(pt){
+  const l=lineById(selId);
+  if(l&&tool!=='draw'){
+    for(const g of hGfx){                                   // handles first
+      const hp=handlesOf(l,g.i)[g.kk];
+      if(pt.distanceTo(pxOf(hp))<=HIT_PX)return{kind:'handle',l:l,i:g.i,kk:g.kk};
+    }
+    for(let i=0;i<l.anchors.length;i++)
+      if(pt.distanceTo(pxOf(l.anchors[i].p))<=HIT_PX)return{kind:'anchor',l:l,i:i};
+  }
+  for(const ln of NET.lines){                               // other lines' dots
+    if(ln.id===selId)continue;
+    for(let i=0;i<ln.anchors.length;i++)
+      if(pt.distanceTo(pxOf(ln.anchors[i].p))<=HIT_PX)return{kind:'dot',l:ln,i:i};
+  }
+  return null;
+}
+map.on('mousedown',e=>{
+  if(tool==='draw'||e.originalEvent.button!==0)return;
+  const hit=hitTest(map.mouseEventToContainerPoint(e.originalEvent));
+  if(!hit)return;
+  L.DomEvent.preventDefault(e.originalEvent);
+  map.dragging.disable();
+  if(hit.kind==='dot'){selId=hit.l.id;selAnchor=hit.i;render();map.dragging.enable();return}
+  push();
+  const a=hit.l.anchors[hit.i];
+  dragState={...hit,moved:false,alt:isAlt(e)};
+  if(hit.kind==='anchor'){selAnchor=hit.i;buildEditLayer()}
+  if(hit.kind==='handle'){
+    const H=handlesOf(hit.l,hit.i);
+    const v1=[H.hin[0]-a.p[0],H.hin[1]-a.p[1]],v2=[H.hout[0]-a.p[0],H.hout[1]-a.p[1]];
+    const l1=Math.hypot(v1[0],v1[1]),l2=Math.hypot(v2[0],v2[1]);
+    dragState.linked=l1>1e-12&&l2>1e-12&&
+      (v1[0]*v2[0]+v1[1]*v2[1])/(l1*l2)<-0.985&&!dragState.alt;
+    dragState.otherLen=hit.kk==='hin'?l2:l1;
+  }
+});
+map.on('mousemove',e=>{
+  if(!dragState)return;
+  const s=dragState,a=s.l.anchors[s.i];
+  const np=[e.latlng.lng,e.latlng.lat];
+  s.moved=true;
+  if(isAlt(e))s.alt=true;
+  if(s.kind==='anchor'){
+    if(s.alt){                          // pull fresh handles out (convert)
+      a.hout=np;a.hin=[2*a.p[0]-np[0],2*a.p[1]-np[1]];
+    }else{
+      const dp=[np[0]-a.p[0],np[1]-a.p[1]];
+      if(a.hin)a.hin=[a.hin[0]+dp[0],a.hin[1]+dp[1]];
+      if(a.hout)a.hout=[a.hout[0]+dp[0],a.hout[1]+dp[1]];
+      a.p=np;
+    }
+  }else{                                // handle
+    // smooth point: angles locked, LENGTHS independent (captured at grab);
+    // alt breaks the link for asymmetric corners.
+    if(s.alt)s.linked=false;
+    a[s.kk]=np;
+    if(s.linked){
+      const vx=np[0]-a.p[0],vy=np[1]-a.p[1],vlen=Math.hypot(vx,vy);
+      if(vlen>1e-12){
+        const other=s.kk==='hin'?'hout':'hin';
+        a[other]=[a.p[0]-vx/vlen*s.otherLen,a.p[1]-vy/vlen*s.otherLen];
+      }
+    }
+  }
+  liveUpdate(s.l);
+});
+map.on('mouseup',()=>{
+  if(!dragState)return;
+  const s=dragState;dragState=null;
+  map.dragging.enable();
+  if(!s.moved){undoStack.pop();changed(false)}   // plain click: no edit happened
+  render();
+});
+map.on('dblclick',e=>{
+  if(tool==='draw')return;
+  const hit=hitTest(map.mouseEventToContainerPoint(e.originalEvent));
+  if(hit&&hit.kind==='anchor'){
+    L.DomEvent.stop(e);push();
+    const a=hit.l.anchors[hit.i];
+    if(a.hin||a.hout){a.hin=null;a.hout=null}
+    else{a.hin=[a.p[0],a.p[1]];a.hout=[a.p[0],a.p[1]]}
+    bake(hit.l);render();
+  }
+});
+map.on('contextmenu',e=>{
+  const hit=hitTest(map.mouseEventToContainerPoint(e.originalEvent));
+  if(!hit)return;
+  L.DomEvent.preventDefault(e.originalEvent);
+  if(hit.kind==='anchor'||hit.kind==='dot'){
+    push();
+    const l=hit.l;
+    l.anchors.splice(hit.i,1);
+    if(l.anchors.length<2){NET.lines=NET.lines.filter(x=>x.id!==l.id);if(selId===l.id)selId=null}
+    else bake(l);
+    selAnchor=-1;render();
+  }
+});
+// click on an END anchor of the selected line (when already on that anchor)
+// continues the line — handled here since markers are visual-only now
+map.on('click',e=>{
+  if(tool==='draw')return;
+  const hit=hitTest(map.mouseEventToContainerPoint(e.originalEvent));
+  if(hit&&hit.kind==='anchor'){
+    const isEnd=hit.i===0||hit.i===hit.l.anchors.length-1;
+    if(isEnd&&selAnchor===hit.i)startExtend(hit.l,hit.i===0?'head':'tail');
+    else{selAnchor=hit.i;buildEditLayer()}
+  }
+});
+
+// during a drag: re-bake + move existing graphics in place (no rebuild)
+function liveUpdate(l){
+  bake(l);
+  if(selPl)selPl.setLatLngs(l.coords.map(c=>[c[1],c[0]]));
+  l.anchors.forEach((a,i)=>{if(anchorMs[i])anchorMs[i].setLatLng([a.p[1],a.p[0]])});
+  hGfx.forEach(g=>{
+    const a=l.anchors[g.i];if(!a)return;
+    const hp=handlesOf(l,g.i)[g.kk];
+    g.m.setLatLng([hp[1],hp[0]]);
+    g.ln.setLatLngs([[a.p[1],a.p[0]],[hp[1],hp[0]]]);
+  });
+}
+
+function renderPanel(){
+  const l=lineById(selId);
+  $('seldiv').style.display=l?'block':'none';
+  if(l){
+    const rd=$('routes');rd.innerHTML='';
+    l.routes.forEach((r,ri)=>{
+      const s=document.createElement('span');s.className='rchip';
+      s.innerHTML='<b style="background:#'+r.color+'"></b>'+(r.label||r.color)+' <span title="remove">✕</span>';
+      s.querySelector('span').onclick=()=>{push();l.routes.splice(ri,1);if(!l.routes.length)l.routes=[{label:'',color:'888888'}];render()};
+      rd.append(s);
+    });
+    // one-click interlining: toggle any palette colour on/off the line
+    const sd=$('selsw');sd.innerHTML='';
+    (SW[$('feed').value]||[]).forEach(([cc,name])=>{
+      const has=l.routes.some(r=>(r.color||'').toUpperCase()===cc.toUpperCase());
+      const d=document.createElement('div');d.className='sw'+(has?' on':'');
+      d.style.background='#'+cc;d.title=name+(has?' — click to remove':' — click to add');
+      d.onclick=()=>{push();
+        if(has)l.routes=l.routes.filter(r=>(r.color||'').toUpperCase()!==cc.toUpperCase());
+        else l.routes.push({label:name,color:cc});
+        if(!l.routes.length)l.routes=[{label:'',color:'888888'}];
+        render()};
+      sd.append(d);
+    });
+  }
+  const list=$('lines');list.innerHTML='';
+  $('linecount').textContent='('+NET.lines.length+')';
+  NET.lines.forEach(ln=>{
+    const d=document.createElement('div');d.className='line'+(ln.id===selId?' on':'');
+    d.innerHTML='<div class=chip style="background:'+dispColor(ln).slice(0)+'"></div>'+
+      '<div class=meta>'+ln.routes.map(r=>r.label||r.color).join('·')+' — '+ln.anchors.length+' anchors</div><div class=del>✕</div>';
+    d.onclick=e=>{
+      if(e.target.className==='del'){push();NET.lines=NET.lines.filter(x=>x.id!==ln.id);if(selId===ln.id)selId=null;render();return}
+      selId=ln.id;selAnchor=-1;render();
+      const c=ln.coords[Math.floor(ln.coords.length/2)];map.panTo([c[1],c[0]]);
+    };
+    list.append(d);
+  });
+}
+
+// ------------------------------------------------------------ interactions
+function onLineClick(l,e){
+  if(tool==='merge'&&selId&&selId!==l.id){doMerge(lineById(selId),l);return}
+  if(tool==='idle'){
+    if(selId===l.id){
+      // insert an anchor at the clicked spot (nearest segment)
+      push();
+      const p=[e.latlng.lng,e.latlng.lat];
+      let bi=0,bd=1e9;
+      l.anchors.forEach((a,i)=>{if(i<l.anchors.length-1){
+        const m=[(a.p[0]+l.anchors[i+1].p[0])/2,(a.p[1]+l.anchors[i+1].p[1])/2];
+        const d=(m[0]-p[0])**2+(m[1]-p[1])**2;if(d<bd){bd=d;bi=i}}});
+      l.anchors.splice(bi+1,0,{p:p,hin:null,hout:null});
+      bake(l);selAnchor=bi+1;render();return;
+    }
+    selId=l.id;selAnchor=-1;render();
+  }
+}
+function startDraw(){
+  push();
+  const l={id:uid(),routes:[{label:$('lbl').value,color:color}],anchors:[],coords:[]};
+  NET.lines.push(l);selId=l.id;drawTarget={id:l.id,end:'tail'};
+  tool='draw';$('newline').classList.add('on');$('map').className='drawing';
+  map.dragging.disable();
+  render();status('click = corner · click-drag = curve · space = pan · Enter finishes');
+}
+function startExtend(l,end){push();drawTarget={id:l.id,end:end};tool='draw';
+  $('map').className='drawing';map.dragging.disable();
+  status('extending from '+end+' — click = corner · click-drag = curve · Enter finishes')}
+function snapPoint(p){
+  // snap to other lines' endpoints within ~10 px
+  const px=map.latLngToContainerPoint([p[1],p[0]]);
+  for(const l of NET.lines){
+    if(drawTarget&&l.id===drawTarget.id)continue;
+    for(const a of [l.anchors[0],l.anchors[l.anchors.length-1]]){
+      if(!a)continue;
+      const q=map.latLngToContainerPoint([a.p[1],a.p[0]]);
+      if(px.distanceTo(q)<10)return [a.p[0],a.p[1]];
+    }
+  }
+  return p;
+}
+// ---- Illustrator pen: mousedown places a CORNER node (click alone = sharp
+// angle); dragging before release PULLS the curve's handles out (mirrored),
+// live-previewing the bend. Barely-moved releases stay corners. Drag is
+// reserved for handle pulling in pen mode, so hold SPACE to pan.
+let previewPl=null,pull=null,spaceHeld=false;
+function drawingLine(){return drawTarget?lineById(drawTarget.id):null}
+function drawRefresh(l){bake(l);if(selPl)selPl.setLatLngs(l.coords.map(c=>[c[1],c[0]]))}
+map.on('mousedown',e=>{
+  if(tool!=='draw'||!drawTarget||spaceHeld||e.originalEvent.button!==0)return;
+  const l=drawingLine();if(!l)return;
+  push();                          // one undo step per node
+  const p=snapPoint([e.latlng.lng,e.latlng.lat]);
+  const a={p:p,hin:[p[0],p[1]],hout:[p[0],p[1]]};   // corner unless pulled
+  if(drawTarget.end==='tail')l.anchors.push(a);else l.anchors.unshift(a);
+  pull={l:l,a:a};
+  if(!selPl)render();
+  drawRefresh(l);
+});
+map.on('mousemove',e=>{
+  if(tool!=='draw'||!drawTarget)return;
+  const l=drawingLine();if(!l||!l.anchors.length)return;
+  const cur=[e.latlng.lng,e.latlng.lat];
+  if(pull){                                          // pulling the curve out
+    const a=pull.a;
+    if(drawTarget.end==='tail'){a.hout=cur;a.hin=[2*a.p[0]-cur[0],2*a.p[1]-cur[1]]}
+    else{a.hin=cur;a.hout=[2*a.p[0]-cur[0],2*a.p[1]-cur[1]]}
+    drawRefresh(l);
+    if(previewPl){map.removeLayer(previewPl);previewPl=null}
+    return;
+  }
+  const last=drawTarget.end==='tail'?l.anchors[l.anchors.length-1]:l.anchors[0];
+  const h=drawTarget.end==='tail'?handlesOf(l,l.anchors.length-1).hout:handlesOf(l,0).hin;
+  const pts=[];
+  for(let k=0;k<=14;k++){const t=k/14,u=1-t;
+    pts.push([u*u*u*last.p[1]+3*u*u*t*h[1]+3*u*t*t*cur[1]+t*t*t*cur[1],
+              u*u*u*last.p[0]+3*u*u*t*h[0]+3*u*t*t*cur[0]+t*t*t*cur[0]]);}
+  if(!previewPl)previewPl=L.polyline(pts,{color:'#f6bc26',weight:2,dashArray:'5 5',opacity:.8,interactive:false}).addTo(map);
+  else previewPl.setLatLngs(pts);
+});
+map.on('mouseup',e=>{
+  if(!pull)return;
+  const a=pull.a,l=pull.l;
+  const q=map.latLngToContainerPoint([a.p[1],a.p[0]]);
+  const hq=map.latLngToContainerPoint([a.hout[1],a.hout[0]]);
+  if(q.distanceTo(hq)<4){a.hin=[a.p[0],a.p[1]];a.hout=[a.p[0],a.p[1]]}  // stays a corner
+  pull=null;drawRefresh(l);buildEditLayer();renderPanel();
+});
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'&&!spaceHeld&&tool==='draw'&&e.target.tagName!=='INPUT'){
+    spaceHeld=true;map.dragging.enable();
+    document.getElementById('map').style.cursor='grab';e.preventDefault()}
+});
+document.addEventListener('keyup',e=>{
+  if(e.code==='Space'&&spaceHeld){spaceHeld=false;
+    if(tool==='draw')map.dragging.disable();
+    document.getElementById('map').style.cursor=''}
+});
+function endDraw(cancel){
+  if(tool!=='draw')return;
+  const l=drawTarget&&lineById(drawTarget.id);
+  if(l){ // drop duplicate anchors left by the dbl-click finish gesture
+    const near=(a,b)=>Math.abs(a.p[0]-b.p[0])<1e-7&&Math.abs(a.p[1]-b.p[1])<1e-7;
+    while(l.anchors.length>1&&near(l.anchors[l.anchors.length-1],l.anchors[l.anchors.length-2]))l.anchors.pop();
+    while(l.anchors.length>1&&near(l.anchors[0],l.anchors[1]))l.anchors.shift();
+    bake(l);
+  }
+  if(l&&(cancel&&l.anchors.length<2||l.anchors.length<2)){NET.lines=NET.lines.filter(x=>x.id!==l.id);if(selId===l.id)selId=null}
+  drawTarget=null;pull=null;
+  if(previewPl){map.removeLayer(previewPl);previewPl=null}
+  map.dragging.enable();
+  toIdle();render();changed();
+}
+function toIdle(){tool='idle';
+  $('newline').classList.remove('on');$('merge').classList.remove('on');
+  map.dragging.enable();if(previewPl){map.removeLayer(previewPl);previewPl=null}
+  $('map').className=''}
+map.on('dblclick',()=>endDraw(false));
+
+function doSplit(){
+  const l=lineById(selId);
+  if(!l||selAnchor<1||selAnchor>=l.anchors.length-1){status('select an interior anchor first');return}
+  push();
+  const a=l.anchors,b={id:uid(),routes:JSON.parse(JSON.stringify(l.routes)),
+    anchors:a.slice(selAnchor).map(x=>JSON.parse(JSON.stringify(x))),coords:[]};
+  l.anchors=a.slice(0,selAnchor+1);
+  bake(l);bake(b);NET.lines.push(b);selAnchor=-1;render();
+}
+function doMerge(a,b){
+  push();
+  const d=(p,q)=>(p[0]-q[0])**2+(p[1]-q[1])**2;
+  const aH=a.anchors[0].p,aT=a.anchors[a.anchors.length-1].p;
+  const bH=b.anchors[0].p,bT=b.anchors[b.anchors.length-1].p;
+  const opts=[[d(aT,bH),0],[d(aT,bT),1],[d(aH,bH),2],[d(aH,bT),3]];
+  opts.sort((x,y)=>x[0]-y[0]);
+  const kind=opts[0][1];
+  let A=a.anchors.map(x=>x),B=b.anchors.map(x=>x);
+  if(kind===1)B=B.slice().reverse();
+  if(kind===2){A=A.slice().reverse()}
+  if(kind===3){A=A.slice().reverse();B=B.slice().reverse()}
+  if(kind===2||kind===3){[A,B]=[A,B]}
+  a.anchors=A.concat(B);
+  const seen={},routes=[];
+  a.routes.concat(b.routes).forEach(r=>{const k=r.label+'|'+r.color;if(!seen[k]){seen[k]=1;routes.push(r)}});
+  a.routes=routes;
+  NET.lines=NET.lines.filter(x=>x.id!==b.id);
+  bake(a);selId=a.id;toIdle();render();
+}
+
+// ------------------------------------------------------------ toolbar/keys
+$('newline').onclick=startDraw;
+$('undo').onclick=undo;$('redo').onclick=redo;
+$('split').onclick=doSplit;
+$('merge').onclick=()=>{if(selId){tool='merge';$('merge').classList.add('on');status('click the line to merge into the selection')}};
+$('revline').onclick=()=>{const l=lineById(selId);if(!l)return;push();
+  l.anchors.reverse();l.anchors.forEach(a=>{const t=a.hin;a.hin=a.hout;a.hout=t});bake(l);render()};
+$('addroute').onclick=()=>{const l=lineById(selId);if(!l)return;push();
+  l.routes.push({label:$('addlbl').value,color:($('addhex').value||'888888').replace('#','')});
+  $('addlbl').value='';$('addhex').value='';render()};
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  const mod=e.metaKey||e.ctrlKey;
+  if((mod&&e.key==='z'&&!e.shiftKey)||(!mod&&e.key==='z')){e.preventDefault();undo()}
+  else if((mod&&e.key==='z'&&e.shiftKey)||(mod&&e.key==='y')||(!mod&&e.key==='Z')){e.preventDefault();redo()}
+  else if((e.key==='d'||e.key==='D'||e.key==='n'||e.key==='N')&&tool!=='draw')startDraw();
+  else if((e.key==='c'||e.key==='C')&&selId&&tool!=='draw'){
+    const l=lineById(selId);
+    if(l&&l.anchors.length){
+      let end;
+      if(selAnchor===0)end='head';
+      else if(selAnchor===l.anchors.length-1)end='tail';
+      else if(lastCursor){                    // nearest end to the cursor
+        const h=l.anchors[0].p,t=l.anchors[l.anchors.length-1].p;
+        const dh=Math.hypot(h[0]-lastCursor.lng,h[1]-lastCursor.lat);
+        const dt=Math.hypot(t[0]-lastCursor.lng,t[1]-lastCursor.lat);
+        end=dh<dt?'head':'tail';
+      }else end='tail';
+      startExtend(l,end);
+    }
+  }
+  else if(e.key==='x'||e.key==='X')doSplit();
+  else if(e.key==='m'||e.key==='M'){if(selId){tool='merge';$('merge').classList.add('on');status('click the other line')}}
+  else if(e.key==='Enter')endDraw(false);
+  else if(e.key==='Escape'){if(tool==='draw')endDraw(true);else{selId=null;selAnchor=-1;toIdle();render()}}
+  else if((e.key==='Backspace'||e.key==='Delete')&&selId){push();NET.lines=NET.lines.filter(x=>x.id!==selId);selId=null;render()}
+});
+
+// ------------------------------------------------------------ swatches/locs/net
+function fillSwatches(){
+  const pal=SW[$('feed').value]||[];
+  $('swatches').innerHTML='';
+  pal.forEach(([c,name])=>{const d=document.createElement('div');d.className='sw';
+    d.style.background='#'+c;d.title=name;
+    d.onclick=()=>{color=c;$('hex').value=c;document.querySelectorAll('.sw').forEach(x=>x.classList.remove('on'));d.classList.add('on')};
+    $('swatches').append(d)});
+  const first=document.querySelector('.sw');
+  if(first){first.classList.add('on');color=pal[0][0];$('hex').value=color}
+}
+fillSwatches();
+$('hex').oninput=()=>{color=$('hex').value.replace('#','')};
+
+const locSel=$('loc');
+function fillLocs(){
+  locSel.innerHTML='';
+  LOCS.filter(l=>l[4]===$('feed').value).forEach(([k,n])=>{
+    const o=document.createElement('option');o.value=k;o.textContent=n;locSel.append(o)});
+}
+async function loadNet(){
+  const r=await fetch('/api/network?feed='+$('feed').value);
+  NET=await r.json();NET.feed=$('feed').value;NET.lines=NET.lines||[];
+  undoStack=[];redoStack=[];selId=null;render();
+}
+locSel.onchange=()=>{const L0=LOCS.find(l=>l[0]===locSel.value);if(L0){map.setView([L0[2],L0[3]],16);loadOverlay()}};
+$('feed').onchange=async()=>{fillLocs();fillSwatches();locSel.onchange();
+  $('build').value=$('feed').value==='29'?'chicago:pipeline':'nyc:pipeline';await loadNet();loadOverlay()};
+
+async function loadOverlay(){
+  ovLayer.clearLayers();if(!showOv)return;
+  const c=map.getCenter();
+  const r=await fetch('/api/features?lat='+c.lat+'&lon='+c.lng+'&r=1200&build='+encodeURIComponent($('build').value));
+  const gj=await r.json();
+  L.geoJSON(gj,{style:f=>({color:'#'+f.properties.color,weight:3,opacity:.4,
+    dashArray:f.properties.kind==='transition'?'6 5':null})}).addTo(ovLayer);
+}
+$('toggleov').onclick=()=>{showOv=!showOv;$('toggleov').textContent='build: '+(showOv?'on':'off');loadOverlay()};
+$('togglerail').onclick=()=>{showRail=!showRail;$('togglerail').textContent='tracks: '+(showRail?'on':'off');
+  if(showRail)railLayer.addTo(map);else map.removeLayer(railLayer)};
+$('build').onchange=loadOverlay;
+map.on('moveend',()=>{if(showOv)loadOverlay()});
+
+fillLocs();
+const L0=LOCS.find(l=>l[4]===$('feed').value)||LOCS[0];
+map.setView([L0[2],L0[3]],16);
+loadNet().then(loadOverlay);
+</script>
