@@ -326,8 +326,10 @@ func clusterEndpoints(g *support.Graph, eps []endpoint, tol float64) []int {
 	return nodeOf
 }
 
-// attachDanglers splits a trunk edge where a branch endpoint lands mid-edge
-// (a branch leaves the group between the trunk's own cut points).
+// attachDanglers joins a branch endpoint onto the trunk it forks from. The
+// node sits ON THE TRUNK at the projection point — the trunk is never bent
+// toward the branch tip (that drew perpendicular H-bars at every fork); the
+// BRANCH eases into the node instead.
 func attachDanglers(g *support.Graph, _ []int, p TraceParams) {
 	for pass := 0; pass < 4; pass++ {
 		deg := make(map[int]int)
@@ -341,7 +343,6 @@ func attachDanglers(g *support.Graph, _ []int, p TraceParams) {
 				continue
 			}
 			at := g.Nodes[ni].At
-			// nearest mid-edge point on another edge
 			bestE, bestArc, bestD := -1, 0.0, p.NodeTol
 			for ei, e := range g.Edges {
 				if e.From == ni || e.To == ni {
@@ -356,21 +357,30 @@ func attachDanglers(g *support.Graph, _ []int, p TraceParams) {
 			if bestE < 0 {
 				continue
 			}
-			// split bestE at bestArc onto node ni
 			e := g.Edges[bestE]
 			l := e.Line()
+			proj := l.AtArc(bestArc)
+			g.Nodes[ni].At = proj // fork node lives ON the trunk
 			a := SubLine(l, 0, bestArc)
 			b := SubLine(l, bestArc, l.Len())
-			aPts := append(a.Pts, g.Nodes[ni].At)
-			bPts := append([]geo.Pt{g.Nodes[ni].At}, b.Pts...)
 			g.Edges[bestE] = &support.Edge{From: e.From, To: ni,
-				Pts: aPts, Tracks: e.Tracks, Occupancy: map[string]support.Interval{}}
+				Pts: a.Pts, Tracks: e.Tracks, Occupancy: map[string]support.Interval{}}
 			g.Edges = append(g.Edges, &support.Edge{From: ni, To: e.To,
-				Pts: bPts, Tracks: e.Tracks, Occupancy: map[string]support.Interval{}})
+				Pts: b.Pts, Tracks: e.Tracks, Occupancy: map[string]support.Interval{}})
 			changed = true
 		}
 		if !changed {
 			break
 		}
+	}
+	// every edge end eases into its node over an offset-scaled ramp — the
+	// median steps sideways where a group's set changes; a hard pin turns
+	// that step into a jog/kink at every fork (smooth Y instead)
+	for _, e := range g.Edges {
+		if len(e.Pts) < 3 {
+			continue
+		}
+		na, nb := g.Nodes[e.From].At, g.Nodes[e.To].At
+		e.Pts = TieEnds(geo.NewLine(e.Pts), na, nb).Pts
 	}
 }
