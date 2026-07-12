@@ -6,6 +6,12 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/geo"
 )
 
+// Track is one OSM way in the metric frame.
+type Track struct {
+	ID   string
+	Line *geo.Line
+}
+
 // Strand is one continuous physical track: OSM ways chained end-to-end
 // through degree-2 joints. Strands are the unit of bundling — ways are
 // arbitrary editing artifacts (50–300 m splits) and must never be.

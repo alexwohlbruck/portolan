@@ -118,28 +118,3 @@ func TestRefineKissImmunity(t *testing.T) {
 		}
 	}
 }
-
-func TestSoundMateshipKissRule(t *testing.T) {
-	a := Track{ID: "a", Line: straight(0, 0, 500, 5)}
-	b := Track{ID: "b", Line: straight(8, 0, 500, 5)}
-	var cross []geo.Pt
-	for y := -50.0; y <= 50; y += 5 {
-		cross = append(cross, geo.Pt{X: 250, Y: y})
-	}
-	c := Track{ID: "c", Line: geo.NewLine(cross)}
-	mates := Sound([]Track{a, b, c}, DefaultSoundParams())
-	for _, m := range mates {
-		if m.A == 2 || m.B == 2 {
-			t.Fatalf("perpendicular crossing became a mate: %+v", m)
-		}
-	}
-	found := false
-	for _, m := range mates {
-		if m.A == 0 && m.B == 1 && (m.ToA-m.FromA) > 400 {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("parallel pair not mated: %+v", mates)
-	}
-}
