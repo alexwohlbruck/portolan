@@ -77,6 +77,7 @@ type Edge struct {
 	From, To  int
 	Pts       []geo.Pt
 	Occupancy map[string]Interval
+	Tracks    int // track count of the group (string-trace bundling)
 }
 
 type Interval struct{ Lo, Hi int }
@@ -427,6 +428,9 @@ func (b *builder) finish(originals []Path) *Graph {
 	g.rebuildAdj()
 	return g
 }
+
+// RebuildAdj recomputes node adjacency (exported for trace construction).
+func (g *Graph) RebuildAdj() { g.rebuildAdj() }
 
 func (g *Graph) rebuildAdj() {
 	for i := range g.Nodes {

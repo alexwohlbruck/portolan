@@ -133,7 +133,7 @@ map.on('load', async () => {
     'ck-final': BANDS.flatMap(b=>['steady','transition','bridge']
                  .flatMap(k=>[`casing-${b.key}-${k}`,`line-${b.key}-${k}`])),
     'ck-rail': ['rail'], 'ck-sketch': ['sketch'],
-    'ck-strands': ['strands'], 'ck-trackcenter': ['trackcenter'],
+    'ck-strands': ['strands'], 'ck-trackcenter': ['trackcenter','trackcenter-labels'],
     'ck-nodes': ['nodes'], 'ck-base': ['base'],
   };
   // layer visibility persists across reloads

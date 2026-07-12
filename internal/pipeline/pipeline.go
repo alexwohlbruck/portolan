@@ -50,6 +50,9 @@ type Dials struct {
 	SpurPruneM  float64 `json:"spur_prune_m"`
 	// fairing
 	BandBase float64 `json:"band_base"`
+	// engine: 1 = string-trace bundling (owner's algorithm: seed sweep,
+	// track counts, splits at group changes), 0 = support-graph averaging
+	UseTrace float64 `json:"use_trace"`
 	// gtfs
 	Cover float64 `json:"cover"`
 }
@@ -67,6 +70,7 @@ func DefaultDials() Dials {
 		TrackMergeD: 16.0, // must span island-platform track spreads (lens fix)
 		SpurPruneM:  150.0,
 		BandBase:    140,
+		UseTrace:    1,
 		Cover:       0.99,
 	}
 }
@@ -156,34 +160,20 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 		spaths = append(spaths, support.Path{ID: fmt.Sprintf("s%d", i), Pts: s.Line.Pts})
 	}
-	tp := d.supportParams()
-	tp.MergeD = d.TrackMergeD
-	tp.SmoothD = d.TrackMergeD
-	tg := support.TrackCenterlines(spaths, tp, d.SpurPruneM, logf)
-	// median refinement: exact bundle centerline per the strand rules
-	grid0 := geo.NewGrid(strandLines, 64)
-	rp0 := d.refineParams()
-	for _, e := range tg.Edges {
-		l := e.Line()
-		if l.Len() < 40 {
-			continue
+	var tg *support.Graph
+	if d.UseTrace >= 1 {
+		tg = bundle.StringTrace(strands, bundle.DefaultTraceParams(), logf)
+	} else {
+		var spaths []support.Path
+		for i, s := range strands {
+			if s.Line.Len() >= 60 {
+				spaths = append(spaths, support.Path{ID: fmt.Sprintf("s%d", i), Pts: s.Line.Pts})
+			}
 		}
-		var members []*geo.Line
-		seen := map[int]bool{}
-		for _, q := range l.Resample(40) {
-			grid0.Near(q, rp0.Reach, func(si int) {
-				if !seen[si] {
-					seen[si] = true
-					members = append(members, strandLines[si])
-				}
-			})
-		}
-		if len(members) == 0 {
-			continue
-		}
-		nl := bundle.Refine(l, members, rp0)
-		nl = bundle.TieEnds(nl, e.Pts[0], e.Pts[len(e.Pts)-1])
-		e.Pts = nl.Pts
+		tp := d.supportParams()
+		tp.MergeD = d.TrackMergeD
+		tp.SmoothD = d.TrackMergeD
+		tg = support.TrackCenterlines(spaths, tp, d.SpurPruneM, logf)
 	}
 	logf("trackcenter: %d edges, %d nodes (%.1fs)",
 		len(tg.Edges), len(tg.Nodes), time.Since(t0).Seconds())
@@ -465,6 +455,7 @@ func writeSupport(path string, sg *support.Graph, frame geo.Frame) error {
 	for ei, e := range sg.Edges {
 		if f, ok := lineFeature(map[string]any{
 			"kind": "support", "edge": ei, "npaths": len(e.Occupancy),
+			"tracks": e.Tracks,
 			"node_a": e.From, "node_b": e.To, "len_m": int(e.Line().Len()),
 		}, e.Line(), 8, frame); ok {
 			fc.Features = append(fc.Features, f)
