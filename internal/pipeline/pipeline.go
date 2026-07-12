@@ -45,6 +45,9 @@ type Dials struct {
 	RefineIters float64 `json:"refine_iters"`
 	FinishSigma float64 `json:"finish_sigma"`
 	JoinTol     float64 `json:"join_tol"`
+	// track-group centerlines
+	TrackMergeD float64 `json:"track_merge_d"`
+	SpurPruneM  float64 `json:"spur_prune_m"`
 	// fairing
 	BandBase float64 `json:"band_base"`
 	// gtfs
@@ -60,9 +63,11 @@ func DefaultDials() Dials {
 		TurnGapN:    float64(sp.TurnGapN),
 		RefineReach: rp.Reach, StrandGap: rp.StrandGap,
 		RefineIters: float64(rp.Iters), FinishSigma: rp.FinishSigma,
-		JoinTol:  1.0,
-		BandBase: 140,
-		Cover:    0.99,
+		JoinTol:     1.0,
+		TrackMergeD: 10.0,
+		SpurPruneM:  150.0,
+		BandBase:    140,
+		Cover:       0.99,
 	}
 }
 
@@ -138,6 +143,51 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	logf("chart: %d rail ways → %d strands (%.1fs)",
 		len(ways), len(strands), time.Since(t0).Seconds())
 	if err := writeStrands(o.Out+".strands.geojson", strands, frame); err != nil {
+		return err
+	}
+
+	// TRACK-GROUP CENTERLINES — the merged line each parallel track group
+	// visually forms (mainline only; spur stubs pruned; nodes at physical
+	// forks). This network is what the hand-drawn sketches depict.
+	var spaths []support.Path
+	for i, s := range strands {
+		if s.Line.Len() < 60 {
+			continue // crossover/fragment: never mainline on its own
+		}
+		spaths = append(spaths, support.Path{ID: fmt.Sprintf("s%d", i), Pts: s.Line.Pts})
+	}
+	tp := d.supportParams()
+	tp.MergeD = d.TrackMergeD
+	tp.SmoothD = d.TrackMergeD
+	tg := support.TrackCenterlines(spaths, tp, d.SpurPruneM, logf)
+	// median refinement: exact bundle centerline per the strand rules
+	grid0 := geo.NewGrid(strandLines, 64)
+	rp0 := d.refineParams()
+	for _, e := range tg.Edges {
+		l := e.Line()
+		if l.Len() < 40 {
+			continue
+		}
+		var members []*geo.Line
+		seen := map[int]bool{}
+		for _, q := range l.Resample(40) {
+			grid0.Near(q, rp0.Reach, func(si int) {
+				if !seen[si] {
+					seen[si] = true
+					members = append(members, strandLines[si])
+				}
+			})
+		}
+		if len(members) == 0 {
+			continue
+		}
+		nl := bundle.Refine(l, members, rp0)
+		nl = bundle.TieEnds(nl, e.Pts[0], e.Pts[len(e.Pts)-1])
+		e.Pts = nl.Pts
+	}
+	logf("trackcenter: %d edges, %d nodes (%.1fs)",
+		len(tg.Edges), len(tg.Nodes), time.Since(t0).Seconds())
+	if err := writeSupport(o.Out+".trackcenter.geojson", tg, frame); err != nil {
 		return err
 	}
 

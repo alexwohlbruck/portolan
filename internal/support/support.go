@@ -38,6 +38,11 @@ type Params struct {
 	CreepAlpha float64 // line-creep guard (paper: sin 45°)
 	SmoothD    float64 // intersection smoothing crop distance (≈ d̂)
 	TurnGapN   int     // max sample-index gap for a line to CONNECT e→f at a node
+	// ContractAll contracts EVERY degree-2 node regardless of label sets —
+	// for the track-centerline network, where input identity (arbitrary OSM
+	// strand splits) must not fragment the merged geometry; nodes belong
+	// only at physical forks.
+	ContractAll bool
 }
 
 func DefaultParams() Params {
@@ -331,6 +336,9 @@ func (b *builder) finish(originals []Path) *Graph {
 		return s
 	}
 	sameLines := func(a, c [2]int32) bool {
+		if b.p.ContractAll {
+			return true
+		}
 		ra, rc := routeSet(b.segs[a]), routeSet(b.segs[c])
 		if len(ra) != len(rc) {
 			return false
@@ -573,6 +581,150 @@ func subLine(l *geo.Line, from, to float64) *geo.Line {
 	}
 	pts = append(pts, l.AtArc(to))
 	return geo.NewLine(pts)
+}
+
+// PruneStubs iteratively removes dead-end edges shorter than minLen (spur
+// tracks and merge residue; genuine terminals are longer), then re-contracts
+// pass-through nodes so the network stays clean.
+func (g *Graph) PruneStubs(minLen float64) {
+	for {
+		removed := false
+		deg := make([]int, len(g.Nodes))
+		for _, e := range g.Edges {
+			if e == nil {
+				continue
+			}
+			deg[e.From]++
+			if e.To != e.From {
+				deg[e.To]++
+			}
+		}
+		for ei, e := range g.Edges {
+			if e == nil || e.From == e.To {
+				continue
+			}
+			if (deg[e.From] == 1 || deg[e.To] == 1) && e.Line().Len() < minLen {
+				g.Edges[ei] = nil
+				removed = true
+			}
+		}
+		if !removed {
+			break
+		}
+	}
+	var kept []*Edge
+	for _, e := range g.Edges {
+		if e != nil {
+			kept = append(kept, e)
+		}
+	}
+	g.Edges = kept
+	g.rebuildAdj()
+	g.contractDeg2()
+}
+
+// contractDeg2 merges edge pairs through pass-through nodes (geometry
+// concat, occupancy union).
+func (g *Graph) contractDeg2() {
+	for {
+		g.rebuildAdj()
+		merged := false
+		for ni := range g.Nodes {
+			if len(g.Nodes[ni].Adj) != 2 {
+				continue
+			}
+			ai, bi := g.Nodes[ni].Adj[0], g.Nodes[ni].Adj[1]
+			if ai == bi {
+				continue
+			}
+			a, b := g.Edges[ai], g.Edges[bi]
+			if a == nil || b == nil || a.From == a.To || b.From == b.To {
+				continue
+			}
+			// orient a to END at ni, b to START at ni
+			apts := append([]geo.Pt(nil), a.Pts...)
+			if a.From == ni {
+				apts = reversePts(apts)
+			}
+			bpts := append([]geo.Pt(nil), b.Pts...)
+			if b.To == ni {
+				bpts = reversePts(bpts)
+			}
+			occ := map[string]Interval{}
+			for pid, iv := range a.Occupancy {
+				occ[pid] = iv
+			}
+			for pid, iv := range b.Occupancy {
+				if cur, ok := occ[pid]; ok {
+					if iv.Lo < cur.Lo {
+						cur.Lo = iv.Lo
+					}
+					if iv.Hi > cur.Hi {
+						cur.Hi = iv.Hi
+					}
+					occ[pid] = cur
+				} else {
+					occ[pid] = iv
+				}
+			}
+			var from, to int
+			if a.From == ni {
+				from = a.To
+			} else {
+				from = a.From
+			}
+			if b.To == ni {
+				to = b.From
+			} else {
+				to = b.To
+			}
+			g.Edges[ai] = &Edge{From: from, To: to,
+				Pts: append(apts, bpts[1:]...), Occupancy: occ}
+			g.Edges[bi] = nil
+			var kept []*Edge
+			for _, e := range g.Edges {
+				if e != nil {
+					kept = append(kept, e)
+				}
+			}
+			g.Edges = kept
+			merged = true
+			break
+		}
+		if !merged {
+			break
+		}
+	}
+	g.rebuildAdj()
+}
+
+func reversePts(pts []geo.Pt) []geo.Pt {
+	out := make([]geo.Pt, len(pts))
+	for i, p := range pts {
+		out[len(pts)-1-i] = p
+	}
+	return out
+}
+
+// TrackCenterlines merges physical track strands into the VISUAL bundle
+// centerline network — the single smooth line each track group appears as
+// when zoomed out. Nodes fall only at physical forks; spur stubs pruned.
+func TrackCenterlines(strandPaths []Path, p Params, pruneLen float64,
+	logf func(string, ...any)) *Graph {
+	p.ContractAll = true
+	g := Build(strandPaths, p, logf)
+	g.PruneStubs(pruneLen)
+	// pruning + re-contraction create concat joints the paper's
+	// intersection smoothing never saw — smooth the node areas again, then
+	// low-pass each edge (endpoints pinned): "smooth and consistent"
+	g.smoothIntersections(p)
+	for _, e := range g.Edges {
+		if e.Line().Len() < 30 {
+			continue
+		}
+		e.Pts = geo.GaussianArc(geo.NewLine(e.Pts).Densify(8), 8)
+	}
+	return g
 }
 
 // Connects reports whether path pid genuinely continues from edge e to edge
