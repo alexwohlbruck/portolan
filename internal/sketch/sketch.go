@@ -49,6 +49,8 @@ const (
 	FailJagMaxDeg = 40.0 // max turn at uniform 12m scale, on-corridor
 	FailJagPerKm  = 1.0  // spikes >25° per km, on-corridor
 	NearM         = 25.0 // coverage radius
+	DupM          = 12.0 // two features this close to one drawn sample = doubled
+	FailDupPct    = 8.0  // max % of samples with doubled geometry (lens gate)
 )
 
 // BuildFeature is one emitted line-map feature (color + geometry in metric).
@@ -62,6 +64,7 @@ type LineScore struct {
 	Km               float64
 	Mean, P90, Max   float64
 	CoverPct, ColPct float64
+	DupPct           float64 // doubled-geometry samples (lens detector)
 	Fail             bool
 }
 
@@ -116,16 +119,24 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 		}
 		samples := l.Resample(5)
 		var devs []float64
-		colHit := 0
+		colHit, dupHit := 0, 0
 		for _, q := range samples {
 			best, bestI := math.Inf(1), -1
+			within := 0
 			grid.Near(q, 120, func(fi int) {
-				if d := lines[fi].DistTo(q); d < best {
+				d := lines[fi].DistTo(q)
+				if d < best {
 					best, bestI = d, fi
+				}
+				if d < DupM {
+					within++
 				}
 			})
 			if bestI < 0 {
 				best = 120 // beyond query reach: counts as a hole
+			}
+			if within >= 2 {
+				dupHit++ // lens: the network doubled along the drawing
 			}
 			devs = append(devs, best)
 			if bestI >= 0 && colorEq(feats[bestI].Color, dl) {
@@ -143,12 +154,14 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 		mean /= float64(len(devs))
 		p90 := devs[int(0.9*float64(len(devs)-1))]
 		coverPct := 100 * float64(cover) / float64(len(devs))
+		dupPct := 100 * float64(dupHit) / float64(len(samples))
 		ls := LineScore{
 			Label: label(dl), Km: l.Len() / 1000,
 			Mean: mean, P90: p90, Max: devs[len(devs)-1],
 			CoverPct: coverPct,
 			ColPct:   100 * float64(colHit) / float64(len(samples)),
-			Fail:     p90 > FailP90M || coverPct < FailCoverPct,
+			DupPct:   dupPct,
+			Fail:     p90 > FailP90M || coverPct < FailCoverPct || dupPct > FailDupPct,
 		}
 		if ls.Fail {
 			res.Failures++
@@ -230,15 +243,15 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 // Print writes the standard report — spike LOCATIONS included, because a
 // number you can't navigate to is a number you won't fix.
 func (r *Result) Print() {
-	fmt.Printf("  %-16s %6s %6s %6s %6s %6s %5s\n",
-		"line", "len_km", "mean", "p90", "max", "cover%", "col%")
+	fmt.Printf("  %-16s %6s %6s %6s %6s %6s %5s %5s\n",
+		"line", "len_km", "mean", "p90", "max", "cover%", "dup%", "col%")
 	for _, ls := range r.Lines {
 		flag := ""
 		if ls.Fail {
 			flag = "  <== FAIL"
 		}
-		fmt.Printf("  %-16s %6.1f %6.1f %6.1f %6.1f %6.1f %5.0f%s\n",
-			ls.Label, ls.Km, ls.Mean, ls.P90, ls.Max, ls.CoverPct, ls.ColPct, flag)
+		fmt.Printf("  %-16s %6.1f %6.1f %6.1f %6.1f %6.1f %5.1f %5.0f%s\n",
+			ls.Label, ls.Km, ls.Mean, ls.P90, ls.Max, ls.CoverPct, ls.DupPct, ls.ColPct, flag)
 	}
 	flag := ""
 	if r.JagMaxDeg > FailJagMaxDeg || r.JagPerKm > FailJagPerKm {

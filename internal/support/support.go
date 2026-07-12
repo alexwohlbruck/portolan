@@ -433,6 +433,9 @@ func (g *Graph) rebuildAdj() {
 		g.Nodes[i].Adj = nil
 	}
 	for ei, e := range g.Edges {
+		if e == nil {
+			continue
+		}
 		g.Nodes[e.From].Adj = append(g.Nodes[e.From].Adj, ei)
 		if e.To != e.From {
 			g.Nodes[e.To].Adj = append(g.Nodes[e.To].Adj, ei)
@@ -623,6 +626,67 @@ func (g *Graph) PruneStubs(minLen float64) {
 	g.contractDeg2()
 }
 
+// contractJunctionSlivers merges edges shorter than maxLen whose BOTH
+// endpoints are forks (degree ≥3) — near-coincident junction nodes.
+func (g *Graph) contractJunctionSlivers(maxLen float64) {
+	for {
+		g.rebuildAdj()
+		deg := make([]int, len(g.Nodes))
+		for _, e := range g.Edges {
+			if e == nil {
+				continue
+			}
+			deg[e.From]++
+			if e.To != e.From {
+				deg[e.To]++
+			}
+		}
+		merged := false
+		for ei, e := range g.Edges {
+			if e == nil || e.From == e.To {
+				continue
+			}
+			if e.Line().Len() >= maxLen || deg[e.From] < 3 || deg[e.To] < 3 {
+				continue
+			}
+			mid := geo.Lerp(e.Pts[0], e.Pts[len(e.Pts)-1], 0.5)
+			from, to := e.From, e.To
+			g.Nodes[from].At = mid
+			for oi, o := range g.Edges {
+				if o == nil || oi == ei {
+					continue
+				}
+				if o.From == to {
+					o.From = from
+					o.Pts[0] = mid
+				} else if o.From == from {
+					o.Pts[0] = mid
+				}
+				if o.To == to {
+					o.To = from
+					o.Pts[len(o.Pts)-1] = mid
+				} else if o.To == from {
+					o.Pts[len(o.Pts)-1] = mid
+				}
+			}
+			g.Edges[ei] = nil
+			merged = true
+			break
+		}
+		if !merged {
+			break
+		}
+	}
+	var kept []*Edge
+	for _, e := range g.Edges {
+		if e != nil && len(e.Pts) >= 2 {
+			kept = append(kept, e)
+		}
+	}
+	g.Edges = kept
+	g.rebuildAdj()
+}
+
 // contractDeg2 merges edge pairs through pass-through nodes (geometry
 // concat, occupancy union).
 func (g *Graph) contractDeg2() {
@@ -714,6 +778,10 @@ func TrackCenterlines(strandPaths []Path, p Params, pruneLen float64,
 	p.ContractAll = true
 	g := Build(strandPaths, p, logf)
 	g.PruneStubs(pruneLen)
+	// NOTE: naive junction-sliver contraction (merge short fork-fork edges
+	// to a midpoint) folds neighboring geometry into 180° hairpins — the
+	// triangle-junction fix needs node-front consolidation instead
+	// (Brosi Fig 8/18); tracked, not shipped
 	// pruning + re-contraction create concat joints the paper's
 	// intersection smoothing never saw — smooth the node areas again, then
 	// low-pass each edge (endpoints pinned): "smooth and consistent"

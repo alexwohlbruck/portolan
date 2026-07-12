@@ -64,7 +64,7 @@ func DefaultDials() Dials {
 		RefineReach: rp.Reach, StrandGap: rp.StrandGap,
 		RefineIters: float64(rp.Iters), FinishSigma: rp.FinishSigma,
 		JoinTol:     1.0,
-		TrackMergeD: 10.0,
+		TrackMergeD: 16.0, // must span island-platform track spreads (lens fix)
 		SpurPruneM:  150.0,
 		BandBase:    140,
 		Cover:       0.99,
