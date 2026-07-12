@@ -199,81 +199,33 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if err != nil {
 		return err
 	}
-	// rail modes only; patterns become support-graph input paths
-	var paths []support.Path
+	// rail modes only
+	var paths []gtfs.Pattern
 	meta := map[string]gtfs.Pattern{}
 	for _, pat := range feed.Patterns {
 		t := pat.Route.Type
 		if !(t == 0 || t == 1 || t == 2 || (t >= 100 && t < 200)) {
 			continue
 		}
-		pts := make([]geo.Pt, len(pat.Shape))
-		for i, ll := range pat.Shape {
-			pts[i] = frame.ToXY(ll)
-		}
-		pid := pat.Route.ID + "|" + pat.ShapeID
-		meta[pid] = pat
-		paths = append(paths, support.Path{
-			ID: pid, Route: pat.Route.ID, Color: routeColor(pat.Route),
-			Label: pat.Route.ShortName, Type: t, Pts: pts,
-		})
+		meta[pat.Route.ID+"|"+pat.ShapeID] = pat
+		paths = append(paths, pat)
 	}
 	logf("chart: %d rail patterns of %d total (%.1fs)",
 		len(paths), len(feed.Patterns), time.Since(t0).Seconds())
 
-	// SUPPORT GRAPH — the documented map construction
-	sg := support.Build(paths, d.supportParams(), logf)
-	if err := writeSupport(o.Out+".support.geojson", sg, frame); err != nil {
-		return err
-	}
-
-	// REFINEMENT — pull every edge onto the OSM track-bundle median
-	grid := geo.NewGrid(strandLines, 64)
-	rp := d.refineParams()
-	refined := 0
-	for _, e := range sg.Edges {
-		l := e.Line()
-		if l.Len() < 40 {
-			continue
-		}
-		var members []*geo.Line
-		seen := map[int]bool{}
-		for _, q := range l.Resample(40) {
-			grid.Near(q, rp.Reach, func(si int) {
-				if !seen[si] {
-					seen[si] = true
-					members = append(members, strandLines[si])
-				}
-			})
-		}
-		if len(members) == 0 {
-			continue // track data gap: the pattern geometry stands (bridge)
-		}
-		nl := bundle.Refine(l, members, rp)
-		// ease back into the node endpoints (offset-scaled ramps — a hard
-		// pin dumps the whole median offset into one seam kink)
-		nl = bundle.TieEnds(nl, e.Pts[0], e.Pts[len(e.Pts)-1])
-		e.Pts = nl.Pts
-		refined++
-	}
-	logf("refine: %d/%d edges pulled onto track medians (%.1fs)",
-		refined, len(sg.Edges), time.Since(t0).Seconds())
-
-	// adapter → existing ORDER/FAIR machinery
-	g, br := adapt(sg, meta)
+	// ATTRIBUTION — every pattern rides the track-centerline network as a
+	// connected walk; only true data gaps become shape bridges
+	g, br, bridges := attribute(tg, railPats(paths, meta), frame, 35, logf)
 	if err := writeGraphGeoJSON(o.Out+".graph.geojson", g, frame); err != nil {
 		return err
 	}
 	if err := writeNodes(o.Out+".nodes.geojson", g, frame); err != nil {
 		return err
 	}
-
-	// CONTINUITY GATE — a route may never break (owner's law #1)
-	broken := continuityGate(sg, logf)
-	if broken > 0 {
-		logf("GATE: %d patterns have unconnected adjacencies — routes broken", broken)
+	if bridges == 0 {
+		logf("GATE: all routes continuous on the track network")
 	} else {
-		logf("GATE: all pattern paths continuous")
+		logf("GATE: %d shape bridges (track data gaps) — routes continuous via bridges", bridges)
 	}
 
 	slots := order.Assign(g, br, 4)
@@ -286,6 +238,10 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	logf("chart: wrote %s (%.1fs total)", o.Out, time.Since(t0).Seconds())
 	return nil
+}
+
+func railPats(pats []gtfs.Pattern, _ map[string]gtfs.Pattern) []gtfs.Pattern {
+	return pats
 }
 
 // adapt converts the support graph into the corridor-graph + berth shapes

@@ -120,11 +120,11 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 	consumed := map[int]bool{}
 	for ci := range g.Corridors {
 		c := &g.Corridors[ci]
-		// a corridor shorter than the bundling span threshold is junction
-		// furniture at EVERY band (the base cut alone is 140 m) — it routes
-		// moves but never draws its own body
-		if c.Centerline.Len() < 60 ||
-			c.Centerline.Len()-cutAt(c, c.NodeA)-cutAt(c, c.NodeB) < 30 {
+		// consumed = fully inside this band's junction cuts. (The old
+		// blanket <60 m rule guarded fold-prone corridor slivers; the
+		// track-centerline network is clean — consuming by length deleted
+		// real network and holed the map.)
+		if c.Centerline.Len()-cutAt(c, c.NodeA)-cutAt(c, c.NodeB) < 15 {
 			consumed[ci] = true
 		}
 	}
@@ -158,10 +158,11 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 	// corridor chain through it (depth ≤3) so the fillet spans the whole
 	// junction throat instead of ending on a dropped sliver.
 	moves := map[[2]int]map[string]bool{}
+	chains := map[[2]int][]int{} // intermediate consumed edges of a synthesized move
 	for k, rs := range br.Moves {
 		moves[k] = rs
 	}
-	for depth := 0; depth < 3; depth++ {
+	for depth := 0; depth < 12; depth++ {
 		added := false
 		for k1, r1 := range moves {
 			t := k1[1]
@@ -187,6 +188,7 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 				}
 				if moves[nk] == nil {
 					moves[nk] = map[string]bool{}
+					chains[nk] = append(append([]int(nil), chains[k1]...), t)
 					added = true
 				}
 				for r := range shared {
@@ -236,14 +238,27 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 		// G1 fillet with ALIGNMENT-CLAMPED control points: a control arm
 		// following a tangent that opposes the chord loops the bezier into
 		// a hook (the GC-hook class) — arms shrink with disagreement
-		dir := eb.pt.Sub(ea.pt).Unit()
-		arm := math.Min(chord/3, 50)
-		da := arm * math.Max(0.05, ea.tan.Dot(dir))  // a's tangent: with the chord
-		db := arm * math.Max(0.05, -eb.tan.Dot(dir)) // b's tangent points back INTO the node
-		p0, p3 := ea.pt, eb.pt
-		p1 := p0.Add(ea.tan.Scale(da))
-		p2 := p3.Add(eb.tan.Scale(db))
-		bez := bezier(p0, p1, p2, p3, 8)
+		var bez []geo.Pt
+		if chain := chains[k]; len(chain) > 0 {
+			// pass-through transition: FOLLOW the consumed edges' real
+			// geometry (owner's law: paths ride real centerlines — a bezier
+			// chord across a junction complex cuts through the city grid).
+			// A mis-oriented chain folds — detect and fall back to a fillet.
+			bez = chainGeometry(g, ea.pt, eb.pt, chain)
+			if geo.MaxTurnDeg(geo.NewLine(bez).Resample(12)) > 60 {
+				bez = nil
+			}
+		}
+		if bez == nil {
+			dir := eb.pt.Sub(ea.pt).Unit()
+			arm := math.Min(chord/3, 50)
+			da := arm * math.Max(0.05, ea.tan.Dot(dir))  // a's tangent: with the chord
+			db := arm * math.Max(0.05, -eb.tan.Dot(dir)) // b's tangent points back INTO the node
+			p0, p3 := ea.pt, eb.pt
+			p1 := p0.Add(ea.tan.Scale(da))
+			p2 := p3.Add(eb.tan.Scale(db))
+			bez = bezier(p0, p1, p2, p3, 8)
+		}
 		// lift route moves to COLOR moves (trunked ribbons transition as one)
 		info := map[string]berth.Berth{}
 		for _, bb := range br.Berths[a] {
@@ -389,6 +404,27 @@ func nearSide(g *bundle.Graph, a, b int, consumed map[int]bool) int {
 		return ca.NodeA
 	}
 	return ca.NodeB
+}
+
+// chainGeometry threads from a's cut end through the consumed edges'
+// polylines to b's cut end, orienting each greedily by endpoint proximity,
+// then low-passes the seams.
+func chainGeometry(g *bundle.Graph, from, to geo.Pt, chain []int) []geo.Pt {
+	pts := []geo.Pt{from}
+	cur := from
+	for _, ei := range chain {
+		cl := g.Corridors[ei].Centerline
+		seg := append([]geo.Pt(nil), cl.Pts...)
+		if seg[0].Dist(cur) > seg[len(seg)-1].Dist(cur) {
+			for i, j := 0, len(seg)-1; i < j; i, j = i+1, j-1 {
+				seg[i], seg[j] = seg[j], seg[i]
+			}
+		}
+		pts = append(pts, seg...)
+		cur = pts[len(pts)-1]
+	}
+	pts = append(pts, to)
+	return geo.GaussianArc(geo.NewLine(pts).Densify(8), 10)
 }
 
 func commonNode(g *bundle.Graph, a, b int) int {
