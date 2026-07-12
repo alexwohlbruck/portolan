@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alexwohlbruck/portolan/internal/berth"
@@ -165,13 +166,13 @@ func WriteSegmentsGeoJSON(path string, segs []fair.Segment, frame geo.Frame) err
 		f.Props = map[string]any{
 			"seg": si, "kind": s.Kind,
 			"color": s.Color, "route_color": s.Color,
-			"route_id": s.Route, "label": s.Label,
+			"routes": strings.Join(s.Routes, ","), "label": s.Label,
 			"route_type": s.RouteType,
 			"slot":       s.Slot, "nslots": s.NSlots,
 			"offset_px":   round2(s.OffsetPx),
 			"off_from_px": round2(s.OffFromPx),
 			"off_to_px":   round2(s.OffToPx),
-			"corridor": s.Corridor, "to_corridor": s.ToCorr,
+			"corridor":    s.Corridor, "to_corridor": s.ToCorr,
 			"band_min": s.Band.MinZoom, "band_max": s.Band.MaxZoom,
 			"len_m": int(s.Line.Len()),
 		}

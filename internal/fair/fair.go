@@ -40,8 +40,8 @@ func DefaultBands() []Band {
 type Segment struct {
 	Kind      string // steady | transition | bridge
 	Color     string
-	Route     string
-	Label     string
+	Routes    []string // all routes of this color on the ribbon (trunked)
+	Label     string   // joined short names, e.g. "B·D·F·M"
 	RouteType int
 	Slot      int
 	NSlots    int
@@ -140,11 +140,11 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 		cB := cutAt(c, c.NodeB)
 		body := bundle.SubLine(c.Centerline, cA, c.Centerline.Len()-cB)
 		nslots := len(slots[ci])
-		for _, b := range bs {
-			slot := slotOf(slots[ci], b.RouteID)
+		for _, grp := range colorGroups(bs) {
+			slot := slotOf(slots[ci], grp.color)
 			segs = append(segs, Segment{
-				Kind: "steady", Color: b.Color, Route: b.RouteID,
-				Label: b.Label, RouteType: b.Type,
+				Kind: "steady", Color: grp.color, Routes: grp.routes,
+				Label: grp.label, RouteType: grp.rtype,
 				Slot: slot, NSlots: nslots,
 				OffsetPx:  offsetPx(slot, nslots),
 				OffFromPx: offsetPx(slot, nslots),
@@ -244,15 +244,33 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 		p1 := p0.Add(ea.tan.Scale(da))
 		p2 := p3.Add(eb.tan.Scale(db))
 		bez := bezier(p0, p1, p2, p3, 8)
-		var routes []string
-		for r := range moves[k] {
-			routes = append(routes, r)
-		}
-		sort.Strings(routes)
+		// lift route moves to COLOR moves (trunked ribbons transition as one)
 		info := map[string]berth.Berth{}
 		for _, bb := range br.Berths[a] {
 			info[bb.RouteID] = bb
 		}
+		byColor := map[string]*colorGroup{}
+		for r := range moves[k] {
+			bb, ok := info[r]
+			if !ok {
+				continue
+			}
+			gp := byColor[bb.Color]
+			if gp == nil {
+				gp = &colorGroup{color: bb.Color, rtype: bb.Type}
+				byColor[bb.Color] = gp
+			}
+			gp.routes = append(gp.routes, r)
+			if gp.label != "" {
+				gp.label += "·"
+			}
+			gp.label += bb.Label
+		}
+		var colors []string
+		for c := range byColor {
+			colors = append(colors, c)
+		}
+		sort.Strings(colors)
 		// travel-frame signs: the transition's geometry runs a-end → b-end.
 		// It agrees with a's storage frame iff it leaves a at NodeB, and with
 		// b's iff it enters b at NodeA; a disagreeing frame mirrors the
@@ -266,13 +284,17 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 		}
 		nA, nB := len(slots[a]), len(slots[b])
 		tline := geo.NewLine(bez)
-		for _, r := range routes {
-			bb := info[r]
-			sa := slotOf(slots[a], r)
-			sb := slotOf(slots[b], r)
+		for _, cclr := range colors {
+			gp := byColor[cclr]
+			sa := slotOf(slots[a], cclr)
+			sb := slotOf(slots[b], cclr)
+			if sa < 0 || sb < 0 {
+				continue
+			}
+			sort.Strings(gp.routes)
 			segs = append(segs, Segment{
-				Kind: "transition", Color: bb.Color, Route: r,
-				Label: bb.Label, RouteType: bb.Type,
+				Kind: "transition", Color: cclr, Routes: gp.routes,
+				Label: gp.label, RouteType: gp.rtype,
 				Slot: sa, NSlots: nA,
 				OffFromPx: offsetPx(sa, nA) * signA,
 				OffToPx:   offsetPx(sb, nB) * signB,
@@ -296,7 +318,8 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 			seen[kk] = true
 			segs = append(segs, Segment{
 				Kind: "bridge", Color: berthColor(br, m.Pattern.Route.ID),
-				Route: m.Pattern.Route.ID, Label: m.Pattern.Route.ShortName,
+				Routes: []string{m.Pattern.Route.ID},
+				Label:  m.Pattern.Route.ShortName,
 				RouteType: m.Pattern.Route.Type,
 				Slot:      0, NSlots: 1,
 				Corridor:  -1, ToCorr: -1, Band: band, Line: leg.Bridge,
@@ -306,13 +329,44 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 	return segs
 }
 
-func slotOf(ids []string, r string) int {
-	for i, id := range ids {
-		if id == r {
+type colorGroup struct {
+	color, label string
+	routes       []string
+	rtype        int
+}
+
+// colorGroups trunks a corridor's berths by color (deterministic order).
+func colorGroups(bs []berth.Berth) []colorGroup {
+	byColor := map[string]*colorGroup{}
+	var colors []string
+	for _, b := range bs {
+		gp := byColor[b.Color]
+		if gp == nil {
+			gp = &colorGroup{color: b.Color, rtype: b.Type}
+			byColor[b.Color] = gp
+			colors = append(colors, b.Color)
+		}
+		gp.routes = append(gp.routes, b.RouteID)
+		if gp.label != "" {
+			gp.label += "·"
+		}
+		gp.label += b.Label
+	}
+	sort.Strings(colors)
+	out := make([]colorGroup, 0, len(colors))
+	for _, c := range colors {
+		out = append(out, *byColor[c])
+	}
+	return out
+}
+
+func slotOf(colors []string, c string) int {
+	for i, cc := range colors {
+		if cc == c {
 			return i
 		}
 	}
-	return 0
+	return -1
 }
 
 // nearSide picks the node of corridor a facing corridor b — the shared node

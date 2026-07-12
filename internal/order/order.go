@@ -1,9 +1,13 @@
-// Package order is stage 5: assign each corridor's berths to slots so that
-// line crossings at nodes are minimized (LOOM's core problem, solved
+// Package order is stage 5: assign each corridor's COLOR GROUPS to slots so
+// that line crossings at nodes are minimized (LOOM's problem, solved
 // LOOM-lite: deterministic initial order + adjacent-swap descent against a
-// node-crossing cost). Order lives in each corridor's own travel frame
-// (storage A→B); positions at a node flip when the corridor arrives at its
-// NodeA end (LESSONS #12).
+// node-crossing cost).
+//
+// Slots are per COLOR, not per route: same-colored routes riding a corridor
+// share ONE ribbon (B·D·F·M is one orange trunk, not four arcs) — the
+// bundle-vs-route rule that attempt two never shipped. Order lives in each
+// corridor's own travel frame (storage A→B); positions at a node flip when
+// the corridor arrives at its NodeA end (LESSONS #12).
 package order
 
 import (
@@ -13,31 +17,51 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 )
 
-// Slots[c] = ordered route ids for corridor c (index = slot, storage frame).
+// Slots[c] = ordered COLORS for corridor c (index = slot, storage frame).
 type Slots map[int][]string
 
 func Assign(g *bundle.Graph, br *berth.Result, sweeps int) Slots {
 	slots := Slots{}
 	for ci, bs := range br.Berths {
-		ids := make([]string, len(bs))
-		for i, b := range bs {
-			ids[i] = b.RouteID
+		seen := map[string]bool{}
+		var colors []string
+		for _, b := range bs { // berths are (color, id)-sorted → deterministic
+			if !seen[b.Color] {
+				seen[b.Color] = true
+				colors = append(colors, b.Color)
+			}
 		}
-		slots[ci] = ids // berths are already (color, id)-sorted → deterministic
+		slots[ci] = colors
 	}
-	// shared-move route sets per corridor pair
+	// route→color per corridor, to lift route moves to color moves
+	colorOf := map[int]map[string]string{}
+	for ci, bs := range br.Berths {
+		m := map[string]string{}
+		for _, b := range bs {
+			m[b.RouteID] = b.Color
+		}
+		colorOf[ci] = m
+	}
 	type move struct {
 		a, b   int
-		routes []string
+		colors []string
 	}
 	var moves []move
 	for k, rs := range br.Moves {
-		var ids []string
+		set := map[string]bool{}
 		for r := range rs {
-			ids = append(ids, r)
+			if c, ok := colorOf[k[0]][r]; ok {
+				set[c] = true
+			}
 		}
-		sort.Strings(ids)
-		moves = append(moves, move{k[0], k[1], ids})
+		var cs []string
+		for c := range set {
+			cs = append(cs, c)
+		}
+		sort.Strings(cs)
+		if len(cs) > 0 {
+			moves = append(moves, move{k[0], k[1], cs})
+		}
 	}
 	sort.Slice(moves, func(i, j int) bool {
 		if moves[i].a != moves[j].a {
@@ -46,10 +70,10 @@ func Assign(g *bundle.Graph, br *berth.Result, sweeps int) Slots {
 		return moves[i].b < moves[j].b
 	})
 
-	pos := func(ci int, route string, atNodeA bool) int {
+	pos := func(ci int, color string, atNodeA bool) int {
 		s := slots[ci]
-		for i, r := range s {
-			if r == route {
+		for i, c := range s {
+			if c == color {
 				if atNodeA {
 					return len(s) - 1 - i
 				}
@@ -58,36 +82,32 @@ func Assign(g *bundle.Graph, br *berth.Result, sweeps int) Slots {
 		}
 		return -1
 	}
-	sharedNode := func(a, b int) (int, bool, bool) {
+	sharedFrames := func(a, b int) (bool, bool) {
 		ca, cb := g.Corridors[a], g.Corridors[b]
-		// returns node, aAtNodeA, bAtNodeA
 		switch {
 		case ca.NodeB == cb.NodeA:
-			return ca.NodeB, false, true
+			return false, true
 		case ca.NodeB == cb.NodeB:
-			return ca.NodeB, false, false
+			return false, false
 		case ca.NodeA == cb.NodeA:
-			return ca.NodeA, true, true
-		case ca.NodeA == cb.NodeB:
-			return ca.NodeA, true, false
+			return true, true
+		default:
+			return true, false
 		}
-		return -1, false, false
 	}
 	crossings := func() int {
 		total := 0
 		for _, m := range moves {
-			_, aA, bA := sharedNode(m.a, m.b)
-			for i := 0; i < len(m.routes); i++ {
-				for j := i + 1; j < len(m.routes); j++ {
-					pa1, pa2 := pos(m.a, m.routes[i], aA), pos(m.a, m.routes[j], aA)
-					pb1, pb2 := pos(m.b, m.routes[i], bA), pos(m.b, m.routes[j], bA)
+			aA, bA := sharedFrames(m.a, m.b)
+			for i := 0; i < len(m.colors); i++ {
+				for j := i + 1; j < len(m.colors); j++ {
+					pa1, pa2 := pos(m.a, m.colors[i], aA), pos(m.a, m.colors[j], aA)
+					pb1, pb2 := pos(m.b, m.colors[i], bA), pos(m.b, m.colors[j], bA)
 					if pa1 < 0 || pa2 < 0 || pb1 < 0 || pb2 < 0 {
 						continue
 					}
-					// crossing: order flips through the node (positions
-					// compared in each corridor's frame facing the node —
-					// continuity means same left-to-right order, which is
-					// REVERSED between "arriving" and "leaving" frames)
+					// continuity through a node preserves left-to-right order,
+					// which is REVERSED between arriving and leaving frames
 					if (pa1-pa2)*(pb1-pb2) > 0 {
 						total++
 					}
