@@ -150,38 +150,8 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		return err
 	}
 
-	// TRACK-GROUP CENTERLINES — the merged line each parallel track group
-	// visually forms (mainline only; spur stubs pruned; nodes at physical
-	// forks). This network is what the hand-drawn sketches depict.
-	var spaths []support.Path
-	for i, s := range strands {
-		if s.Line.Len() < 60 {
-			continue // crossover/fragment: never mainline on its own
-		}
-		spaths = append(spaths, support.Path{ID: fmt.Sprintf("s%d", i), Pts: s.Line.Pts})
-	}
-	var tg *support.Graph
-	if d.UseTrace >= 1 {
-		tg = bundle.StringTrace(strands, bundle.DefaultTraceParams(), logf)
-	} else {
-		var spaths []support.Path
-		for i, s := range strands {
-			if s.Line.Len() >= 60 {
-				spaths = append(spaths, support.Path{ID: fmt.Sprintf("s%d", i), Pts: s.Line.Pts})
-			}
-		}
-		tp := d.supportParams()
-		tp.MergeD = d.TrackMergeD
-		tp.SmoothD = d.TrackMergeD
-		tg = support.TrackCenterlines(spaths, tp, d.SpurPruneM, logf)
-	}
-	logf("trackcenter: %d edges, %d nodes (%.1fs)",
-		len(tg.Edges), len(tg.Nodes), time.Since(t0).Seconds())
-	if err := writeSupport(o.Out+".trackcenter.geojson", tg, frame); err != nil {
-		return err
-	}
-
 	if o.GTFS == "" {
+
 		logf("chart: no GTFS — strands dump only")
 		return nil
 	}
@@ -203,9 +173,28 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	logf("chart: %d rail patterns of %d total (%.1fs)",
 		len(paths), len(feed.Patterns), time.Since(t0).Seconds())
 
-	// ATTRIBUTION — every pattern rides the track-centerline network as a
-	// connected walk; only true data gaps become shape bridges
-	g, br, bridges := attribute(tg, railPats(paths, meta), frame, 35, logf)
+	// BUNDLE THE ROUTES FIRST (Transit-app order): support-graph map
+	// construction on the GTFS pattern shapes — continuity is structural
+	var spaths []support.Path
+	for _, pat := range paths {
+		pts := make([]geo.Pt, len(pat.Shape))
+		for i, ll := range pat.Shape {
+			pts[i] = frame.ToXY(ll)
+		}
+		spaths = append(spaths, support.Path{
+			ID: pat.Route.ID + "|" + pat.ShapeID, Route: pat.Route.ID,
+			Pts: pts,
+		})
+	}
+	sg := support.Build(spaths, d.supportParams(), logf)
+	// THEN path-match the bundled edges onto the real tracks: center-most
+	// strand, jumping forbidden (switch only where the strand ends)
+	snapToTracks(sg, strandLines, d.RefineReach, logf)
+	if err := writeSupport(o.Out+".trackcenter.geojson", sg, frame); err != nil {
+		return err
+	}
+	g, br := adapt(sg, meta)
+	bridges := 0
 	if err := writeGraphGeoJSON(o.Out+".graph.geojson", g, frame); err != nil {
 		return err
 	}
