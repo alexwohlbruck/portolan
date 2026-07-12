@@ -1,0 +1,17 @@
+# Hot reload for the atlas workbench: `make atlas` (or `air`) rebuilds and
+# restarts the server on any .go change. UI assets (internal/atlas/*.html|js)
+# are served live from disk and DON'T need a restart — just refresh the page.
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/portolan ./cmd/portolan"
+bin = "./tmp/portolan"
+args_bin = ["atlas", "--config", "portolan.json"]
+include_ext = ["go"]
+exclude_dir = ["build", "sketches", "testdata", "tmp", "docs"]
+delay = 200
+kill_delay = "500ms"
+
+[log]
+main_only = true

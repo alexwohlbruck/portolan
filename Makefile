@@ -11,8 +11,12 @@ smoke: build
 	$(GO) run ./cmd/portolan chart --rail testdata/nyc-rail.geojson --out /tmp/portolan-smoke.geojson
 	$(GO) run ./cmd/portolan sound --network testdata/sketches/nyc.json --build /tmp/portolan-smoke.geojson || true
 
+# hot reload: air rebuilds+restarts on .go changes; HTML/JS assets are
+# served live from disk (refresh only). Install: go install github.com/air-verse/air@latest
 atlas:
-	$(GO) run ./cmd/portolan atlas --sketches ./sketches
+	@command -v air >/dev/null 2>&1 || command -v $$HOME/go/bin/air >/dev/null 2>&1 || \
+		(echo "air not found — go install github.com/air-verse/air@latest" && exit 1)
+	@PATH=$$PATH:$$HOME/go/bin air
 
 nyc: build
 	$(GO) run ./cmd/portolan chart --gtfs ~/Documents/code/barrelman/data/gtfs/5.zip \

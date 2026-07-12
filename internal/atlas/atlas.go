@@ -85,22 +85,39 @@ func NewServer(configPath, maplibreDir string) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) Handler() http.Handler {
-	editor := bytes.ReplaceAll(editorHTML, []byte("%LOCS%"), []byte(locsJSON))
-	editor = bytes.ReplaceAll(editor, []byte("%SWATCHES%"), []byte(swatchesJSON))
-	editor = append(editor, []byte(`<script src="/nav.js"></script>`)...)
-	mapPage := append(append([]byte(nil), mapHTML...), []byte(`<script src="/nav.js"></script>`)...)
-
-	mux := http.NewServeMux()
-	serve := func(path string, body []byte, ctype string) {
-		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", ctype)
-			w.Write(body)
-		})
+// asset serves a UI file LIVE FROM DISK when the source tree is present
+// (edit internal/atlas/*.html|js → refresh, no rebuild), falling back to
+// the embedded copy in a standalone binary.
+func asset(name string, embedded []byte) []byte {
+	if raw, err := os.ReadFile(filepath.Join("internal", "atlas", name)); err == nil {
+		return raw
 	}
-	serve("/sketch", editor, "text/html; charset=utf-8")
-	serve("/map", mapPage, "text/html; charset=utf-8")
-	serve("/nav.js", navJS, "application/javascript")
+	return embedded
+}
+
+func (s *Server) Handler() http.Handler {
+	render := func(name string, embedded []byte, inject bool) []byte {
+		body := asset(name, embedded)
+		if inject {
+			body = bytes.ReplaceAll(body, []byte("%LOCS%"), []byte(locsJSON))
+			body = bytes.ReplaceAll(body, []byte("%SWATCHES%"), []byte(swatchesJSON))
+		}
+		return append(append([]byte(nil), body...),
+			[]byte(`<script src="/nav.js"></script>`)...)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sketch", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(render("editor.html", editorHTML, true))
+	})
+	mux.HandleFunc("/map", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(render("map.html", mapHTML, false))
+	})
+	mux.HandleFunc("/nav.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Write(asset("nav.js", navJS))
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			http.Redirect(w, r, "/map", http.StatusFound)
