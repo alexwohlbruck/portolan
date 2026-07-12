@@ -189,9 +189,38 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		})
 	}
 	sg := support.Build(spaths, d.supportParams(), logf)
-	// THEN path-match the bundled edges onto the real tracks: center-most
-	// strand, jumping forbidden (switch only where the strand ends)
-	snapToTracks(sg, strandLines, d.RefineReach, logf)
+	// THEN the v29 precision centerline (the owner's "perfect centerline
+	// down any group of tracks"): pull every bundled edge onto the MEDIAN
+	// STRAND of its track group — cross-section intersections, curve-
+	// following probes, offset-series ramps (bundle.Refine, ported from
+	// barrelman stage3). No single-track path matching.
+	grid := geo.NewGrid(strandLines, 64)
+	rp := d.refineParams()
+	refined := 0
+	for _, e := range sg.Edges {
+		l := e.Line()
+		if l.Len() < 40 {
+			continue
+		}
+		var members []*geo.Line
+		seen := map[int]bool{}
+		for _, q := range l.Resample(40) {
+			grid.Near(q, rp.Reach, func(si int) {
+				if !seen[si] {
+					seen[si] = true
+					members = append(members, strandLines[si])
+				}
+			})
+		}
+		if len(members) == 0 {
+			continue // track data gap: bundled geometry stands
+		}
+		nl := bundle.Refine(l, members, rp)
+		nl = bundle.TieEnds(nl, e.Pts[0], e.Pts[len(e.Pts)-1])
+		e.Pts = nl.Pts
+		refined++
+	}
+	logf("refine: %d/%d edges on track-group medians", refined, len(sg.Edges))
 	if err := writeSupport(o.Out+".trackcenter.geojson", sg, frame); err != nil {
 		return err
 	}
