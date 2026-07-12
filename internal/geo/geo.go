@@ -268,3 +268,27 @@ func GaussianArc(pts []Pt, sigma float64) []Pt {
 }
 
 func sq(x float64) float64 { return x * x }
+
+// ProjectArc returns the arc position of the closest point on the line to p
+// (and the distance). Used for lateral correspondence between parallel
+// strands — never for centerline geometry (LESSONS #2).
+func (l *Line) ProjectArc(p Pt) (float64, float64) {
+	bestD := math.Inf(1)
+	bestArc := 0.0
+	for i := 1; i < len(l.Pts); i++ {
+		a, b := l.Pts[i-1], l.Pts[i]
+		ab := b.Sub(a)
+		n2 := ab.Dot(ab)
+		t := 0.0
+		if n2 > 1e-18 {
+			t = math.Max(0, math.Min(1, p.Sub(a).Dot(ab)/n2))
+		}
+		q := a.Add(ab.Scale(t))
+		d := p.Dist(q)
+		if d < bestD {
+			bestD = d
+			bestArc = l.arc[i-1] + a.Dist(q)
+		}
+	}
+	return bestArc, bestD
+}

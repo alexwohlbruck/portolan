@@ -38,7 +38,7 @@ func DefaultSoundParams() SoundParams {
 		MinGap:      1.0,
 		MaxGap:      12.0,
 		MinSpan:     60.0,
-		MinParallel: 0.82,
+		MinParallel: 0.94, // ~20°: bundle mates share heading; crossings don't
 	}
 }
 

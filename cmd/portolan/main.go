@@ -85,16 +85,13 @@ func chart(args []string) {
 		tracks[i] = bundle.Track{ID: w.ID, Line: geo.NewLine(pts)}
 	}
 
-	mates := bundle.Sound(tracks, bundle.DefaultSoundParams())
-	fmt.Fprintf(os.Stderr, "sound: %d mate intervals (%.1fs)\n",
-		len(mates), time.Since(t0).Seconds())
-	bundles := bundle.Bundles(tracks, mates, bundle.DefaultParams())
-	fmt.Fprintf(os.Stderr, "bundle: %d bundles (%.1fs)\n",
-		len(bundles), time.Since(t0).Seconds())
+	g := bundle.BuildGraph(tracks, bundle.DefaultGraphParams())
+	fmt.Fprintf(os.Stderr, "bundle: %d strands, %d corridors, %d nodes (%.1fs)\n",
+		len(g.Strands), len(g.Corridors), len(g.Nodes), time.Since(t0).Seconds())
 
-	die(writeGeoJSON(*out, bundles, frame))
+	die(writeGraphGeoJSON(*out, g, frame))
 	fmt.Fprintf(os.Stderr, "chart: wrote %s (%.1fs total)\n", *out, time.Since(t0).Seconds())
-	fmt.Fprintln(os.Stderr, "NOTE: stages BERTH/ORDER/FAIR not wired yet — output is bundle centerlines")
+	_ = feed
 }
 
 func sound(args []string) {
@@ -141,6 +138,44 @@ func frameOf(ways []osm.Way) geo.Frame {
 		}
 	}
 	return geo.NewFrame(geo.LL{Lon: (minLon + maxLon) / 2, Lat: (minLat + maxLat) / 2})
+}
+
+func writeGraphGeoJSON(path string, g *bundle.Graph, frame geo.Frame) error {
+	type feature struct {
+		Type  string         `json:"type"`
+		Props map[string]any `json:"properties"`
+		Geom  struct {
+			Type   string       `json:"type"`
+			Coords [][2]float64 `json:"coordinates"`
+		} `json:"geometry"`
+	}
+	var fc struct {
+		Type     string    `json:"type"`
+		Features []feature `json:"features"`
+	}
+	fc.Type = "FeatureCollection"
+	for _, c := range g.Corridors {
+		var f feature
+		f.Type = "Feature"
+		f.Props = map[string]any{
+			"corridor": c.ID, "strands": len(c.Strands),
+			"node_a": c.NodeA, "node_b": c.NodeB,
+			"len_m": int(c.Centerline.Len()),
+		}
+		f.Geom.Type = "LineString"
+		for _, p := range c.Centerline.Resample(8) {
+			ll := frame.ToLL(p)
+			f.Geom.Coords = append(f.Geom.Coords, [2]float64{ll.Lon, ll.Lat})
+		}
+		if len(f.Geom.Coords) >= 2 {
+			fc.Features = append(fc.Features, f)
+		}
+	}
+	raw, err := json.Marshal(fc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
 }
 
 func writeGeoJSON(path string, bundles []bundle.Bundle, frame geo.Frame) error {
