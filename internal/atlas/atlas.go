@@ -3,14 +3,19 @@
 package atlas
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 //go:embed editor.html
@@ -20,14 +25,27 @@ var editorHTML []byte
 // per feed under dir as network-<feed>.json — the owner's hand work: writes
 // are ATOMIC (temp file + rename), and nothing here ever regenerates one.
 type Server struct {
-	Dir string // sketches directory
+	Dir   string // sketches directory
+	Build string // optional chart output GeoJSON for the /api/features overlay
+
+	mu       sync.Mutex
+	buildMod time.Time
+	feats    []overlayFeat
+}
+
+type overlayFeat struct {
+	raw          json.RawMessage
+	minLon, minLat float64
+	maxLon, maxLat float64
 }
 
 func (s *Server) Handler() http.Handler {
+	page := bytes.ReplaceAll(editorHTML, []byte("%LOCS%"), []byte(locsJSON))
+	page = bytes.ReplaceAll(page, []byte("%SWATCHES%"), []byte(swatchesJSON))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sketch", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(editorHTML)
+		w.Write(page)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -37,13 +55,99 @@ func (s *Server) Handler() http.Handler {
 		http.NotFound(w, r)
 	})
 	mux.HandleFunc("/api/network", s.network)
-	mux.HandleFunc("/api/features", func(w http.ResponseWriter, r *http.Request) {
-		// build-overlay probe: served once chart output wiring lands;
-		// the editor degrades gracefully on an empty collection
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
-	})
+	mux.HandleFunc("/api/features", s.features)
 	return mux
+}
+
+// features serves the current chart output (z15 band) around a point, hot
+// reloading the file when it changes — rebuild with `portolan chart`,
+// refresh the editor, see the new build under the drawing.
+func (s *Server) features(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	lat, e1 := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
+	lon, e2 := strconv.ParseFloat(r.URL.Query().Get("lon"), 64)
+	rad, e3 := strconv.ParseFloat(r.URL.Query().Get("r"), 64)
+	if s.Build == "" || e1 != nil || e2 != nil || e3 != nil {
+		fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
+		return
+	}
+	if err := s.loadBuild(); err != nil {
+		fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
+		return
+	}
+	dlat := rad / 111320.0
+	dlon := rad / (111320.0 * math.Cos(lat*math.Pi/180))
+	x0, x1 := lon-dlon, lon+dlon
+	y0, y1 := lat-dlat, lat+dlat
+	var picked []json.RawMessage
+	s.mu.Lock()
+	for _, f := range s.feats {
+		if f.maxLon < x0 || f.minLon > x1 || f.maxLat < y0 || f.minLat > y1 {
+			continue
+		}
+		picked = append(picked, f.raw)
+	}
+	s.mu.Unlock()
+	out := map[string]any{"type": "FeatureCollection", "features": picked}
+	if picked == nil {
+		out["features"] = []json.RawMessage{}
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) loadBuild() error {
+	st, err := os.Stat(s.Build)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st.ModTime().Equal(s.buildMod) {
+		return nil
+	}
+	raw, err := os.ReadFile(s.Build)
+	if err != nil {
+		return err
+	}
+	var fc struct {
+		Features []json.RawMessage `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		return err
+	}
+	var feats []overlayFeat
+	for _, fr := range fc.Features {
+		var f struct {
+			Props struct {
+				BandMin *int `json:"band_min"`
+				BandMax *int `json:"band_max"`
+			} `json:"properties"`
+			Geometry struct {
+				Coords [][2]float64 `json:"coordinates"`
+			} `json:"geometry"`
+		}
+		if err := json.Unmarshal(fr, &f); err != nil {
+			continue
+		}
+		if f.Props.BandMax != nil && *f.Props.BandMax < 15 {
+			continue
+		}
+		if f.Props.BandMin != nil && *f.Props.BandMin > 15 {
+			continue
+		}
+		of := overlayFeat{raw: fr, minLon: 999, minLat: 999, maxLon: -999, maxLat: -999}
+		for _, c := range f.Geometry.Coords {
+			of.minLon = math.Min(of.minLon, c[0])
+			of.maxLon = math.Max(of.maxLon, c[0])
+			of.minLat = math.Min(of.minLat, c[1])
+			of.maxLat = math.Max(of.maxLat, c[1])
+		}
+		feats = append(feats, of)
+	}
+	s.feats = feats
+	s.buildMod = st.ModTime()
+	log.Printf("atlas: overlay loaded %d z15 features from %s", len(feats), s.Build)
+	return nil
 }
 
 func (s *Server) path(feed string) (string, error) {

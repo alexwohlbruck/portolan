@@ -156,8 +156,9 @@ func atlasCmd(args []string) {
 	fs := flag.NewFlagSet("atlas", flag.ExitOnError)
 	dir := fs.String("sketches", "sketches", "sketch storage directory")
 	addr := fs.String("addr", "127.0.0.1:8765", "listen address")
+	buildPath := fs.String("build", "", "chart output GeoJSON for the build overlay (hot-reloaded)")
 	fs.Parse(args)
-	die((&atlas.Server{Dir: *dir}).ListenAndServe(*addr))
+	die((&atlas.Server{Dir: *dir, Build: *buildPath}).ListenAndServe(*addr))
 }
 
 func frameOf(ways []osm.Way) geo.Frame {
