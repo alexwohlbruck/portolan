@@ -46,8 +46,10 @@ func chart(args []string) {
 		fs.Usage()
 		os.Exit(2)
 	}
+	d := pipeline.DefaultDials()
+	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
-		GTFS: *gtfsPath, Rail: *railPath, Out: *out, Cover: *cover,
+		GTFS: *gtfsPath, Rail: *railPath, Out: *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 	die(err)
 }

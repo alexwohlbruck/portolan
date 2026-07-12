@@ -125,8 +125,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/network", s.network)
 	mux.HandleFunc("/api/features", s.features)
 	mux.HandleFunc("/api/build.geojson", s.fileFor(func(f FeedCfg) string { return f.Out }))
-	mux.HandleFunc("/api/graph.geojson", s.fileFor(func(f FeedCfg) string { return f.Out + ".graph.geojson" }))
 	mux.HandleFunc("/api/rail.geojson", s.fileFor(func(f FeedCfg) string { return f.Rail }))
+	for _, st := range []string{"strands", "support", "graph", "nodes"} {
+		stage := st
+		mux.HandleFunc("/api/"+stage+".geojson",
+			s.fileFor(func(f FeedCfg) string { return f.Out + "." + stage + ".geojson" }))
+	}
+	mux.HandleFunc("/api/locations", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, locsJSON)
+	})
+	mux.HandleFunc("/api/params", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(pipeline.DefaultDials())
+	})
 	mux.HandleFunc("/api/run", s.run)
 	mux.HandleFunc("/api/run/status", s.runStatus)
 	return mux
@@ -190,12 +202,19 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		s.runMu.Unlock()
 		log.Println(line)
 	}
+	var dials *pipeline.Dials
+	if r.Body != nil {
+		d := pipeline.DefaultDials()
+		if err := json.NewDecoder(r.Body).Decode(&d); err == nil {
+			dials = &d
+		}
+	}
 	go func() {
 		var err error
 		switch cmd {
 		case "chart":
 			err = pipeline.Chart(pipeline.ChartOpts{
-				GTFS: fc.GTFS, Rail: fc.Rail, Out: fc.Out,
+				GTFS: fc.GTFS, Rail: fc.Rail, Out: fc.Out, Dials: dials,
 			}, logf)
 		case "sound":
 			net := fc.Network

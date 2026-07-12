@@ -9,10 +9,22 @@ html,body{margin:0;height:100%;background:#111}
 </style>
 <div id="map"></div>
 <div id="layers">
+  <b style="opacity:.7">stages</b>
   <label><input type="checkbox" id="ck-final" checked> final ribbons</label>
-  <label><input type="checkbox" id="ck-graph"> corridor graph</label>
-  <label><input type="checkbox" id="ck-rail"> OSM tracks</label>
+  <label><input type="checkbox" id="ck-support"> support graph</label>
+  <label><input type="checkbox" id="ck-graph"> refined edges</label>
+  <label><input type="checkbox" id="ck-nodes"> nodes</label>
+  <label><input type="checkbox" id="ck-strands"> track strands</label>
+  <label><input type="checkbox" id="ck-rail"> OSM tracks (raw)</label>
   <label><input type="checkbox" id="ck-sketch"> sketch overlay</label>
+  <label><input type="checkbox" id="ck-base" checked> basemap</label>
+  <hr style="border-color:#333">
+  <b style="opacity:.7">problem areas</b>
+  <select id="probsel" style="width:100%;background:#222;color:#ddd;border:1px solid #333;border-radius:6px;padding:3px"></select>
+  <hr style="border-color:#333">
+  <details id="dials"><summary style="cursor:pointer"><b style="opacity:.7">tuning dials</b></summary>
+    <div id="dialgrid" style="display:grid;grid-template-columns:auto 5.5em;gap:2px 6px;margin-top:6px;font-size:12px"></div>
+  </details>
 </div>
 <script>
 // Embedded/background panes report the tab as hidden; requestAnimationFrame
@@ -70,16 +82,29 @@ const BANDS = [
 ];
 
 map.on('load', async () => {
-  map.addSource('build',  {type:'geojson', data:'/api/build.geojson?feed='+FEED,  lineMetrics:true});
-  map.addSource('graph',  {type:'geojson', data:'/api/graph.geojson?feed='+FEED});
-  map.addSource('rail',   {type:'geojson', data:'/api/rail.geojson?feed='+FEED});
-  map.addSource('sketch', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
+  map.addSource('build',   {type:'geojson', data:'/api/build.geojson?feed='+FEED,  lineMetrics:true});
+  map.addSource('graph',   {type:'geojson', data:'/api/graph.geojson?feed='+FEED});
+  map.addSource('support', {type:'geojson', data:'/api/support.geojson?feed='+FEED});
+  map.addSource('strands', {type:'geojson', data:'/api/strands.geojson?feed='+FEED});
+  map.addSource('nodes',   {type:'geojson', data:'/api/nodes.geojson?feed='+FEED});
+  map.addSource('rail',    {type:'geojson', data:'/api/rail.geojson?feed='+FEED});
+  map.addSource('sketch',  {type:'geojson', data:{type:'FeatureCollection',features:[]}});
 
   map.addLayer({id:'rail', type:'line', source:'rail',
     paint:{'line-color':'#8a8a8a','line-width':0.8,'line-opacity':0.7},
     layout:{visibility:'none'}});
+  map.addLayer({id:'strands', type:'line', source:'strands',
+    paint:{'line-color':'#c26bd1','line-width':1.4,'line-opacity':0.8},
+    layout:{visibility:'none'}});
+  map.addLayer({id:'support', type:'line', source:'support',
+    paint:{'line-color':'#d17f16','line-width':2,'line-opacity':0.85},
+    layout:{visibility:'none'}});
   map.addLayer({id:'graph', type:'line', source:'graph',
-    paint:{'line-color':'#0aa','line-width':2,'line-opacity':0.7},
+    paint:{'line-color':'#0aa','line-width':2,'line-opacity':0.8},
+    layout:{visibility:'none'}});
+  map.addLayer({id:'nodes', type:'circle', source:'nodes',
+    paint:{'circle-radius':['+',2,['get','degree']],'circle-color':'#e33',
+           'circle-opacity':0.8,'circle-stroke-color':'#fff','circle-stroke-width':1},
     layout:{visibility:'none'}});
 
   for (const b of BANDS) {
@@ -113,18 +138,52 @@ map.on('load', async () => {
     'ck-final': BANDS.flatMap(b=>['steady','transition','bridge']
                  .flatMap(k=>[`casing-${b.key}-${k}`,`line-${b.key}-${k}`])),
     'ck-graph': ['graph'], 'ck-rail': ['rail'], 'ck-sketch': ['sketch'],
+    'ck-support': ['support'], 'ck-strands': ['strands'],
+    'ck-nodes': ['nodes'], 'ck-base': ['base'],
   };
   for (const [ck, ids] of Object.entries(toggles)) {
     document.getElementById(ck).onchange = e => ids.forEach(id =>
       map.setLayoutProperty(id,'visibility', e.target.checked?'visible':'none'));
   }
+
+  // problem-area dropdown: named locations, zoom on select
+  const locs = await (await fetch('/api/locations')).json();
+  const sel = document.getElementById('probsel');
+  sel.append(new Option('— jump to problem area —',''));
+  for (const [key,name,lat,lon,feed] of locs) {
+    if (feed !== FEED) continue;
+    const o = new Option(name, key);
+    o.dataset.lat = lat; o.dataset.lon = lon;
+    sel.append(o);
+  }
+  sel.onchange = () => {
+    const o = sel.selectedOptions[0];
+    if (o && o.dataset.lat) map.jumpTo({center:[+o.dataset.lon,+o.dataset.lat], zoom:15.5});
+  };
+
+  // tuning dials: generated from /api/params, POSTed with rebuild
+  const params = await (await fetch('/api/params')).json();
+  const grid = document.getElementById('dialgrid');
+  for (const [k,v] of Object.entries(params)) {
+    const lab = document.createElement('label');
+    lab.textContent = k;
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = 'any'; inp.value = v; inp.id = 'dial-'+k;
+    inp.style.cssText = 'background:#222;color:#ddd;border:1px solid #333;border-radius:4px;padding:1px 4px;width:5.5em';
+    grid.append(lab, inp);
+  }
+  window.portolanDials = () => {
+    const out = {};
+    for (const k of Object.keys(params)) out[k] = +document.getElementById('dial-'+k).value;
+    return out;
+  };
 });
 
 // nav.js hook: reload sources after a rebuild finishes
 window.portolanReload = () => {
-  for (const s of ['build','graph']) {
+  for (const s of ['build','graph','support','strands','nodes']) {
     const src = map.getSource(s);
-    if (src) src.setData(`/api/${s}.geojson?feed=${FEED}&t=${Date.now()}`);
+    if (src) src.setData(`/api/${s === 'build' ? 'build' : s}.geojson?feed=${FEED}&t=${Date.now()}`);
   }
 };
 </script>

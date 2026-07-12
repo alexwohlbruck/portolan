@@ -54,7 +54,9 @@
     b.style.cssText = 'background:#2c4a6e;color:#fff;border:0;border-radius:8px;' +
       'padding:4px 12px;cursor:pointer;font:600 12px system-ui';
     b.onclick = async () => {
-      const r = await fetch('/api/run?cmd=' + cmd + '&feed=' + FEED, { method: 'POST' });
+      const body = (cmd === 'chart' && window.portolanDials) ? JSON.stringify(window.portolanDials()) : null;
+      const r = await fetch('/api/run?cmd=' + cmd + '&feed=' + FEED,
+        { method: 'POST', body, headers: body ? {'Content-Type':'application/json'} : {} });
       if (r.status === 409) { alert('a run is already in progress'); return; }
       logBox.style.display = 'block';
       logBox.textContent = '… ' + cmd + ' started\n';
