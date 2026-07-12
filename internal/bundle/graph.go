@@ -175,6 +175,22 @@ func BuildGraph(tracks []Track, p GraphParams) *Graph {
 	// each mate so piece boundaries align bundle-wide. Without this, cuts
 	// stagger across parallel strands and transitive union CHAINS pieces
 	// down the trunk (65 km member-arc groups with 10 km centerlines).
+	// a tangent REVERSAL (switchback through a crossover) is a fork event:
+	// without a cut there, the out- and back-passes fuse into one piece and
+	// the corridor centerline doubles over itself (smooth, invisible to
+	// angle gates, caught by the simplicity gate at Kingston)
+	for si := range strands {
+		l := lines[si]
+		for a := 60.0; a < l.Len()-60; a += 20 {
+			t0 := l.TangentAtArc(a-50, 15)
+			t1 := l.TangentAtArc(a+50, 15)
+			if t0.Dot(t1) < -0.7 {
+				ownCuts[si] = append(ownCuts[si], a)
+				a += 80
+			}
+		}
+		sort.Float64s(ownCuts[si])
+	}
 	induced := make([][]float64, len(strands))
 	propagate := func(si int, arc float64) {
 		pt := lines[si].AtArc(arc)
@@ -360,24 +376,14 @@ func BuildGraph(tracks []Track, p GraphParams) *Graph {
 			}
 			continue
 		}
-		// per-strand RUNS: staggered cuts (≤MinState) chain pieces of the
-		// same corridor along a trunk — merge each strand's intervals so the
-		// spine covers the corridor's full extent, not one piece's
-		runOf := map[int][2]float64{}
-		for _, m := range members {
-			r, ok := runOf[m.Strand]
-			if !ok {
-				runOf[m.Strand] = [2]float64{m.From, m.To}
-				continue
-			}
-			r[0] = math.Min(r[0], m.From)
-			r[1] = math.Max(r[1], m.To)
-			runOf[m.Strand] = r
-		}
+		// members are the pieces themselves — merging a strand's intervals
+		// doubled switchback passes into one run. Fork-event propagation
+		// aligns boundaries; extendSpine (with anti-fold guards) grows the
+		// spine to the corridor's full extent.
 		var memberLines []*geo.Line
 		var spine *geo.Line
-		for si, r := range runOf {
-			sub := SubLine(strands[si].Line, r[0], r[1])
+		for _, m := range members {
+			sub := SubLine(strands[m.Strand].Line, m.From, m.To)
 			memberLines = append(memberLines, sub)
 			if spine == nil || sub.Len() > spine.Len() {
 				spine = sub
@@ -600,10 +606,12 @@ func extendSpine(spine *geo.Line, members []*geo.Line) *geo.Line {
 				default:
 					continue
 				}
-				// an "extension" that runs ALONGSIDE the spine is the
-				// opposite leg of a balloon loop folding back — refining
-				// both passes onto the midline draws a 180° hairpin
-				if spine.DistTo(ext.AtArc(ext.Len()/2)) < 14 {
+				// an "extension" that starts by running ALONGSIDE the spine
+				// is a fold-back (balloon leg, or a run that retraces before
+				// diverging — the Kingston out-and-back): a genuine
+				// continuation leaves immediately
+				if spine.DistTo(ext.AtArc(math.Min(60, ext.Len()/2))) < 14 ||
+					spine.DistTo(ext.AtArc(ext.Len()/2)) < 14 {
 					continue
 				}
 				if tail {

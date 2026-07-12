@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"github.com/alexwohlbruck/portolan/internal/atlas"
+	"github.com/alexwohlbruck/portolan/internal/berth"
 	"github.com/alexwohlbruck/portolan/internal/bundle"
+	"github.com/alexwohlbruck/portolan/internal/fair"
+	"github.com/alexwohlbruck/portolan/internal/order"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/osm"
@@ -89,9 +92,38 @@ func chart(args []string) {
 	fmt.Fprintf(os.Stderr, "bundle: %d strands, %d corridors, %d nodes (%.1fs)\n",
 		len(g.Strands), len(g.Corridors), len(g.Nodes), time.Since(t0).Seconds())
 
-	die(writeGraphGeoJSON(*out, g, frame))
+	if len(feed.Patterns) == 0 {
+		die(writeGraphGeoJSON(*out, g, frame))
+		fmt.Fprintf(os.Stderr, "chart: wrote %s (corridor graph only; %.1fs)\n",
+			*out, time.Since(t0).Seconds())
+		return
+	}
+	// rail modes only: bus shapes matched onto rail corridors are garbage.
+	// (GTFS route_type: 0 tram, 1 subway, 2 rail; extended 1xx rail codes.)
+	var rail []gtfs.Pattern
+	for _, pat := range feed.Patterns {
+		t := pat.Route.Type
+		if t == 0 || t == 1 || t == 2 || (t >= 100 && t < 200) {
+			rail = append(rail, pat)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "berth: %d rail patterns of %d total\n",
+		len(rail), len(feed.Patterns))
+	br := berth.MatchAll(g, rail, frame, berth.DefaultParams())
+	nb := 0
+	for _, bs := range br.Berths {
+		nb += len(bs)
+	}
+	fmt.Fprintf(os.Stderr, "berth: %d matches, %d berths, %d moves (%.1fs)\n",
+		len(br.Matches), nb, len(br.Moves), time.Since(t0).Seconds())
+	slots := order.Assign(g, br, 4)
+	fmt.Fprintf(os.Stderr, "order: slots on %d corridors (%.1fs)\n",
+		len(slots), time.Since(t0).Seconds())
+	segs := fair.Build(g, br, slots, fair.DefaultBands())
+	fmt.Fprintf(os.Stderr, "fair: %d segments across %d bands (%.1fs)\n",
+		len(segs), len(fair.DefaultBands()), time.Since(t0).Seconds())
+	die(writeSegmentsGeoJSON(*out, segs, frame))
 	fmt.Fprintf(os.Stderr, "chart: wrote %s (%.1fs total)\n", *out, time.Since(t0).Seconds())
-	_ = feed
 }
 
 func sound(args []string) {
@@ -138,6 +170,51 @@ func frameOf(ways []osm.Way) geo.Frame {
 		}
 	}
 	return geo.NewFrame(geo.LL{Lon: (minLon + maxLon) / 2, Lat: (minLat + maxLat) / 2})
+}
+
+func writeSegmentsGeoJSON(path string, segs []fair.Segment, frame geo.Frame) error {
+	type feature struct {
+		Type  string         `json:"type"`
+		Props map[string]any `json:"properties"`
+		Geom  struct {
+			Type   string       `json:"type"`
+			Coords [][2]float64 `json:"coordinates"`
+		} `json:"geometry"`
+	}
+	var fc struct {
+		Type     string    `json:"type"`
+		Features []feature `json:"features"`
+	}
+	fc.Type = "FeatureCollection"
+	for si, s := range segs {
+		var f feature
+		f.Type = "Feature"
+		f.Props = map[string]any{
+			"seg": si, "kind": s.Kind, "color": s.Color,
+			"routes": s.Routes, "labels": s.Labels,
+			"slots": s.Slots, "nslots": s.NSlots,
+			"corridor": s.Corridor, "to_corridor": s.ToCorr,
+			"band_min": s.Band.MinZoom, "band_max": s.Band.MaxZoom,
+			"len_m": int(s.Line.Len()),
+		}
+		f.Geom.Type = "LineString"
+		step := 8.0
+		if s.Kind == "steady" {
+			step = 6.0
+		}
+		for _, p := range s.Line.Resample(step) {
+			ll := frame.ToLL(p)
+			f.Geom.Coords = append(f.Geom.Coords, [2]float64{ll.Lon, ll.Lat})
+		}
+		if len(f.Geom.Coords) >= 2 {
+			fc.Features = append(fc.Features, f)
+		}
+	}
+	raw, err := json.Marshal(fc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
 }
 
 func writeGraphGeoJSON(path string, g *bundle.Graph, frame geo.Frame) error {
@@ -235,6 +312,13 @@ func loadBuild(path string, frame geo.Frame) ([]sketch.BuildFeature, error) {
 	var out []sketch.BuildFeature
 	for _, f := range fc.Features {
 		if f.Geometry.Type != "LineString" || len(f.Geometry.Coords) < 2 {
+			continue
+		}
+		// score the base band only (z15 lives in band_min<=15<=band_max)
+		if bm, ok := f.Props["band_max"].(float64); ok && bm < 15 {
+			continue
+		}
+		if bm, ok := f.Props["band_min"].(float64); ok && bm > 15 {
 			continue
 		}
 		pts := make([]geo.Pt, len(f.Geometry.Coords))

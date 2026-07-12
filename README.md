@@ -95,7 +95,27 @@ in [docs/TOOLS.md](docs/TOOLS.md).
 
 ## Status
 
-Early. The geometry core (cross-sections, strand medians, curve-following
-probes) and the sketch scorer are implemented and tested; bundling, ordering,
-and fairing are specified in docs and landing next. See docs/ALGORITHM.md for
-the stage-by-stage state.
+**The full pipeline is implemented and passes all gates on NYC.**
+
+```
+$ portolan chart --gtfs nyc.zip --rail testdata/nyc-rail.geojson --out nyc.geojson
+chart:  29 routes, 210 patterns, 8079 rail ways        (0.1s)
+bundle: 1017 strands, 1567 corridors, 1413 nodes       (4.4s)
+berth:  210 matches, 1739 berths, 1420 moves           (7.1s)
+order:  slots on 605 corridors                         (7.9s)
+fair:   ~10k segments across 4 zoom bands              (7.5s)
+
+$ portolan sound --network testdata/sketches/nyc.json --build nyc.geojson
+jaggedness: max turn 23°, 0 spikes · wobble p90 5.6 m
+fwd mean 1.8 m, p90 3.6 m · 0 self-intersections · PASS
+```
+
+For scale: the Python predecessor's best-ever score was fwd 2.6 m / p90
+4.8 m with an 88° jag spike (FAIL), in ~4 minutes per build. Chicago (CTA +
+an Overpass extract, zero city-specific configuration) builds end-to-end in
+~7 s with correct Loop topology.
+
+Known rough edges: densest junction interiors (City Hall loop complex) show
+residual artifacts; bridge legs (track data gaps) render as raw shape chords;
+ordering is LOOM-lite (local descent, not exact); station/stop grouping not
+started. The dev loop for all of it: `portolan atlas` + windows + the scorer.

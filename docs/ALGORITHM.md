@@ -180,6 +180,33 @@ died.
 
 ---
 
+## Implementation status
+
+All seven stages are implemented (`internal/gtfs`, `internal/osm`,
+`internal/bundle` [Chain/BuildGraph/Refine], `internal/berth`,
+`internal/order`, `internal/fair`, emit in `cmd/portolan`). Hard-won
+additions to the spec above, discovered while making NYC pass:
+
+- **Offset stability is part of ALONGSIDE** (§2): a neighbor counts only if
+  its signed offset holds (±3.5 m over ±30 m). Sustained parallelism alone
+  welded two different alignments through a shallow 100 m convergence.
+- **Fork events propagate across the bundle** (§3): a strand's own state
+  change (or terminal) induces cuts on every strand alongside it, so piece
+  boundaries align — otherwise staggered cuts chain distinct corridors
+  transitively along a trunk.
+- **Sliver pieces (< 60 m) never union** — at a convergence they carry both
+  sides' states and weld corridors; they become node glue instead.
+- **Piece state is a consensus** (≥60 % of samples), never one sample.
+- **Tangent reversals are fork events** — a switchback strand otherwise
+  fuses out- and back-passes into one piece and the centerline doubles over
+  itself (smooth, invisible to angle gates; caught by the simplicity gate).
+- **Straight terminal stubs keep a free end** — clustering both ends of a
+  60 m tail into one node closes it into a hairpin blob.
+- **Corridors under 60 m never draw a body** (§6): they are junction
+  furniture at every band; transitions chain THROUGH consumed corridors.
+- **Fillet control arms are alignment-clamped** (§6): an arm following a
+  tangent that opposes the chord loops the bezier into a hook.
+
 ## Performance envelope
 
 NYC subway: ~700 tracks / ~26 routes / ~450 km. Soundings ≈ 45 k samples ×
