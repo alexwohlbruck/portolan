@@ -69,7 +69,9 @@ func DefaultDials() Dials {
 		JoinTol:     1.0,
 		TrackMergeD: 16.0, // must span island-platform track spreads (lens fix)
 		SpurPruneM:  150.0,
-		BandBase:    140,
+		BandBase:    50, // junction cut at z15; the bundled network's edges
+		// are short (~150m in junction areas) — barrelman's 140m cuts
+		// consumed whole districts into confetti
 		UseTrace:    1,
 		Cover:       0.99,
 	}
