@@ -67,12 +67,17 @@ heart of the project. The one-paragraph version:
 
 | command | what it does |
 |---|---|
-| `portolan chart <city.toml>` | build a city: GTFS + rail extract → segments |
-| `portolan sound <city.toml>` | score the build against the hand-drawn network (the regression gate) |
-| `portolan atlas <city.toml>` | dev server: sketch editor, before/after windows, cross-section probe |
+| `portolan chart --gtfs f.zip --rail r.geojson --out b.geojson` | build a city (segments + corridor graph) |
+| `portolan sound --network sketch.json --build b.geojson` | score against the hand-drawn network (the regression gate) |
+| `portolan atlas` | **the workbench**: final-map viewer on the MapLibre variable-offset fork, sketch editor, one-click rebuild/score |
 
-A `city.toml` names the GTFS zip(s), the rail extract, and the output path.
-See `testdata/` for the NYC fixture and `docs/TOOLS.md` for the dev loop.
+`portolan atlas` reads `portolan.json` (feeds → gtfs/rail/out paths) and
+serves http://127.0.0.1:8765 — a nav bar switches **map** (final interlined
+ribbons rendered with real `line-progress` offsets, plus corridor-graph /
+OSM-track / sketch overlays) and **sketch** (the editor); the ⟳ rebuild and
+⚖ score buttons run the pipeline in-process and stream the log into the
+page, hot-reloading the map when done. Point `--maplibre` at the fork's
+`dist/` (default `../maplibre-gl-js/dist`).
 
 ## Getting a rail extract
 

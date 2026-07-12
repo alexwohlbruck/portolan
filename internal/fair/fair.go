@@ -32,18 +32,34 @@ func DefaultBands() []Band {
 	}
 }
 
-// Segment is one emitted feature.
+// Segment is one emitted PER-ROUTE ribbon feature, carrying the parchment
+// transit_line_segments offset contract: steady features a constant signed
+// offset_px, transitions off_from_px→off_to_px eased along line-progress by
+// the MapLibre fork. Offsets are signed in the FEATURE'S OWN travel frame
+// (its geometry direction) — clients use them raw, never recompute.
 type Segment struct {
-	Kind     string // steady | transition | bridge
-	Color    string
-	Routes   []string
-	Labels   []string
-	Slots    []int // per route, in the segment's own frame
-	NSlots   int
-	Corridor int // steady: corridor id; transition: from-corridor
-	ToCorr   int // transition only
-	Band     Band
-	Line     *geo.Line
+	Kind      string // steady | transition | bridge
+	Color     string
+	Route     string
+	Label     string
+	RouteType int
+	Slot      int
+	NSlots    int
+	OffsetPx  float64 // steady
+	OffFromPx float64 // transition ends
+	OffToPx   float64
+	Corridor  int // steady: corridor id; transition: from-corridor
+	ToCorr    int // transition only
+	Band      Band
+	Line      *geo.Line
+}
+
+// SlotPx is the on-screen ribbon spacing at full zoom (matches parchment's
+// 4.4 px slot pitch; the client's zoom-scaled expressions do the rest).
+const SlotPx = 4.4
+
+func offsetPx(slot, nslots int) float64 {
+	return (float64(slot) - float64(nslots-1)/2) * SlotPx
 }
 
 // Build emits all bands.
@@ -124,19 +140,16 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 		cB := cutAt(c, c.NodeB)
 		body := bundle.SubLine(c.Centerline, cA, c.Centerline.Len()-cB)
 		nslots := len(slots[ci])
-		for _, group := range byColor(bs) {
-			var ids []string
-			var labels []string
-			var slotIdx []int
-			for _, b := range group {
-				ids = append(ids, b.RouteID)
-				labels = append(labels, b.Label)
-				slotIdx = append(slotIdx, slotOf(slots[ci], b.RouteID))
-			}
+		for _, b := range bs {
+			slot := slotOf(slots[ci], b.RouteID)
 			segs = append(segs, Segment{
-				Kind: "steady", Color: group[0].Color,
-				Routes: ids, Labels: labels, Slots: slotIdx, NSlots: nslots,
-				Corridor: ci, ToCorr: -1, Band: band, Line: body,
+				Kind: "steady", Color: b.Color, Route: b.RouteID,
+				Label: b.Label, RouteType: b.Type,
+				Slot: slot, NSlots: nslots,
+				OffsetPx:  offsetPx(slot, nslots),
+				OffFromPx: offsetPx(slot, nslots),
+				OffToPx:   offsetPx(slot, nslots),
+				Corridor:  ci, ToCorr: -1, Band: band, Line: body,
 			})
 		}
 	}
@@ -236,36 +249,35 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 			routes = append(routes, r)
 		}
 		sort.Strings(routes)
-		// group by color using berths of corridor a
-		colorOf := map[string]string{}
-		labelOf := map[string]string{}
+		info := map[string]berth.Berth{}
 		for _, bb := range br.Berths[a] {
-			colorOf[bb.RouteID] = bb.Color
-			labelOf[bb.RouteID] = bb.Label
+			info[bb.RouteID] = bb
 		}
-		groups := map[string][]string{}
+		// travel-frame signs: the transition's geometry runs a-end → b-end.
+		// It agrees with a's storage frame iff it leaves a at NodeB, and with
+		// b's iff it enters b at NodeA; a disagreeing frame mirrors the
+		// offset (LESSONS #12 — never re-derive client-side).
+		signA, signB := 1.0, 1.0
+		if g.Corridors[a].NodeB != na {
+			signA = -1
+		}
+		if g.Corridors[b].NodeA != nb {
+			signB = -1
+		}
+		nA, nB := len(slots[a]), len(slots[b])
+		tline := geo.NewLine(bez)
 		for _, r := range routes {
-			cclr := colorOf[r]
-			groups[cclr] = append(groups[cclr], r)
-		}
-		var colors []string
-		for cclr := range groups {
-			colors = append(colors, cclr)
-		}
-		sort.Strings(colors)
-		for _, cclr := range colors {
-			ids := groups[cclr]
-			var labels []string
-			var slotIdx []int
-			for _, r := range ids {
-				labels = append(labels, labelOf[r])
-				slotIdx = append(slotIdx, slotOf(slots[a], r))
-			}
+			bb := info[r]
+			sa := slotOf(slots[a], r)
+			sb := slotOf(slots[b], r)
 			segs = append(segs, Segment{
-				Kind: "transition", Color: cclr,
-				Routes: ids, Labels: labels, Slots: slotIdx,
-				NSlots: len(slots[a]), Corridor: a, ToCorr: b,
-				Band: band, Line: geo.NewLine(bez),
+				Kind: "transition", Color: bb.Color, Route: r,
+				Label: bb.Label, RouteType: bb.Type,
+				Slot: sa, NSlots: nA,
+				OffFromPx: offsetPx(sa, nA) * signA,
+				OffToPx:   offsetPx(sb, nB) * signB,
+				Corridor:  a, ToCorr: b,
+				Band: band, Line: tline,
 			})
 		}
 	}
@@ -284,31 +296,14 @@ func buildBand(g *bundle.Graph, br *berth.Result, slots order.Slots, band Band) 
 			seen[kk] = true
 			segs = append(segs, Segment{
 				Kind: "bridge", Color: berthColor(br, m.Pattern.Route.ID),
-				Routes: []string{m.Pattern.Route.ID},
-				Labels: []string{m.Pattern.Route.ShortName},
-				Slots:  []int{0}, NSlots: 1,
-				Corridor: -1, ToCorr: -1, Band: band, Line: leg.Bridge,
+				Route: m.Pattern.Route.ID, Label: m.Pattern.Route.ShortName,
+				RouteType: m.Pattern.Route.Type,
+				Slot:      0, NSlots: 1,
+				Corridor:  -1, ToCorr: -1, Band: band, Line: leg.Bridge,
 			})
 		}
 	}
 	return segs
-}
-
-func byColor(bs []berth.Berth) [][]berth.Berth {
-	groups := map[string][]berth.Berth{}
-	var colors []string
-	for _, b := range bs {
-		if _, ok := groups[b.Color]; !ok {
-			colors = append(colors, b.Color)
-		}
-		groups[b.Color] = append(groups[b.Color], b)
-	}
-	sort.Strings(colors)
-	var out [][]berth.Berth
-	for _, c := range colors {
-		out = append(out, groups[c])
-	}
-	return out
 }
 
 func slotOf(ids []string, r string) int {

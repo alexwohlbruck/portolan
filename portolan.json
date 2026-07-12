@@ -1,0 +1,19 @@
+{
+  "sketches": "sketches",
+  "feeds": {
+    "5": {
+      "name": "NYC",
+      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/5.zip",
+      "rail": "testdata/nyc-rail.geojson",
+      "out": "build/nyc.geojson",
+      "network": "sketches/network-5.json"
+    },
+    "29": {
+      "name": "Chicago",
+      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/29.zip",
+      "rail": "build/chi-rail.geojson",
+      "out": "build/chi.geojson",
+      "network": "sketches/network-29.json"
+    }
+  }
+}

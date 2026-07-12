@@ -1,5 +1,6 @@
-// Package atlas is the dev server: the sketch editor, window renders, and
-// probes — the permanent fixtures of the dev loop (docs/TOOLS.md).
+// Package atlas is the dev workbench: sketch editor, final-map viewer on the
+// MapLibre variable-offset fork, corridor-graph overlay, and one-click
+// pipeline runs — the permanent fixtures of the dev loop (docs/TOOLS.md).
 package atlas
 
 import (
@@ -16,62 +17,319 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/alexwohlbruck/portolan/internal/pipeline"
 )
 
 //go:embed editor.html
 var editorHTML []byte
 
-// Server serves the sketch editor and the network API. Sketches are stored
-// per feed under dir as network-<feed>.json — the owner's hand work: writes
-// are ATOMIC (temp file + rename), and nothing here ever regenerates one.
+//go:embed map.html
+var mapHTML []byte
+
+//go:embed nav.js
+var navJS []byte
+
+// FeedCfg is one city in portolan.json.
+type FeedCfg struct {
+	Name    string `json:"name"`
+	GTFS    string `json:"gtfs"`
+	Rail    string `json:"rail"`
+	Out     string `json:"out"`
+	Network string `json:"network"` // drawn ground truth for scoring
+}
+
+type Config struct {
+	Feeds    map[string]FeedCfg `json:"feeds"`
+	Sketches string             `json:"sketches"`
+}
+
 type Server struct {
-	Dir   string // sketches directory
-	Build string // optional chart output GeoJSON for the /api/features overlay
+	cfg      Config
+	maplibre string // fork dist dir
 
 	mu       sync.Mutex
-	buildMod time.Time
-	feats    []overlayFeat
+	overlays map[string]*overlayCache
+
+	runMu   sync.Mutex
+	running bool
+	runLog  []string
+	runOK   bool
+	runDone bool
+	runCmd  string
+}
+
+type overlayCache struct {
+	mod   time.Time
+	feats []overlayFeat
 }
 
 type overlayFeat struct {
-	raw          json.RawMessage
+	raw            json.RawMessage
 	minLon, minLat float64
 	maxLon, maxLat float64
 }
 
+func NewServer(configPath, maplibreDir string) (*Server, error) {
+	s := &Server{maplibre: maplibreDir, overlays: map[string]*overlayCache{}}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("workbench config: %w (see portolan.json in the repo)", err)
+	}
+	if err := json.Unmarshal(raw, &s.cfg); err != nil {
+		return nil, fmt.Errorf("workbench config: %w", err)
+	}
+	if s.cfg.Sketches == "" {
+		s.cfg.Sketches = "sketches"
+	}
+	return s, nil
+}
+
 func (s *Server) Handler() http.Handler {
-	page := bytes.ReplaceAll(editorHTML, []byte("%LOCS%"), []byte(locsJSON))
-	page = bytes.ReplaceAll(page, []byte("%SWATCHES%"), []byte(swatchesJSON))
+	editor := bytes.ReplaceAll(editorHTML, []byte("%LOCS%"), []byte(locsJSON))
+	editor = bytes.ReplaceAll(editor, []byte("%SWATCHES%"), []byte(swatchesJSON))
+	editor = append(editor, []byte(`<script src="/nav.js"></script>`)...)
+	mapPage := append(append([]byte(nil), mapHTML...), []byte(`<script src="/nav.js"></script>`)...)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sketch", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(page)
-	})
+	serve := func(path string, body []byte, ctype string) {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", ctype)
+			w.Write(body)
+		})
+	}
+	serve("/sketch", editor, "text/html; charset=utf-8")
+	serve("/map", mapPage, "text/html; charset=utf-8")
+	serve("/nav.js", navJS, "application/javascript")
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/sketch", http.StatusFound)
+			http.Redirect(w, r, "/map", http.StatusFound)
 			return
 		}
 		http.NotFound(w, r)
 	})
+	// the MapLibre FORK dist (variable line-offset along line-progress)
+	mux.HandleFunc("/vendor/", func(w http.ResponseWriter, r *http.Request) {
+		name := filepath.Base(r.URL.Path)
+		if name != "maplibre-gl.js" && name != "maplibre-gl.css" {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(s.maplibre, name))
+	})
+
+	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.cfg)
+	})
 	mux.HandleFunc("/api/network", s.network)
 	mux.HandleFunc("/api/features", s.features)
+	mux.HandleFunc("/api/build.geojson", s.fileFor(func(f FeedCfg) string { return f.Out }))
+	mux.HandleFunc("/api/graph.geojson", s.fileFor(func(f FeedCfg) string { return f.Out + ".graph.geojson" }))
+	mux.HandleFunc("/api/rail.geojson", s.fileFor(func(f FeedCfg) string { return f.Rail }))
+	mux.HandleFunc("/api/run", s.run)
+	mux.HandleFunc("/api/run/status", s.runStatus)
 	return mux
 }
 
-// features serves the current chart output (z15 band) around a point, hot
-// reloading the file when it changes — rebuild with `portolan chart`,
-// refresh the editor, see the new build under the drawing.
+func (s *Server) feedCfg(r *http.Request) (FeedCfg, string, bool) {
+	feed := r.URL.Query().Get("feed")
+	if feed == "" {
+		feed = "5"
+	}
+	fc, ok := s.cfg.Feeds[feed]
+	return fc, feed, ok
+}
+
+func (s *Server) fileFor(pick func(FeedCfg) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fc, _, ok := s.feedCfg(r)
+		if !ok {
+			http.Error(w, "unknown feed", 404)
+			return
+		}
+		p := pick(fc)
+		if _, err := os.Stat(p); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		http.ServeFile(w, r, p)
+	}
+}
+
+// ---- one-click pipeline runs -------------------------------------------
+
+func (s *Server) run(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST", 405)
+		return
+	}
+	fc, feed, ok := s.feedCfg(r)
+	if !ok {
+		http.Error(w, "unknown feed", 404)
+		return
+	}
+	cmd := r.URL.Query().Get("cmd")
+	s.runMu.Lock()
+	if s.running {
+		s.runMu.Unlock()
+		http.Error(w, "a run is already in progress", 409)
+		return
+	}
+	s.running, s.runDone, s.runOK = true, false, false
+	s.runCmd = cmd + " " + fc.Name
+	s.runLog = nil
+	s.runMu.Unlock()
+
+	logf := func(f string, a ...any) {
+		line := fmt.Sprintf(f, a...)
+		s.runMu.Lock()
+		s.runLog = append(s.runLog, line)
+		s.runMu.Unlock()
+		log.Println(line)
+	}
+	go func() {
+		var err error
+		switch cmd {
+		case "chart":
+			err = pipeline.Chart(pipeline.ChartOpts{
+				GTFS: fc.GTFS, Rail: fc.Rail, Out: fc.Out,
+			}, logf)
+		case "sound":
+			net := fc.Network
+			if net == "" {
+				net = filepath.Join(s.cfg.Sketches, "network-"+feed+".json")
+			}
+			err = soundToLog(net, fc.Out, logf)
+		default:
+			err = fmt.Errorf("unknown cmd %q", cmd)
+		}
+		s.runMu.Lock()
+		s.running, s.runDone = false, true
+		s.runOK = err == nil
+		if err != nil {
+			s.runLog = append(s.runLog, "ERROR: "+err.Error())
+		} else {
+			s.runLog = append(s.runLog, "done")
+		}
+		s.runMu.Unlock()
+	}()
+	w.WriteHeader(202)
+}
+
+func soundToLog(network, build string, logf func(string, ...any)) error {
+	res, err := pipeline.Sound(pipeline.SoundOpts{Network: network, Build: build})
+	if err != nil {
+		return err
+	}
+	for _, ls := range res.Lines {
+		flag := ""
+		if ls.Fail {
+			flag = "  <== FAIL"
+		}
+		logf("%-14s %5.1fkm  mean %4.1f  p90 %4.1f  max %5.1f  cover %5.1f%%%s",
+			ls.Label, ls.Km, ls.Mean, ls.P90, ls.Max, ls.CoverPct, flag)
+	}
+	logf("jaggedness: max %.0f°, %d spikes (%.1f/km)", res.JagMaxDeg, len(res.Spikes), res.JagPerKm)
+	for i, sp := range res.Spikes {
+		if i >= 5 {
+			break
+		}
+		logf("  spike %.0f° @ %.5f,%.5f", sp.Deg, sp.At.Lat, sp.At.Lon)
+	}
+	logf("wobble mean %.1f p90 %.1f · fwd mean %.1f p90 %.1f",
+		res.WobbleMean, res.WobbleP90, res.FwdMean, res.FwdP90)
+	if res.Failures > 0 {
+		logf("FAIL (%d gates)", res.Failures)
+	} else {
+		logf("PASS")
+	}
+	return nil
+}
+
+func (s *Server) runStatus(w http.ResponseWriter, r *http.Request) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"running": s.running, "done": s.runDone,
+		"ok": s.runOK, "cmd": s.runCmd, "log": s.runLog,
+	})
+}
+
+// ---- sketch storage ------------------------------------------------------
+
+func (s *Server) path(feed string) (string, error) {
+	feed = strings.TrimSpace(feed)
+	if feed == "" || strings.ContainsAny(feed, "/\\.") {
+		return "", fmt.Errorf("bad feed %q", feed)
+	}
+	return filepath.Join(s.cfg.Sketches, "network-"+feed+".json"), nil
+}
+
+func (s *Server) network(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		p, err := s.path(r.URL.Query().Get("feed"))
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			raw = []byte(`{"lines":[]}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	case http.MethodPost:
+		var doc struct {
+			Feed string `json:"feed"`
+		}
+		raw := json.RawMessage{}
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil || doc.Feed == "" {
+			http.Error(w, "body must carry feed", 400)
+			return
+		}
+		p, err := s.path(doc.Feed)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		tmp := p + ".tmp"
+		if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if err := os.Rename(tmp, p); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.WriteHeader(204)
+	default:
+		http.Error(w, "method", 405)
+	}
+}
+
+// ---- editor build overlay (z15 features around a point) ------------------
+
 func (s *Server) features(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	fc, feed, ok := s.feedCfg(r)
 	lat, e1 := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
 	lon, e2 := strconv.ParseFloat(r.URL.Query().Get("lon"), 64)
 	rad, e3 := strconv.ParseFloat(r.URL.Query().Get("r"), 64)
-	if s.Build == "" || e1 != nil || e2 != nil || e3 != nil {
+	if !ok || e1 != nil || e2 != nil || e3 != nil {
 		fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
 		return
 	}
-	if err := s.loadBuild(); err != nil {
+	feats, err := s.loadOverlay(feed, fc.Out)
+	if err != nil {
 		fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
 		return
 	}
@@ -79,41 +337,37 @@ func (s *Server) features(w http.ResponseWriter, r *http.Request) {
 	dlon := rad / (111320.0 * math.Cos(lat*math.Pi/180))
 	x0, x1 := lon-dlon, lon+dlon
 	y0, y1 := lat-dlat, lat+dlat
-	var picked []json.RawMessage
-	s.mu.Lock()
-	for _, f := range s.feats {
+	picked := []json.RawMessage{}
+	for _, f := range feats {
 		if f.maxLon < x0 || f.minLon > x1 || f.maxLat < y0 || f.minLat > y1 {
 			continue
 		}
 		picked = append(picked, f.raw)
 	}
-	s.mu.Unlock()
-	out := map[string]any{"type": "FeatureCollection", "features": picked}
-	if picked == nil {
-		out["features"] = []json.RawMessage{}
-	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(map[string]any{
+		"type": "FeatureCollection", "features": picked,
+	})
 }
 
-func (s *Server) loadBuild() error {
-	st, err := os.Stat(s.Build)
+func (s *Server) loadOverlay(feed, path string) ([]overlayFeat, error) {
+	st, err := os.Stat(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st.ModTime().Equal(s.buildMod) {
-		return nil
+	if c, ok := s.overlays[feed]; ok && st.ModTime().Equal(c.mod) {
+		return c.feats, nil
 	}
-	raw, err := os.ReadFile(s.Build)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var fc struct {
 		Features []json.RawMessage `json:"features"`
 	}
 	if err := json.Unmarshal(raw, &fc); err != nil {
-		return err
+		return nil, err
 	}
 	var feats []overlayFeat
 	for _, fr := range fc.Features {
@@ -144,73 +398,15 @@ func (s *Server) loadBuild() error {
 		}
 		feats = append(feats, of)
 	}
-	s.feats = feats
-	s.buildMod = st.ModTime()
-	log.Printf("atlas: overlay loaded %d z15 features from %s", len(feats), s.Build)
-	return nil
-}
-
-func (s *Server) path(feed string) (string, error) {
-	feed = strings.TrimSpace(feed)
-	if feed == "" || strings.ContainsAny(feed, "/\\.") {
-		return "", fmt.Errorf("bad feed %q", feed)
-	}
-	return filepath.Join(s.Dir, "network-"+feed+".json"), nil
-}
-
-func (s *Server) network(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		p, err := s.path(r.URL.Query().Get("feed"))
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			raw = []byte(`{"lines":[]}`)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(raw)
-	case http.MethodPost:
-		var doc struct {
-			Feed string `json:"feed"`
-		}
-		body := json.NewDecoder(r.Body)
-		raw := json.RawMessage{}
-		if err := body.Decode(&raw); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		if err := json.Unmarshal(raw, &doc); err != nil || doc.Feed == "" {
-			http.Error(w, "body must carry feed", 400)
-			return
-		}
-		p, err := s.path(doc.Feed)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		// atomic save — the sketch is precious
-		tmp := p + ".tmp"
-		if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		if err := os.Rename(tmp, p); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		w.WriteHeader(204)
-	default:
-		http.Error(w, "method", 405)
-	}
+	s.overlays[feed] = &overlayCache{mod: st.ModTime(), feats: feats}
+	log.Printf("atlas: overlay cached %d z15 features from %s", len(feats), path)
+	return feats, nil
 }
 
 func (s *Server) ListenAndServe(addr string) error {
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(s.cfg.Sketches, 0o755); err != nil {
 		return err
 	}
-	log.Printf("atlas: sketch editor at http://%s/sketch (sketches in %s)", addr, s.Dir)
+	log.Printf("atlas: workbench at http://%s/  (map · sketch · run buttons)", addr)
 	return http.ListenAndServe(addr, s.Handler())
 }

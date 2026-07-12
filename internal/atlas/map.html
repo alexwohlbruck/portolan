@@ -1,0 +1,130 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>portolan · map</title>
+<link rel="stylesheet" href="/vendor/maplibre-gl.css">
+<style>
+html,body{margin:0;height:100%;background:#111}
+#map{position:absolute;inset:0}
+#layers{position:absolute;right:10px;top:56px;z-index:20;background:#1b1b20cc;
+  color:#ddd;font:13px/1.7 system-ui;padding:10px 14px;border-radius:10px}
+#layers label{display:block;cursor:pointer;white-space:nowrap}
+</style>
+<div id="map"></div>
+<div id="layers">
+  <label><input type="checkbox" id="ck-final" checked> final ribbons</label>
+  <label><input type="checkbox" id="ck-graph"> corridor graph</label>
+  <label><input type="checkbox" id="ck-rail"> OSM tracks</label>
+  <label><input type="checkbox" id="ck-sketch"> sketch overlay</label>
+</div>
+<script>
+// Embedded/background panes report the tab as hidden; requestAnimationFrame
+// then never fires and MapLibre's load+render loop stalls forever. Fall back
+// to a timer while hidden so the map works headlessly (browser panes, CI
+// screenshots) — no effect in a normal foreground tab.
+(function(){
+  const raf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = cb => document.hidden
+    ? setTimeout(() => cb(performance.now()), 33)
+    : raf(cb);
+})();
+</script>
+<script src="/vendor/maplibre-gl.js"></script>
+<script>
+const FEED = new URLSearchParams(location.search).get('feed') || '5';
+const START = FEED === '29' ? [-87.6321, 41.8799] : [-74.0045, 40.7124];
+
+// ── parchment's transit_line_segments render model, verbatim ─────────────
+// steady: constant signed offset_px · transition: off_from_px → off_to_px
+// eased along ['line-progress'] INSIDE line-offset — fork-only capability.
+const zoomScaledOffset = e => ['interpolate',['linear'],['zoom'],
+  11, ['*', e, 0.5], 14, e];
+const STEADY_OFFSET = zoomScaledOffset(['get','offset_px']);
+const TRANSITION_OFFSET = zoomScaledOffset(
+  ['interpolate',['cubic-bezier',.4,0,.6,1],['line-progress'],
+    0, ['get','off_from_px'], 1, ['get','off_to_px']]);
+const COLOR = ['concat','#',['get','route_color']];
+const WIDTH = ['interpolate',['linear'],['zoom'],10,1.0,13,2.0,15,3.0,16,3.6];
+const CASING_W = ['interpolate',['linear'],['zoom'],10,1.9,13,3.2,15,4.4,16,5.2];
+
+const map = new maplibregl.Map({
+  container:'map', center:START, zoom:13,
+  style:{
+    version:8,
+    sources:{ osm:{ type:'raster',
+      tiles:['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
+             'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'],
+      tileSize:256, attribution:'© OpenStreetMap · © CARTO' } },
+    layers:[{id:'base', type:'raster', source:'osm',
+             paint:{'raster-saturation':-0.7,'raster-opacity':0.85}}]
+  }
+});
+window.map = map; // debuggability
+map.on('error', e => console.error('map error:', e && e.error && e.error.message || e));
+map.addControl(new maplibregl.NavigationControl());
+new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
+
+// zoom bands: each band's features render only in its zoom range
+const BANDS = [
+  {min:15, max:24, key:15},
+  {min:14, max:15, key:14},
+  {min:13, max:14, key:13},
+  {min:0,  max:13, key:0},
+];
+
+map.on('load', async () => {
+  map.addSource('build',  {type:'geojson', data:'/api/build.geojson?feed='+FEED,  lineMetrics:true});
+  map.addSource('graph',  {type:'geojson', data:'/api/graph.geojson?feed='+FEED});
+  map.addSource('rail',   {type:'geojson', data:'/api/rail.geojson?feed='+FEED});
+  map.addSource('sketch', {type:'geojson', data:{type:'FeatureCollection',features:[]}});
+
+  map.addLayer({id:'rail', type:'line', source:'rail',
+    paint:{'line-color':'#8a8a8a','line-width':0.8,'line-opacity':0.7},
+    layout:{visibility:'none'}});
+  map.addLayer({id:'graph', type:'line', source:'graph',
+    paint:{'line-color':'#0aa','line-width':2,'line-opacity':0.7},
+    layout:{visibility:'none'}});
+
+  for (const b of BANDS) {
+    const bandFilter = ['==',['get','band_min'], b.key===0?0:b.key];
+    for (const [kind, offset] of [['steady',STEADY_OFFSET],['transition',TRANSITION_OFFSET],['bridge',STEADY_OFFSET]]) {
+      const f = ['all', bandFilter, ['==',['get','kind'],kind]];
+      map.addLayer({id:`casing-${b.key}-${kind}`, type:'line', source:'build',
+        minzoom:b.min===0?0:b.min, maxzoom:b.max===24?24:b.max, filter:f,
+        layout:{'line-cap':'butt','line-join':'round'},
+        paint:{'line-color':'#ffffff','line-width':CASING_W,'line-offset':offset}});
+      map.addLayer({id:`line-${b.key}-${kind}`, type:'line', source:'build',
+        minzoom:b.min===0?0:b.min, maxzoom:b.max===24?24:b.max, filter:f,
+        layout:{'line-cap':'butt','line-join':'round'},
+        paint:{'line-color':COLOR,'line-width':WIDTH,'line-offset':offset,
+               'line-dasharray': kind==='bridge' ? [2,2] : [1,0]}});
+    }
+  }
+
+  // sketch overlay (drawn ground truth, dashed magenta)
+  const net = await (await fetch('/api/network?feed='+FEED)).json();
+  map.getSource('sketch').setData({type:'FeatureCollection',
+    features:(net.lines||[]).filter(l=>(l.coords||[]).length>1).map(l=>({
+      type:'Feature',properties:{},
+      geometry:{type:'LineString',coordinates:l.coords}}))});
+  map.addLayer({id:'sketch', type:'line', source:'sketch',
+    paint:{'line-color':'#e91ee3','line-width':1.6,'line-dasharray':[2,2],
+           'line-opacity':0.85},
+    layout:{visibility:'none'}});
+
+  const toggles = {
+    'ck-final': BANDS.flatMap(b=>['steady','transition','bridge']
+                 .flatMap(k=>[`casing-${b.key}-${k}`,`line-${b.key}-${k}`])),
+    'ck-graph': ['graph'], 'ck-rail': ['rail'], 'ck-sketch': ['sketch'],
+  };
+  for (const [ck, ids] of Object.entries(toggles)) {
+    document.getElementById(ck).onchange = e => ids.forEach(id =>
+      map.setLayoutProperty(id,'visibility', e.target.checked?'visible':'none'));
+  }
+});
+
+// nav.js hook: reload sources after a rebuild finishes
+window.portolanReload = () => {
+  for (const s of ['build','graph']) {
+    const src = map.getSource(s);
+    if (src) src.setData(`/api/${s}.geojson?feed=${FEED}&t=${Date.now()}`);
+  }
+};
+</script>

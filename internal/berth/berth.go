@@ -46,6 +46,7 @@ type Berth struct {
 	RouteID string
 	Color   string
 	Label   string
+	Type    int // GTFS route_type (drives widths client-side)
 }
 
 // Result of stage 4.
@@ -133,6 +134,7 @@ func MatchAll(g *bundle.Graph, patterns []gtfs.Pattern, frame geo.Frame, p Param
 					RouteID: pat.Route.ID,
 					Color:   routeColor(pat.Route),
 					Label:   pat.Route.ShortName,
+					Type:    pat.Route.Type,
 				})
 			}
 			if li > 0 && legs[li-1].Corridor >= 0 {

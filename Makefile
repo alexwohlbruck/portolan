@@ -13,3 +13,8 @@ smoke: build
 
 atlas:
 	$(GO) run ./cmd/portolan atlas --sketches ./sketches
+
+nyc: build
+	$(GO) run ./cmd/portolan chart --gtfs ~/Documents/code/barrelman/data/gtfs/5.zip \
+		--rail testdata/nyc-rail.geojson --out build/nyc.geojson
+	$(GO) run ./cmd/portolan sound --network sketches/network-5.json --build build/nyc.geojson || true
