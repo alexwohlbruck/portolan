@@ -12,8 +12,6 @@ html,body{margin:0;height:100%;background:#111}
   <b style="opacity:.7">stages</b>
   <label><input type="checkbox" id="ck-final" checked> final ribbons</label>
   <label><input type="checkbox" id="ck-trackcenter"> track-group centerlines</label>
-  <label><input type="checkbox" id="ck-support"> support graph</label>
-  <label><input type="checkbox" id="ck-graph"> refined edges</label>
   <label><input type="checkbox" id="ck-nodes"> nodes</label>
   <label><input type="checkbox" id="ck-strands"> track strands</label>
   <label><input type="checkbox" id="ck-rail"> OSM tracks (raw)</label>
@@ -84,8 +82,6 @@ const BANDS = [
 
 map.on('load', async () => {
   map.addSource('build',   {type:'geojson', data:'/api/build.geojson?feed='+FEED,  lineMetrics:true});
-  map.addSource('graph',   {type:'geojson', data:'/api/graph.geojson?feed='+FEED});
-  map.addSource('support', {type:'geojson', data:'/api/support.geojson?feed='+FEED});
   map.addSource('trackcenter', {type:'geojson', data:'/api/trackcenter.geojson?feed='+FEED});
   map.addSource('strands', {type:'geojson', data:'/api/strands.geojson?feed='+FEED});
   map.addSource('nodes',   {type:'geojson', data:'/api/nodes.geojson?feed='+FEED});
@@ -100,12 +96,6 @@ map.on('load', async () => {
     layout:{visibility:'none'}});
   map.addLayer({id:'trackcenter', type:'line', source:'trackcenter',
     paint:{'line-color':'#12b5a4','line-width':2.4,'line-opacity':0.9},
-    layout:{visibility:'none'}});
-  map.addLayer({id:'support', type:'line', source:'support',
-    paint:{'line-color':'#d17f16','line-width':2,'line-opacity':0.85},
-    layout:{visibility:'none'}});
-  map.addLayer({id:'graph', type:'line', source:'graph',
-    paint:{'line-color':'#0aa','line-width':2,'line-opacity':0.8},
     layout:{visibility:'none'}});
   map.addLayer({id:'nodes', type:'circle', source:'nodes',
     paint:{'circle-radius':['+',2,['get','degree']],'circle-color':'#e33',
@@ -142,14 +132,25 @@ map.on('load', async () => {
   const toggles = {
     'ck-final': BANDS.flatMap(b=>['steady','transition','bridge']
                  .flatMap(k=>[`casing-${b.key}-${k}`,`line-${b.key}-${k}`])),
-    'ck-graph': ['graph'], 'ck-rail': ['rail'], 'ck-sketch': ['sketch'],
-    'ck-support': ['support'], 'ck-strands': ['strands'],
-    'ck-trackcenter': ['trackcenter'],
+    'ck-rail': ['rail'], 'ck-sketch': ['sketch'],
+    'ck-strands': ['strands'], 'ck-trackcenter': ['trackcenter'],
     'ck-nodes': ['nodes'], 'ck-base': ['base'],
   };
+  // layer visibility persists across reloads
+  const LS_KEY = 'portolan-layers';
+  const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
   for (const [ck, ids] of Object.entries(toggles)) {
-    document.getElementById(ck).onchange = e => ids.forEach(id =>
-      map.setLayoutProperty(id,'visibility', e.target.checked?'visible':'none'));
+    const el = document.getElementById(ck);
+    if (!el) continue;
+    if (ck in saved) el.checked = saved[ck];
+    const apply = () => ids.forEach(id =>
+      map.setLayoutProperty(id, 'visibility', el.checked ? 'visible' : 'none'));
+    apply();
+    el.onchange = () => {
+      apply();
+      saved[ck] = el.checked;
+      localStorage.setItem(LS_KEY, JSON.stringify(saved));
+    };
   }
 
   // problem-area dropdown: named locations, zoom on select
@@ -187,9 +188,9 @@ map.on('load', async () => {
 
 // nav.js hook: reload sources after a rebuild finishes
 window.portolanReload = () => {
-  for (const s of ['build','graph','support','strands','nodes','trackcenter']) {
+  for (const s of ['build','strands','nodes','trackcenter']) {
     const src = map.getSource(s);
-    if (src) src.setData(`/api/${s === 'build' ? 'build' : s}.geojson?feed=${FEED}&t=${Date.now()}`);
+    if (src) src.setData(`/api/${s}.geojson?feed=${FEED}&t=${Date.now()}`);
   }
 };
 </script>
