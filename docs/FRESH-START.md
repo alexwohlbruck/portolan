@@ -94,8 +94,11 @@ Apple Maps' Chicago Loop.
 - **String-trace sweeps** (seed strand + consumption): tangle-proof and
   fast, but consumption breadth oscillates between duplicate strings and
   swallowed neighbor corridors; branch attachment fragile.
-- **Center-track path matching** (snap bundle to one track): off-center by
-  design; owner removed it.
+- **Center-track snapping** (snap an already-bundled geometry to the single
+  center-most track): off-center by design; owner removed it. NOTE: path
+  matching itself is NOT the dead end — it is now step 1 of the process.
+  What died was doing it after bundling and pinning to one physical track
+  instead of refining the shared path to the group median.
 - **FAIR (banded cuts + synthesized transitions) degraded ALL THREE
   networks** — 140m barrelman-era cuts consumed short-edge networks into
   confetti; chain-through transitions chorded across complexes. Verdict:
@@ -103,20 +106,55 @@ Apple Maps' Chicago Loop.
   sized to slot count, reconnect per color between slot positions,
   **circular arcs** per the Transit blog).
 
-## Suggested shape of the work
+## THE PROCESS (owner-specified — this is the spec, not a suggestion)
 
-Stage contracts in `internal/stages/stages.go`:
-- `Bundle(patterns, strands, frame) → Network` — merge route shapes into an
-  overlap-free line graph; continuity per pattern is a hard invariant
-  (union-find gate exists in git history; rewrite it). Use the Brosi
-  support construction OR the Transit-app 1m skeletonization — either way,
-  finish geometry with `bundle.Refine` against strands so edges sit on
-  track-group medians (law 2), and verify crossings pass straight.
-- `Order(net) → slots per edge` — color-trunked MLNCM-WS; LOOM-lite
-  (greedy+lookahead+annealing) is fine, exactness later.
-- `Fair(net, slots) → []Segment` — node-front junction rendering, circular
-  arcs, zoom bands ×2 per zoom-out (base ~50m for short-edge networks; make
-  it a dial), butt caps, travel-frame offset signs (LESSONS #12).
+1. **Path matching** — for each GTFS route, path-match it onto existing OSM
+   geometry: rails for train types, roads for buses, sea routes for
+   ferries.
+   - GTFS routes that follow similar paths must ALWAYS land on the same
+     matched path (co-running routes share geometry exactly — this is what
+     makes bundling possible downstream).
+   - It must not be possible to "jump" between paths: always follow real
+     OSM ways. Penalize crossover segments — railway switches, road median
+     turns — identifiable generically as short ways that connect longer
+     ways together.
+   - Match onto MAINLINES only; ignore spurs and yards — EXCEPT at station
+     terminals, where routes legitimately enter terminal trackage.
+2. **Junction detection** — find the places where matched routes intersect,
+   and divide the routes at each junction into segments.
+3. **Segment attribution** — match GTFS routes to each segment (each
+   segment carries the set of routes riding it).
+4. **Parallel line rendering + ordering** — offset the routes on each
+   segment into parallel lines and run the line-ordering optimization
+   (crossing minimization).
+5. **Junction connections** — draw the connections at junctions using
+   smooth curvature geometry.
+6. **Tileset + render** — generate the tileset; the MapLibre fork renders
+   the live offset transitions (`line-progress` eased offsets) so lines
+   connect perfectly at junctions across every zoom.
+
+Stage contracts in `internal/stages/stages.go` (wired in
+`pipeline.Chart`):
+- `Match(patterns, ways, frame) → []Path` — step 1. A Path is a continuous
+  walk over OSM ways (Law 1: never broken). Similar-path convergence,
+  no-jump + crossover penalty, mainline-only-except-terminals all live
+  here.
+- `Split(paths) → *Network` — steps 2–3. Junction nodes where paths
+  intersect/diverge; edges are segments with route sets.
+- `Order(net) → slots` — step 4, color-trunked (law 5); LOOM-lite
+  (greedy+lookahead+annealing) is fine, exact ILP later.
+- `Fair(net, slots) → []Segment` — step 5, node-front junction rendering
+  with circular arcs, zoom bands ×2 per zoom-out (base ~50m for short-edge
+  networks; make it a dial), butt caps, travel-frame offset signs
+  (LESSONS #12).
+- Step 6 is scaffolding that already works: `WriteSegmentsGeoJSON` emits
+  the parchment contract and the atlas map view renders it on the fork.
+
+Because step 1.1 forces co-running routes onto one shared path, the
+track-group centerline law (law 2) applies to that shared path's
+geometry — `bundle.Refine` against the strands is the proven tool to move
+a matched path onto the group median where multiple parallel tracks carry
+it.
 
 Definition of done per stage: builds NYC (`make nyc`) in seconds,
 `portolan sound` gates green INCLUDING dup% and continuity, and the map

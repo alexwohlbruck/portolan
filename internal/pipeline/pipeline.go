@@ -38,7 +38,7 @@ type ChartOpts struct {
 	Dials *Dials
 }
 
-// Chart: CHART (load, proven) → BUNDLE → ORDER → FAIR (stubs) → EMIT.
+// Chart: CHART (load, proven) → MATCH → SPLIT → ORDER → FAIR (stubs) → EMIT.
 func Chart(o ChartOpts, logf func(string, ...any)) error {
 	d := DefaultDials()
 	if o.Dials != nil {
@@ -85,9 +85,13 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	logf("chart: %d rail patterns of %d total", len(rail), len(feed.Patterns))
 
-	net, err := stages.Bundle(rail, strands, frame)
+	paths, err := stages.Match(rail, tracks, frame)
 	if err != nil {
-		return fmt.Errorf("BUNDLE: %w", err)
+		return fmt.Errorf("MATCH: %w", err)
+	}
+	net, err := stages.Split(paths)
+	if err != nil {
+		return fmt.Errorf("SPLIT: %w", err)
 	}
 	slots, err := stages.Order(net)
 	if err != nil {
