@@ -198,6 +198,49 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 				}
 			}
 		}
+		// side-crossing term: a color continuing into an edge that attaches
+		// from a SIDE must cross every resident between its slot and that
+		// side — invisible to the shared-pair inversions above (a departing
+		// color shares nothing with the lines it slices through), so blue
+		// exited straight through the bundle for free and entrants shuffled
+		// residents instead of appending on their arrival side. Straight
+		// continuations (near-collinear) don't constrain a side and skip.
+		for ai := 0; ai < len(adjE); ai++ {
+			for bi := 0; bi < len(adjE); bi++ {
+				if ai == bi {
+					continue
+				}
+				a, b := adjE[ai], adjE[bi]
+				if a == b {
+					continue
+				}
+				ax, ay := outTan(a, ni)
+				bx, by := outTan(b, ni)
+				// travel direction into the node along a
+				dx, dy := -ax, -ay
+				cr := dx*by - dy*bx
+				if math.Abs(cr) < 0.3 {
+					continue // b continues straight — no side
+				}
+				bLeft := cr > 0
+				aStorage := n.Edges[a].To == ni
+				for _, c := range perm[a] {
+					if pos(b, c, true) < 0 {
+						continue // c does not continue into b
+					}
+					pc := pos(a, c, aStorage)
+					for _, d := range perm[a] {
+						if d == c || pos(b, d, true) >= 0 {
+							continue // d also rides b — ordered by inversions
+						}
+						pd := pos(a, d, aStorage)
+						if (bLeft && pd < pc) || (!bLeft && pd > pc) {
+							total++
+						}
+					}
+				}
+			}
+		}
 		return total
 	}
 
