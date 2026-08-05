@@ -264,12 +264,23 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		}
 	}
 
+	// drawn geometry rides ruler lines where the steel is straight: the
+	// bundled median carries metre-scale waves (junction-adjacent member
+	// contamination, strand flicker) that every offset color repeats, so
+	// the whole bundle visibly wobbles. Near-straight runs collapse to
+	// their chord; real curves fail the heading cone at the first bend
+	// and keep every vertex. Shared per edge so all colors stay parallel.
+	straightPts := make([][]geo.Pt, len(n.Edges))
+	for ei, e := range n.Edges {
+		straightPts[ei] = straightenRuns(e.Pts, dial("fair_straight_tol", 2.2))
+	}
+
 	var segs []Segment
 	for _, band := range fairBands {
 		cut := make([][2]float64, len(n.Edges)) // per edge: cut at From, To
 		lines := make([]*geo.Line, len(n.Edges))
-		for ei, e := range n.Edges {
-			lines[ei] = geo.NewLine(e.Pts)
+		for ei := range n.Edges {
+			lines[ei] = geo.NewLine(straightPts[ei])
 			base := p.CutBase * band.scale
 			for end := 0; end < 2; end++ {
 				c := math.Min(base, lines[ei].Len()/3)
@@ -772,6 +783,47 @@ func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
 
 // maxTurn12: worst turn at uniform 12 m sampling — the scale the eye
 // (and the jaggedness gate) sees; dense vertices hide nothing here.
+// straightenRuns replaces near-straight runs with their chord: every
+// interior point within tol of the chord AND every segment heading
+// within a tight cone of the chord heading. Endpoints never move.
+func straightenRuns(pts []geo.Pt, tol float64) []geo.Pt {
+	if len(pts) < 3 {
+		return pts
+	}
+	out := []geo.Pt{pts[0]}
+	i := 0
+	for i < len(pts)-1 {
+		best := i + 1
+		for j := i + 2; j < len(pts); j++ {
+			chord := pts[j].Sub(pts[i])
+			cl := chord.Norm()
+			if cl < 1e-9 {
+				continue
+			}
+			u := chord.Scale(1 / cl)
+			ok := true
+			for k := i + 1; k < j && ok; k++ {
+				if math.Abs(pts[k].Sub(pts[i]).Cross(u)) > tol {
+					ok = false
+				}
+			}
+			for k := i; k < j && ok; k++ {
+				seg := pts[k+1].Sub(pts[k])
+				if seg.Norm() > 1e-9 && seg.Unit().Dot(u) < 0.98 {
+					ok = false
+				}
+			}
+			if !ok {
+				break
+			}
+			best = j
+		}
+		out = append(out, pts[best])
+		i = best
+	}
+	return out
+}
+
 func maxTurn12(l *geo.Line) float64 {
 	if l.Len() < 24 {
 		return geo.MaxTurnDeg(l.Pts)
