@@ -254,7 +254,7 @@ const LAYERS = [
   {key:'paths',       label:'matched paths',     sw:'#7a9dd4', on:false},
   {key:'nodes',       label:'junction nodes',    sw:'#e33',    on:false},
   {key:'strands',     label:'track strands',     sw:'#c26bd1', on:false},
-  {key:'rail',        label:'OSM tracks',        sw:'#8a8a8a', on:true},
+  {key:'rail',        label:'OSM tracks',        sw:'#ff6a00', on:true},
   {key:'base',        label:'basemap',           sw:'#666',    on:true},
 ];
 const layerIds = key => key === 'ribbons' ? ribbonIds : [key];
@@ -277,7 +277,8 @@ map.on('load', async () => {
   src('drawbox', {type:'FeatureCollection',features:[]});
 
   map.addLayer({id:'rail',type:'line',source:'rail',
-    paint:{'line-color':'#8a8a8a','line-width':0.8,'line-opacity':0.7}});
+    paint:{'line-color':'#ff6a00','line-width':2,'line-opacity':1,
+           'line-dasharray':[1.2,1.8]}});
   map.addLayer({id:'strands',type:'line',source:'strands',
     paint:{'line-color':'#c26bd1','line-width':1.4,'line-opacity':0.8}});
   map.addLayer({id:'paths',type:'line',source:'paths',

@@ -338,7 +338,31 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			// radii, while a straight-through weave has no excuse.
 			bend := math.Acos(math.Max(-1, math.Min(1, entry.Dot(exit)))) * 180 / math.Pi
 			allow := 25 + 20*math.Min(1, bend/90)
-			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); mt > 25 {
+			// a TURNING movement follows the steel: the junction's
+			// connector track is in the data — trace it between the cut
+			// points instead of sweeping a synthetic curve wide of it
+			onSteel := false
+			if bend > 40 && len(tail) > 0 && len(head) > 0 {
+				p0 := tail[0]
+				p3 := head[len(head)-1]
+				near := tail[len(tail)-1]
+				tc := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head))
+				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 && near.Dist(dbg3Pt) < 150 {
+					mt := -1.0
+					if tc != nil {
+						mt = maxTurn12(smoothPolyline(geo.NewLine(append(append([]geo.Pt{p0}, tc...), p3))))
+					}
+					fmt.Printf("TCURVE %s bend=%.0f tc=%v mt=%.0f allow=%.0f\n", c.color, bend, tc != nil, mt, allow)
+				}
+				if tc != nil {
+					cand := append(append([]geo.Pt{p0}, tc...), p3)
+					if maxTurn12(smoothPolyline(geo.NewLine(cand))) <= allow {
+						chain = cand
+						onSteel = true
+					}
+				}
+			}
+			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); !onSteel && mt > 25 {
 				// the pieced chain drags junction-interior geometry (branch
 				// ramps, weld curls) into the connector. A hand doesn't: it
 				// draws one curve between the cut points, tangent to the
@@ -449,6 +473,78 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 
 // smoothPolyline: collinear-run simplification followed by two rounds of
 // endpoint-pinned Chaikin corner cutting.
+// trackCurveBetween looks for the junction's connector track — the way
+// that actually carries the movement between the two cut points — and
+// returns its curve, laterally offset with a linear ramp so the ends
+// meet the cut points. Through-tracks fail the span/offset tests; the
+// connector is the way that projects both ends onto distinct arcs with
+// small lateral offsets. Nil when no such way exists.
+func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
+	if lvlGrid == nil {
+		return nil
+	}
+	type fit struct {
+		ti     int
+		sa, sb float64
+		o0, o1 float64
+	}
+	bestScore := math.Inf(1)
+	var bestFit *fit
+	lvlGrid.Near(near, 25, func(ti int) {
+		t := lvlLines[ti]
+		if t.Len() < 15 || t.DistTo(near) > 25 {
+			return
+		}
+		sa, _ := t.ProjectArc(p0)
+		sb, _ := t.ProjectArc(p3)
+		if math.Abs(sb-sa) < 8 {
+			return
+		}
+		// lateral gap measured against the CORRIDOR pieces at the
+		// connector's own ends, in the tail→head oriented frame —
+		// projecting the far cut points clamps and reads longitudinal
+		// overshoot as huge lateral offsets
+		endA := t.AtArc(sa) // tail-side end of the connector
+		endB := t.AtArc(sb) // head-side end
+		dirA := t.TangentAtArc(sa, 8)
+		dirB := t.TangentAtArc(sb, 8)
+		if sb < sa { // oriented frame runs sa→sb; flip tangents
+			dirA = dirA.Scale(-1)
+			dirB = dirB.Scale(-1)
+		}
+		pa, _ := tl.ProjectArc(endA)
+		o0 := dirA.Cross(tl.AtArc(pa).Sub(endA))
+		pb, _ := hl.ProjectArc(endB)
+		o1 := dirB.Cross(hl.AtArc(pb).Sub(endB))
+		if math.Abs(o0) > 15 || math.Abs(o1) > 15 {
+			return
+		}
+		if sc := math.Abs(o0) + math.Abs(o1); sc < bestScore {
+			bestScore = sc
+			bestFit = &fit{ti, sa, sb, o0, o1}
+		}
+	})
+	if bestFit == nil {
+		return nil
+	}
+	t := lvlLines[bestFit.ti]
+	sub := bundle.SubLine(t, math.Min(bestFit.sa, bestFit.sb), math.Max(bestFit.sa, bestFit.sb))
+	pts := sub.Pts
+	if bestFit.sb < bestFit.sa {
+		pts = reversedPts(pts)
+	}
+	o0, o1 := bestFit.o0, bestFit.o1
+	l := geo.NewLine(pts)
+	var out []geo.Pt
+	for arc := 0.0; arc <= l.Len(); arc += 4 {
+		f := arc / l.Len()
+		o := o0*(1-f) + o1*f
+		nrm := l.TangentAtArc(arc, 8).Perp()
+		out = append(out, l.AtArc(arc).Add(nrm.Scale(o)))
+	}
+	return out
+}
+
 // trackParallelCorner finds a track (from the level index — every loaded
 // track) passing the corner parallel to both arms and returns its curve
 // between the arm projections, offset laterally by the drawn line's
