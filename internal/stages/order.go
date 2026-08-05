@@ -201,8 +201,41 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		return total
 	}
 
+	// affinity: how much corridor length two colors share. The tiebreak
+	// that keeps same-steel pairs adjacent when crossings can't decide —
+	// a joining line must cross the pair once wherever it slots, so
+	// crossing count alone lets it split the pair (Blue slotted between
+	// the Lake el's G/Pink). Apple keeps the pair together and the
+	// newcomer outside. Scaled so crossings stay strictly dominant.
+	pairKey := func(a, b string) [2]string {
+		if a > b {
+			return [2]string{b, a}
+		}
+		return [2]string{a, b}
+	}
+	affinity := map[[2]string]float64{}
+	for ei, e := range n.Edges {
+		L := 0.0
+		for i := 1; i < len(e.Pts); i++ {
+			L += e.Pts[i].Dist(e.Pts[i-1])
+		}
+		cs := perm[ei]
+		for x := 0; x < len(cs); x++ {
+			for y := x + 1; y < len(cs); y++ {
+				affinity[pairKey(cs[x], cs[y])] += L
+			}
+		}
+	}
+	adjBonus := func(ei int) int {
+		b := 0.0
+		for i := 0; i+1 < len(perm[ei]); i++ {
+			b += affinity[pairKey(perm[ei][i], perm[ei][i+1])]
+		}
+		return int(b / 50)
+	}
 	edgeCost := func(ei int) int {
-		return crossingsAt(n.Edges[ei].From) + crossingsAt(n.Edges[ei].To)
+		return (crossingsAt(n.Edges[ei].From)+crossingsAt(n.Edges[ei].To))*4096 -
+			adjBonus(ei)
 	}
 	permKey := func(p []string) string {
 		s := ""
