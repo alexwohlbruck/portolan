@@ -448,6 +448,56 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		net.Edges = kept
 	}
 	rebuildAdj(net)
+	// welds move nodes but leave edge geometry pointing at the OLD
+	// endpoints — every edge tail then overshoots past its junction (the
+	// SE Loop corner drew its turn as a dive-and-reverse V through two
+	// overshoots). Trim each end back to its closest approach to the
+	// node.
+	for ei := range net.Edges {
+		e := &net.Edges[ei]
+		if len(e.Pts) < 2 {
+			continue
+		}
+		l := geo.NewLine(e.Pts)
+		for end := 0; end < 2; end++ {
+			var node geo.Pt
+			if end == 0 {
+				node = net.Nodes[e.From].At
+			} else {
+				node = net.Nodes[e.To].At
+			}
+			var tip geo.Pt
+			if end == 0 {
+				tip = e.Pts[0]
+			} else {
+				tip = e.Pts[len(e.Pts)-1]
+			}
+			if tip.Dist(node) < 3 {
+				continue
+			}
+			win := math.Min(60, l.Len()/3)
+			bestArc, bestD := -1.0, math.Inf(1)
+			for arc := 0.0; arc <= win; arc += 2 {
+				pos := arc
+				if end == 1 {
+					pos = l.Len() - arc
+				}
+				if d := l.AtArc(pos).Dist(node); d < bestD {
+					bestD, bestArc = d, pos
+				}
+			}
+			if bestArc < 0 || bestD >= tip.Dist(node)-1 {
+				continue
+			}
+			if end == 0 {
+				l = bundle.SubLine(l, bestArc, l.Len())
+			} else {
+				l = bundle.SubLine(l, 0, bestArc)
+			}
+			e.Pts = l.Pts
+			l = geo.NewLine(e.Pts)
+		}
+	}
 	contractChains(net)
 	return net, nil
 }
@@ -539,13 +589,40 @@ func contractChains(net *Network) {
 		if b.To == target {
 			bp = reversedPts(bp)
 		}
-		pts := append(append([]geo.Pt{}, ap...), bp...)
+		// both halves can OVERSHOOT into the junction region their weld
+		// deleted; concatenating the raw tails folds the polyline back on
+		// itself (the NE Loop corner drew a 12 m retrace scribble). Join
+		// at the closest-approach pair of the two tail regions instead.
+		ai, bj := len(ap)-1, 0
+		bestD := math.Inf(1)
+		aArc, bArc := 0.0, 0.0
+		for i := len(ap) - 1; i > 0; i-- {
+			if i < len(ap)-1 {
+				aArc += ap[i].Dist(ap[i+1])
+			}
+			if aArc > 40 {
+				break
+			}
+			bArc = 0
+			for j := 0; j < len(bp)-1; j++ {
+				if j > 0 {
+					bArc += bp[j].Dist(bp[j-1])
+				}
+				if bArc > 40 {
+					break
+				}
+				if d := ap[i].Dist(bp[j]); d < bestD {
+					bestD, ai, bj = d, i, j
+				}
+			}
+		}
+		pts := append(append([]geo.Pt{}, ap[:ai+1]...), bp[bj:]...)
 		// the halves were shaped independently (separate refinement mates,
 		// cut adjustments), so the joint carries a heading/alignment jump
 		// that survives downstream smoothing as a visible kink — ease the
 		// seam neighborhood locally, leaving the rest of both halves
 		// untouched.
-		blendSeam(pts, len(ap), 35)
+		blendSeam(pts, ai+1, 35)
 		from := a.From
 		if a.From == target {
 			from = a.To

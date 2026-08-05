@@ -160,11 +160,18 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			base := p.CutBase * band.scale
 			for end := 0; end < 2; end++ {
 				c := math.Min(base, lines[ei].Len()/3)
-				// a curvy approach is real geometry — shrink the cut
-				// rather than lay a synthetic connector across it
-				for c > p.MinShortCut &&
-					approachTurn(lines[ei], end == 1, c) > p.MaxTurn {
-					c *= 0.7
+				// a gently curvy approach is real geometry — shrink the
+				// cut rather than lay a synthetic connector across it.
+				// But a CORNER-class end (the approach itself turns hard —
+				// a junction sitting at a street corner) is the opposite
+				// case: the transition must own the whole curve, or the
+				// turn gets crammed into whatever sliver of cut is left
+				// and draws at an impossible radius.
+				if approachTurn(lines[ei], end == 1, c) <= 60 {
+					for c > p.MinShortCut &&
+						approachTurn(lines[ei], end == 1, c) > p.MaxTurn {
+						c *= 0.7
+					}
 				}
 				cut[ei][end] = math.Max(c, 0)
 			}
@@ -331,8 +338,45 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			// decision, not a smoothing problem — the tangent guard above
 			// catches net reversals, this catches everything else that
 			// would emit as a visible kink.
-			if maxTurn12(smoothPolyline(geo.NewLine(chain))) > 25 {
-				continue
+			// allowance scales with how much the connection MUST turn: a
+			// 90° street corner concentrates ~35-40° per 12 m at sane
+			// radii, while a straight-through weave has no excuse.
+			bend := math.Acos(math.Max(-1, math.Min(1, entry.Dot(exit)))) * 180 / math.Pi
+			allow := 25 + 20*math.Min(1, bend/90)
+			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); mt > 25 {
+				// the pieced chain drags junction-interior geometry (branch
+				// ramps, weld curls) into the connector. A hand doesn't: it
+				// draws one curve between the cut points, tangent to the
+				// steadies. Retry as a cubic Bézier fitted to the
+				// TRUSTWORTHY tangents — the steady-side ends of the cut
+				// pieces — and only give up if even that can't draw.
+				p0, p3 := tail[0], head[len(head)-1]
+				t0 := geo.NewLine(tail).TangentAtArc(0, 12)
+				t3 := geo.NewLine(head).TangentAtArc(geo.NewLine(head).Len(), 12)
+				k := p0.Dist(p3) / 3
+				p1 := p0.Add(t0.Scale(k))
+				p2 := p3.Sub(t3.Scale(k))
+				var bez []geo.Pt
+				steps := int(math.Max(8, p0.Dist(p3)/4))
+				for st := 0; st <= steps; st++ {
+					t := float64(st) / float64(steps)
+					u := 1 - t
+					bez = append(bez, geo.Pt{
+						X: u*u*u*p0.X + 3*u*u*t*p1.X + 3*u*t*t*p2.X + t*t*t*p3.X,
+						Y: u*u*u*p0.Y + 3*u*u*t*p1.Y + 3*u*t*t*p2.Y + t*t*t*p3.Y,
+					})
+				}
+				mb := maxTurn12(geo.NewLine(bez))
+				if mb < mt-5 {
+					chain = bez
+					mt = mb
+				}
+				if mt > allow {
+					if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+						fmt.Printf("  REJ3 drawgate mt=%.0f bez=%.0f allow=%.0f bend=%.0f\n", mt, mb, allow, bend)
+					}
+					continue
+				}
 			}
 			segs = append(segs, Segment{
 				Kind:      "transition",
@@ -420,6 +464,19 @@ func maxTurn12(l *geo.Line) float64 {
 }
 
 func smoothPolyline(l *geo.Line) *geo.Line {
+	out := smoothPolylineOnce(l, true)
+	// insurance: fillet windows that overlap spatially can stitch a FOLD
+	// into the line (a reversal sharper than anything in the input) —
+	// fall back to plain corner cutting when that happens.
+	if geo.MaxTurnDeg(out.Pts) > 100 {
+		if alt := smoothPolylineOnce(l, false); geo.MaxTurnDeg(alt.Pts) < geo.MaxTurnDeg(out.Pts) {
+			out = alt
+		}
+	}
+	return out
+}
+
+func smoothPolylineOnce(l *geo.Line, fillets bool) *geo.Line {
 	pts := l.Pts
 	if len(pts) < 3 {
 		return l
@@ -434,11 +491,16 @@ func smoothPolyline(l *geo.Line) *geo.Line {
 		}
 	}
 	simp = append(simp, pts[len(pts)-1])
+	// corner fillets stay clear of segment ends: the first/last stretch
+	// of a steady is where transitions attach, computed on the raw line —
+	// an arc there displaces the meeting geometry and the seam reads as
+	// a disconnected stub.
+	// (enforced inside filletCorners via endClear)
 	// corner fillets: a REAL corner (sharp localized turn — the Loop's
 	// 90° street corners) is drawn as a circular arc tangent to both
 	// arms, the way a hand with a compass would round it. Gentle curves
 	// (low per-vertex turns) never trigger and keep following the steel.
-	if os.Getenv("PORTOLAN_NOFILLET") == "" {
+	if fillets && os.Getenv("PORTOLAN_NOFILLET") == "" {
 		simp = filletCorners(simp, 25, 15, 30)
 	}
 	for round := 0; round < 3; round++ {
@@ -483,28 +545,94 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 	}
 	type window struct {
 		lo, hi int
+		sign   float64
 		repl   []geo.Pt // nil = keep original
 	}
-	var wins []window
-	i := 1
-	for i < n-1 {
-		if turn[i] < minVertex {
-			i++
-			continue
+	// clusters of sharp vertices; a chamfered corner (bend, straight
+	// diagonal, bend) is ONE corner — merge clusters closer than 2R so a
+	// single arc spans street-tangent to street-tangent instead of two
+	// conflicting arcs fighting over the diagonal
+	type cluster struct {
+		i, j  int
+		total float64
+		apex  int
+	}
+	bendSign := func(k int) float64 {
+		if k < 1 || k > n-2 {
+			return 0
 		}
-		j, total, apex := i, 0.0, i
-		for j < n-1 && turn[j] >= minVertex {
-			total += turn[j]
-			if turn[j] > turn[apex] {
-				apex = j
+		return pts[k].Sub(pts[k-1]).Cross(pts[k+1].Sub(pts[k]))
+	}
+	var cls []cluster
+	{
+		ci := 1
+		for ci < n-1 {
+			if turn[ci] < minVertex {
+				ci++
+				continue
 			}
-			j++
+			cj, tot, ap := ci, 0.0, ci
+			for cj < n-1 && turn[cj] >= minVertex {
+				tot += turn[cj]
+				if turn[cj] > turn[ap] {
+					ap = cj
+				}
+				cj++
+			}
+			cls = append(cls, cluster{ci, cj, tot, ap})
+			ci = cj
 		}
+		drop := make([]bool, len(cls))
+		for x := 0; x+1 < len(cls); {
+			if pts[cls[x+1].i].Dist(pts[cls[x].j-1]) < 2*r &&
+				bendSign(cls[x].apex)*bendSign(cls[x+1].apex) > 0 {
+				if turn[cls[x+1].apex] > turn[cls[x].apex] {
+					cls[x].apex = cls[x+1].apex
+				}
+				cls[x].total += cls[x+1].total
+				cls[x].j = cls[x+1].j
+				drop = append(drop[:x+1], drop[x+2:]...)
+				cls = append(cls[:x+1], cls[x+2:]...)
+			} else {
+				x++
+			}
+		}
+		// adjacent OPPOSITE-sign clusters are an S-curve, not corners —
+		// two tangent arcs meet at a kink there; leave the S alone
+		for x := 0; x+1 < len(cls); x++ {
+			if pts[cls[x+1].i].Dist(pts[cls[x].j-1]) < 2*r &&
+				bendSign(cls[x].apex)*bendSign(cls[x+1].apex) < 0 {
+				drop[x] = true
+				drop[x+1] = true
+			}
+		}
+		kept := cls[:0]
+		for x, cl := range cls {
+			if !drop[x] {
+				kept = append(kept, cl)
+			}
+		}
+		cls = kept
+	}
+	var wins []window
+	for _, cl := range cls {
+		i, j, total, apex := cl.i, cl.j, cl.total, cl.apex
 		if total < minTotal {
-			i = j
 			continue
 		}
 		lo, hi := i, j-1
+		// keep clear of segment ends: transitions attach there on the
+		// raw geometry
+		arcToStart, arcToEnd := 0.0, 0.0
+		for k := 1; k <= apex; k++ {
+			arcToStart += pts[k].Dist(pts[k-1])
+		}
+		for k := apex + 1; k < n; k++ {
+			arcToEnd += pts[k].Dist(pts[k-1])
+		}
+		if arcToStart < 30 || arcToEnd < 30 {
+			continue
+		}
 		minLo := 1
 		if len(wins) > 0 {
 			minLo = wins[len(wins)-1].hi + 2
@@ -527,7 +655,7 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 		a, b := pts[lo-1], pts[hi+1]
 		orig := append(append([]geo.Pt{a}, pts[lo:hi+1]...), b)
 		var best []geo.Pt
-		bestScore := geo.MaxTurnDeg(orig)
+		bestScore := maxTurn12(geo.NewLine(orig))
 		// classical street-corner fillet: the arms are the ENTRY and EXIT
 		// LINES (the segments crossing the window boundary — the streets
 		// themselves, not chords across the curved cluster). The arc is
@@ -552,6 +680,12 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 			vx := a.Add(u1.Scale(t1))
 			armA := vx.Dist(a)
 			armB := vx.Dist(b)
+			if vx.Dist(pts[apex]) > 3*r {
+				// nearly-straight arms: the line intersection shoots far
+				// from the real bend and any arc built there lands outside
+				// the window, stitching a RETRACE into the polyline
+				continue
+			}
 			sign := 1.0
 			if den < 0 {
 				sign = -1
@@ -574,8 +708,17 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 					ang := a0 + sign*theta*float64(st)/float64(steps)
 					arc = append(arc, geo.Pt{X: c.X + rEff*math.Cos(ang), Y: c.Y + rEff*math.Sin(ang)})
 				}
+				// reject any arc whose joints reverse direction — an arc
+				// overshooting the window boundary retraces when stitched
+				if len(arc) >= 2 {
+					inOK := arc[0].Sub(a).Dot(arc[1].Sub(arc[0])) > 0
+					outOK := b.Sub(arc[len(arc)-1]).Dot(arc[len(arc)-1].Sub(arc[len(arc)-2])) > 0
+					if !inOK || !outOK {
+						continue
+					}
+				}
 				cand := append(append([]geo.Pt{a}, arc...), b)
-				if sc := geo.MaxTurnDeg(cand); sc < bestScore {
+				if sc := maxTurn12(geo.NewLine(cand)); sc < bestScore {
 					bestScore = sc
 					best = arc
 				}
@@ -605,11 +748,13 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 				nxt = append(nxt, cc[len(cc)-1])
 				cc = nxt
 			}
-			if sc := geo.MaxTurnDeg(cc); sc < bestScore {
+			if sc := maxTurn12(geo.NewLine(cc)); sc < bestScore {
 				bestScore = sc
 				best = cc[1 : len(cc)-1]
 			}
 		}
+		_ = i
+		_ = j
 		if best != nil {
 			if os.Getenv("PORTOLAN_DBGF") != "" {
 				span := pts[hi+1].Dist(pts[lo-1])
@@ -629,12 +774,38 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 					}
 				}
 			}
-			wins = append(wins, window{lo, hi, best})
+			wins = append(wins, window{lo, hi, bendSign(apex), best})
 		}
-		i = j
 	}
 	if len(wins) == 0 {
 		return pts
+	}
+	// consecutive windows that ended up ADJACENT with opposite bend are
+	// an S-curve after expansion — their tangent arcs meet at a kink.
+	// Drop both replacements and let corner cutting handle the S.
+	for x := 0; x+1 < len(wins); x++ {
+		gap := 0.0
+		for k := wins[x].hi + 1; k <= wins[x+1].lo && k < n; k++ {
+			if k > 0 {
+				gap += pts[k].Dist(pts[k-1])
+			}
+		}
+		if gap < 20 && wins[x].sign*wins[x+1].sign < 0 {
+			wins[x].repl = nil
+			wins[x+1].repl = nil
+		}
+	}
+	{
+		kept := wins[:0]
+		for _, w := range wins {
+			if w.repl != nil {
+				kept = append(kept, w)
+			}
+		}
+		wins = kept
+		if len(wins) == 0 {
+			return pts
+		}
 	}
 	var out []geo.Pt
 	k := 0
@@ -642,7 +813,30 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 		for ; k < w.lo; k++ {
 			out = append(out, pts[k])
 		}
-		out = append(out, w.repl...)
+		// stitch-time fold check: if joining this window's replacement
+		// reverses direction against either neighbor, keep the original
+		// span instead — overlapping replacements must not retrace
+		ok := len(w.repl) >= 2
+		if ok && w.lo >= 1 {
+			inDir := w.repl[0].Sub(pts[w.lo-1])
+			if inDir.Dot(w.repl[1].Sub(w.repl[0])) <= 0 {
+				ok = false
+			}
+		}
+		if ok && w.hi+1 < n {
+			last := w.repl[len(w.repl)-1]
+			outDir := pts[w.hi+1].Sub(last)
+			if outDir.Dot(last.Sub(w.repl[len(w.repl)-2])) <= 0 {
+				ok = false
+			}
+		}
+		if ok {
+			out = append(out, w.repl...)
+		} else {
+			for z := w.lo; z <= w.hi; z++ {
+				out = append(out, pts[z])
+			}
+		}
 		k = w.hi + 1
 	}
 	for ; k < n; k++ {
