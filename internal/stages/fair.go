@@ -515,7 +515,16 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					}
 				}
 			}
-			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); !onSteel && mt > 25 {
+			// a straight-through pass has no excuse for ANY visible wiggle —
+			// median membership shifts at the node jog the pieced chain a
+			// couple of metres, which the compact per-color spans no longer
+			// hide. The Bézier between the steady-side tangents draws the
+			// straight line a hand would.
+			retryAt := 25.0
+			if bend < straightBend {
+				retryAt = 8
+			}
+			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); !onSteel && mt > retryAt {
 				// the pieced chain drags junction-interior geometry (branch
 				// ramps, weld curls) into the connector. A hand doesn't: it
 				// draws one curve between the cut points, tangent to the
