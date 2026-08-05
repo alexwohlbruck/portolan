@@ -55,8 +55,9 @@ const (
 
 // BuildFeature is one emitted line-map feature (color + geometry in metric).
 type BuildFeature struct {
-	Color string
-	Line  *geo.Line
+	Color  string
+	Routes []string // route ids riding the feature (dup-gate identity)
+	Line   *geo.Line
 }
 
 type LineScore struct {
@@ -66,6 +67,8 @@ type LineScore struct {
 	CoverPct, ColPct float64
 	DupPct           float64 // doubled-geometry samples (lens detector)
 	Fail             bool
+	WorstAt          geo.LL   // location of the max deviation — navigable
+	DupAt            []geo.LL // doubled-sample locations (capped) — navigable
 }
 
 type Spike struct {
@@ -100,6 +103,7 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 	}
 	grid := geo.NewGrid(lines, 64)
 
+
 	drawn := make([]*geo.Line, 0, len(net.Lines))
 	for _, dl := range net.Lines {
 		pts := make([]geo.Pt, len(dl.Coords))
@@ -120,25 +124,53 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 		samples := l.Resample(5)
 		var devs []float64
 		colHit, dupHit := 0, 0
+		worstDev, worstAt := -1.0, geo.Pt{}
+		var dupAt []geo.Pt
 		for _, q := range samples {
 			best, bestI := math.Inf(1), -1
-			within := 0
+			// The lens gate: the SAME SERVICE riding two laterally-separated
+			// centerlines is a doubled network. Co-centered per-color copies
+			// of one ribbon (parchment contract) cluster to one point and
+			// never fire; distinct services legitimately side by side
+			// (Rector St kiss class) share no route and never fire.
+			var dupHits []int
 			grid.Near(q, 120, func(fi int) {
 				d := lines[fi].DistTo(q)
 				if d < best {
 					best, bestI = d, fi
 				}
 				if d < DupM {
-					within++
+					dupHits = append(dupHits, fi)
 				}
 			})
 			if bestI < 0 {
 				best = 120 // beyond query reach: counts as a hole
 			}
-			if within >= 2 {
+			doubled := false
+			for a := 0; a < len(dupHits) && !doubled; a++ {
+				for b := a + 1; b < len(dupHits); b++ {
+					fa, fb := dupHits[a], dupHits[b]
+					if !routesIntersect(feats[fa].Routes, feats[fb].Routes) {
+						continue
+					}
+					arcA, _ := lines[fa].ProjectArc(q)
+					arcB, _ := lines[fb].ProjectArc(q)
+					if lines[fa].AtArc(arcA).Dist(lines[fb].AtArc(arcB)) > 3.0 {
+						doubled = true
+						break
+					}
+				}
+			}
+			if doubled {
 				dupHit++ // lens: the network doubled along the drawing
+				if len(dupAt) < 25 {
+					dupAt = append(dupAt, q)
+				}
 			}
 			devs = append(devs, best)
+			if best > worstDev {
+				worstDev, worstAt = best, q
+			}
 			if bestI >= 0 && colorEq(feats[bestI].Color, dl) {
 				colHit++
 			}
@@ -162,6 +194,10 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 			ColPct:   100 * float64(colHit) / float64(len(samples)),
 			DupPct:   dupPct,
 			Fail:     p90 > FailP90M || coverPct < FailCoverPct || dupPct > FailDupPct,
+			WorstAt:  frame.ToLL(worstAt),
+		}
+		for _, q := range dupAt {
+			ls.DupAt = append(ls.DupAt, frame.ToLL(q))
 		}
 		if ls.Fail {
 			res.Failures++
@@ -303,6 +339,17 @@ func colorEq(c string, dl DrawnLine) bool {
 	for _, r := range dl.Routes {
 		if eqHex(r.Color, c) {
 			return true
+		}
+	}
+	return false
+}
+
+func routesIntersect(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y && x != "" {
+				return true
+			}
 		}
 	}
 	return false

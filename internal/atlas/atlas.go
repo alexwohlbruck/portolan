@@ -8,17 +8,21 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
+	"github.com/alexwohlbruck/portolan/internal/sketch"
 )
 
 //go:embed editor.html
@@ -51,6 +55,11 @@ type Server struct {
 	mu       sync.Mutex
 	overlays map[string]*overlayCache
 
+	scenMu    sync.Mutex
+	scenarios map[string]*scenCache
+
+	locMu sync.Mutex
+
 	runMu   sync.Mutex
 	running bool
 	runLog  []string
@@ -64,6 +73,11 @@ type overlayCache struct {
 	feats []overlayFeat
 }
 
+type scenCache struct {
+	mod   time.Time
+	scens []gtfs.Scenario
+}
+
 type overlayFeat struct {
 	raw            json.RawMessage
 	minLon, minLat float64
@@ -71,7 +85,8 @@ type overlayFeat struct {
 }
 
 func NewServer(configPath, maplibreDir string) (*Server, error) {
-	s := &Server{maplibre: maplibreDir, overlays: map[string]*overlayCache{}}
+	s := &Server{maplibre: maplibreDir,
+		overlays: map[string]*overlayCache{}, scenarios: map[string]*scenCache{}}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("workbench config: %w (see portolan.json in the repo)", err)
@@ -85,6 +100,21 @@ func NewServer(configPath, maplibreDir string) (*Server, error) {
 	return s, nil
 }
 
+// locations returns the problem-spot list: locations.json in the working
+// directory when present (the owner-editable review set — append a row,
+// refresh, it's everywhere: map places, sketch bookmarks, visual bench),
+// else the embedded default.
+func locations() []byte {
+	if raw, err := os.ReadFile("locations.json"); err == nil {
+		var v []any // validate — a broken row would kill the editor page
+		if json.Unmarshal(raw, &v) == nil {
+			return bytes.TrimSpace(raw)
+		}
+		log.Printf("atlas: locations.json invalid, using embedded list")
+	}
+	return []byte(locsJSON)
+}
+
 // asset serves a UI file LIVE FROM DISK when the source tree is present
 // (edit internal/atlas/*.html|js → refresh, no rebuild), falling back to
 // the embedded copy in a standalone binary.
@@ -96,23 +126,27 @@ func asset(name string, embedded []byte) []byte {
 }
 
 func (s *Server) Handler() http.Handler {
-	render := func(name string, embedded []byte, inject bool) []byte {
+	render := func(name string, embedded []byte, inject, nav bool) []byte {
 		body := asset(name, embedded)
 		if inject {
-			body = bytes.ReplaceAll(body, []byte("%LOCS%"), []byte(locsJSON))
+			body = bytes.ReplaceAll(body, []byte("%LOCS%"), locations())
 			body = bytes.ReplaceAll(body, []byte("%SWATCHES%"), []byte(swatchesJSON))
 		}
-		return append(append([]byte(nil), body...),
-			[]byte(`<script src="/nav.js"></script>`)...)
+		if nav {
+			body = append(append([]byte(nil), body...),
+				[]byte(`<script src="/nav.js"></script>`)...)
+		}
+		return body
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sketch", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(render("editor.html", editorHTML, true))
+		w.Write(render("editor.html", editorHTML, true, true))
 	})
 	mux.HandleFunc("/map", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(render("map.html", mapHTML, false))
+		// the reworked map page owns its chrome — no shared nav bar
+		w.Write(render("map.html", mapHTML, false, false))
 	})
 	mux.HandleFunc("/nav.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript")
@@ -141,16 +175,49 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("/api/network", s.network)
 	mux.HandleFunc("/api/features", s.features)
-	mux.HandleFunc("/api/build.geojson", s.fileFor(func(f FeedCfg) string { return f.Out }))
+	mux.HandleFunc("/api/scenarios", s.scenariosAPI)
+	mux.HandleFunc("/api/build.geojson", func(w http.ResponseWriter, r *http.Request) {
+		fc, _, ok := s.feedCfg(r)
+		if !ok {
+			http.Error(w, "unknown feed", 404)
+			return
+		}
+		p := fc.Out
+		if scen := r.URL.Query().Get("scenario"); scen != "" {
+			sp, err := scenOut(fc.Out, scen)
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			p = sp
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// stale cached builds have masqueraded as pipeline bugs repeatedly
+		w.Header().Set("Cache-Control", "no-store")
+		if _, err := os.Stat(p); err != nil {
+			fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
+			return
+		}
+		http.ServeFile(w, r, p)
+	})
 	mux.HandleFunc("/api/rail.geojson", s.fileFor(func(f FeedCfg) string { return f.Rail }))
-	for _, st := range []string{"strands", "support", "graph", "nodes", "trackcenter"} {
+	for _, st := range []string{"strands", "support", "graph", "nodes", "trackcenter", "paths"} {
 		stage := st
 		mux.HandleFunc("/api/"+stage+".geojson",
 			s.fileFor(func(f FeedCfg) string { return f.Out + "." + stage + ".geojson" }))
 	}
-	mux.HandleFunc("/api/locations", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, locsJSON)
+	mux.HandleFunc("/api/locations", s.locationsAPI)
+	mux.HandleFunc("/api/refs/status", s.refsStatus)
+	// reference screenshots (refs/ is gitignored; local comparison only)
+	mux.HandleFunc("/refs/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/refs/")
+		dir, file, ok := strings.Cut(name, "/")
+		if !ok || (dir != "apple" && dir != "portolan") ||
+			!strings.HasSuffix(file, ".png") || strings.ContainsAny(file, "/\\") {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join("refs", dir, file))
 	})
 	mux.HandleFunc("/api/params", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -158,7 +225,76 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("/api/run", s.run)
 	mux.HandleFunc("/api/run/status", s.runStatus)
+	mux.HandleFunc("/api/score", s.score)
+	mux.HandleFunc("/api/snap", s.snap)
 	return mux
+}
+
+// snap saves a browser-rendered PNG (map.getCanvas().toDataURL blob) under
+// refs/ — the visual-benchmark capture path (docs/VISUAL-BENCH.md). Names
+// are constrained to a flat slug so the endpoint can't write elsewhere.
+func (s *Server) snap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST", 405)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	ok := name != "" && len(name) < 80
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			ok = false
+		}
+	}
+	if !ok {
+		http.Error(w, "bad name (want [a-z0-9-_])", 400)
+		return
+	}
+	if err := os.MkdirAll(filepath.Join("refs", "portolan"), 0o755); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	f, err := os.Create(filepath.Join("refs", "portolan", name+".png"))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, io.LimitReader(r.Body, 20<<20)); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.WriteHeader(204)
+}
+
+// score runs the scorer in-process and returns the full structured result —
+// every deviation, spike, and dup sample carries a location the UI can fly
+// to (a number you can't navigate to is a number you won't fix).
+func (s *Server) score(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fc, feed, ok := s.feedCfg(r)
+	if !ok {
+		http.Error(w, `{"error":"unknown feed"}`, 404)
+		return
+	}
+	network := fc.Network
+	if network == "" {
+		network = filepath.Join(s.cfg.Sketches, "network-"+feed+".json")
+	}
+	t0 := time.Now()
+	res, err := pipeline.Sound(pipeline.SoundOpts{Network: network, Build: fc.Out})
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"result": res,
+		"ms":     time.Since(t0).Milliseconds(),
+		"gates": map[string]float64{
+			"p90": sketch.FailP90M, "cover": sketch.FailCoverPct,
+			"dup": sketch.FailDupPct, "wobble": sketch.FailWobbleP90,
+			"jag_max": sketch.FailJagMaxDeg, "jag_per_km": sketch.FailJagPerKm,
+		},
+	})
 }
 
 func (s *Server) feedCfg(r *http.Request) (FeedCfg, string, bool) {
@@ -188,6 +324,206 @@ func (s *Server) fileFor(pick func(FeedCfg) string) http.HandlerFunc {
 	}
 }
 
+// ---- problem areas -------------------------------------------------------
+
+var keyRe = regexp.MustCompile(`^[a-z0-9_-]{1,40}$`)
+
+// locationsAPI: GET returns the problem-area list; POST upserts (or with
+// delete:true removes) one area in locations.json — the UI's draw-a-box
+// flow lands here. Rows stay position-compatible ([key, name, lat, lon,
+// feed] + optional [w,s,e,n] bbox as a 6th element) so jq, the sketch
+// bookmarks and the bench scripts keep working untouched.
+func (s *Server) locationsAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		w.Write(locations())
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", 405)
+		return
+	}
+	var req struct {
+		Key    string    `json:"key"`
+		Name   string    `json:"name"`
+		Feed   string    `json:"feed"`
+		Lat    float64   `json:"lat"`
+		Lon    float64   `json:"lon"`
+		BBox   []float64 `json:"bbox"` // [w, s, e, n]
+		Delete bool      `json:"delete"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if !keyRe.MatchString(req.Key) {
+		http.Error(w, `bad key (want [a-z0-9_-]{1,40})`, 400)
+		return
+	}
+	if len(req.BBox) == 4 {
+		if req.BBox[0] >= req.BBox[2] || req.BBox[1] >= req.BBox[3] {
+			http.Error(w, "bad bbox (want [w,s,e,n])", 400)
+			return
+		}
+		req.Lon = (req.BBox[0] + req.BBox[2]) / 2
+		req.Lat = (req.BBox[1] + req.BBox[3]) / 2
+	}
+	if !req.Delete && (req.Name == "" || req.Feed == "" || req.Lat == 0) {
+		http.Error(w, "need name, feed and bbox (or lat/lon)", 400)
+		return
+	}
+
+	s.locMu.Lock()
+	defer s.locMu.Unlock()
+	var rows []json.RawMessage
+	if err := json.Unmarshal(locations(), &rows); err != nil {
+		http.Error(w, "locations.json unreadable: "+err.Error(), 500)
+		return
+	}
+	out := rows[:0]
+	for _, raw := range rows {
+		var row []any
+		if json.Unmarshal(raw, &row) == nil && len(row) > 0 {
+			if k, _ := row[0].(string); k == req.Key {
+				continue // replaced (or deleted) below
+			}
+		}
+		out = append(out, raw)
+	}
+	if !req.Delete {
+		row := []any{req.Key, req.Name, req.Lat, req.Lon, req.Feed}
+		if len(req.BBox) == 4 {
+			row = append(row, req.BBox)
+		}
+		raw, _ := json.Marshal(row)
+		out = append(out, raw)
+	}
+	pretty, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := os.WriteFile("locations.json.tmp", pretty, 0o644); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := os.Rename("locations.json.tmp", "locations.json"); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Write(pretty)
+}
+
+// refsStatus reports, per problem-area key, the mtimes of its two tracked
+// screenshots (portolan render + Apple Maps reference), 0 when missing.
+func (s *Server) refsStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var rows [][]any
+	json.Unmarshal(locations(), &rows)
+	type st struct {
+		Portolan int64 `json:"portolan"`
+		Apple    int64 `json:"apple"`
+	}
+	out := map[string]st{}
+	mt := func(p string) int64 {
+		if fi, err := os.Stat(p); err == nil {
+			return fi.ModTime().Unix()
+		}
+		return 0
+	}
+	for _, row := range rows {
+		key, _ := row[0].(string)
+		if key == "" {
+			continue
+		}
+		out[key] = st{
+			Portolan: mt(filepath.Join("refs", "portolan", key+".png")),
+			Apple:    mt(filepath.Join("refs", "apple", key+".png")),
+		}
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+// ---- service scenarios ---------------------------------------------------
+
+// scenOut: the build output path for one scenario — "build/nyc.geojson" →
+// "build/nyc.scen-<id>.geojson". IDs are hex hashes; validate so the query
+// param can't traverse paths.
+func scenOut(out, scen string) (string, error) {
+	if len(scen) == 0 || len(scen) > 16 {
+		return "", fmt.Errorf("bad scenario id")
+	}
+	for _, c := range scen {
+		if !(c >= 'a' && c <= 'f' || c >= '0' && c <= '9') {
+			return "", fmt.Errorf("bad scenario id")
+		}
+	}
+	return strings.TrimSuffix(out, ".geojson") + ".scen-" + scen + ".geojson", nil
+}
+
+// scenariosAPI returns the feed's derived service scenarios plus a 7×24
+// grid mapping (day, hour) → scenario id and which scenarios already have
+// a built layout on disk. Derivation is cached on the GTFS zip's mtime
+// (the stop_times scan takes a few seconds on big feeds).
+func (s *Server) scenariosAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fc, feed, ok := s.feedCfg(r)
+	if !ok || fc.GTFS == "" {
+		json.NewEncoder(w).Encode(map[string]any{"available": false})
+		return
+	}
+	st, err := os.Stat(fc.GTFS)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
+		return
+	}
+	s.scenMu.Lock()
+	c := s.scenarios[feed]
+	if c == nil || !c.mod.Equal(st.ModTime()) {
+		s.scenMu.Unlock()
+		si, err := gtfs.LoadService(fc.GTFS)
+		if err != nil {
+			log.Printf("atlas: scenarios unavailable for feed %s: %v", feed, err)
+			json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
+			return
+		}
+		scens := gtfs.BuildScenarios(si, pipeline.DefaultDials().Cover)
+		s.scenMu.Lock()
+		c = &scenCache{mod: st.ModTime(), scens: scens}
+		s.scenarios[feed] = c
+	}
+	scens := c.scens
+	s.scenMu.Unlock()
+
+	type scenJSON struct {
+		ID       string `json:"id"`
+		Label    string `json:"label"`
+		Patterns int    `json:"patterns"`
+		Built    bool   `json:"built"`
+	}
+	var list []scenJSON
+	var grid [7][24]string
+	for _, sc := range scens {
+		built := false
+		if p, err := scenOut(fc.Out, sc.ID); err == nil {
+			if _, err := os.Stat(p); err == nil {
+				built = true
+			}
+		}
+		list = append(list, scenJSON{sc.ID, sc.Label, sc.Patterns, built})
+		for d := 0; d < 7; d++ {
+			for h := 0; h < 24; h++ {
+				if sc.Cells[d][h] {
+					grid[d][h] = sc.ID
+				}
+			}
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"available": true, "scenarios": list, "grid": grid,
+	})
+}
+
 // ---- one-click pipeline runs -------------------------------------------
 
 func (s *Server) run(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +537,16 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd := r.URL.Query().Get("cmd")
+	scen := r.URL.Query().Get("scenario")
+	out := fc.Out
+	if scen != "" {
+		p, err := scenOut(fc.Out, scen)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		out = p
+	}
 	s.runMu.Lock()
 	if s.running {
 		s.runMu.Unlock()
@@ -209,6 +555,9 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	}
 	s.running, s.runDone, s.runOK = true, false, false
 	s.runCmd = cmd + " " + fc.Name
+	if scen != "" {
+		s.runCmd += " scenario " + scen
+	}
 	s.runLog = nil
 	s.runMu.Unlock()
 
@@ -231,7 +580,8 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		switch cmd {
 		case "chart":
 			err = pipeline.Chart(pipeline.ChartOpts{
-				GTFS: fc.GTFS, Rail: fc.Rail, Out: fc.Out, Dials: dials,
+				GTFS: fc.GTFS, Rail: fc.Rail, Out: out, Dials: dials,
+				Scenario: scen,
 			}, logf)
 		case "sound":
 			net := fc.Network

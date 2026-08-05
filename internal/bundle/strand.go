@@ -8,8 +8,9 @@ import (
 
 // Track is one OSM way in the metric frame.
 type Track struct {
-	ID   string
-	Line *geo.Line
+	ID    string
+	Line  *geo.Line
+	Level int // vertical class: +1 elevated, -1 tunnel, 0 surface
 }
 
 // Strand is one continuous physical track: OSM ways chained end-to-end

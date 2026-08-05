@@ -24,7 +24,12 @@ var railValues = map[string]bool{
 
 // Load reads a GeoJSON FeatureCollection and keeps regular-service rail
 // LineStrings: railway ∈ {rail,subway,light_rail,tram}, no service tag
-// (yards/sidings/spurs excluded at the door — LESSONS: >4 strands are yards).
+// (yards/sidings/spurs excluded at the door — LESSONS: >4 strands are yards)
+// — EXCEPT service=crossover: crossovers are the short links BETWEEN running
+// tracks. They add no corridor geometry (no new strands), but without them
+// the graph loses the connectivity that real trains use — the Manhattan
+// Bridge tracks reach Broadway only through one, and dropping it forced
+// whole patterns onto the wrong track pair and into phantom gap bridges.
 func Load(path string) ([]Way, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -57,7 +62,7 @@ func Load(path string) ([]Way, error) {
 		if !railValues[tags["railway"]] {
 			continue
 		}
-		if tags["service"] != "" {
+		if s := tags["service"]; s != "" && s != "crossover" {
 			continue
 		}
 		var coords [][]float64

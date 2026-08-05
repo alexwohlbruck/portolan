@@ -1,52 +1,213 @@
-<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>portolan · map</title>
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>portolan · atlas</title>
 <link rel="stylesheet" href="/vendor/maplibre-gl.css">
 <style>
-html,body{margin:0;height:100%;background:#111}
-#map{position:absolute;inset:0}
-#layers{position:absolute;right:10px;top:56px;z-index:20;background:#1b1b20cc;
-  color:#ddd;font:13px/1.7 system-ui;padding:10px 14px;border-radius:10px}
-#layers label{display:block;cursor:pointer;white-space:nowrap}
+:root{
+  --bg:#111114; --panel:#1a1a20; --panel2:#22222a; --line:#2e2e38;
+  --fg:#d8dae2; --dim:#8a8fa0; --accent:#4f8ff7; --ok:#3fbf6f; --bad:#e5484d;
+  --warn:#e0a336;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+  font:13px/1.45 system-ui,-apple-system,sans-serif}
+#app{display:flex;height:100%}
+#side{width:330px;min-width:330px;display:flex;flex-direction:column;
+  background:var(--panel);border-right:1px solid var(--line);overflow-y:auto}
+#map{flex:1;position:relative}
+
+/* ---- sidebar chrome ---- */
+#side header{display:flex;align-items:center;gap:8px;padding:10px 12px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:5}
+#side header .title{font-weight:700;letter-spacing:.3px}
+#side header .title span{color:var(--dim);font-weight:400}
+select,button,input{font:inherit;color:var(--fg);background:var(--panel2);
+  border:1px solid var(--line);border-radius:7px;padding:4px 8px}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:#2a4a78;border-color:#3a5a8a;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+a{color:var(--accent);text-decoration:none}
+
+section{border-bottom:1px solid var(--line);padding:10px 12px}
+section h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;
+  letter-spacing:.8px;color:var(--dim);display:flex;align-items:center;gap:6px}
+section h3 .spacer{flex:1}
+.actions{display:flex;gap:8px;align-items:center;padding:10px 12px;
+  border-bottom:1px solid var(--line)}
+#status{font-size:12px;color:var(--dim);margin-left:auto;text-align:right}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-weight:700;font-size:11px}
+.badge.ok{background:#153826;color:var(--ok)}
+.badge.bad{background:#3a1a1c;color:var(--bad)}
+
+/* ---- score card ---- */
+#chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.chip{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+  padding:2px 7px;font-size:11.5px;color:var(--dim)}
+.chip b{color:var(--fg);font-weight:600}
+.chip.bad{border-color:var(--bad)} .chip.bad b{color:var(--bad)}
+table.score{width:100%;border-collapse:collapse;font-size:11.5px}
+table.score th{color:var(--dim);font-weight:500;text-align:right;padding:1px 4px}
+table.score th:first-child{text-align:left}
+table.score td{text-align:right;padding:1px 4px;border-radius:4px;font-variant-numeric:tabular-nums}
+table.score td:first-child{text-align:left;max-width:110px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+table.score tr{cursor:pointer}
+table.score tr:hover td{background:var(--panel2)}
+td.bad{color:var(--bad);font-weight:600}
+.deflist{margin-top:6px;max-height:130px;overflow-y:auto}
+.defrow{display:flex;gap:6px;padding:2px 4px;border-radius:5px;cursor:pointer;
+  font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+.defrow:hover{background:var(--panel2);color:var(--fg)}
+.defrow .deg{color:var(--warn);font-weight:600;width:34px}
+.empty{color:var(--dim);font-size:12px;padding:4px 0}
+
+/* ---- layers / places ---- */
+.lrow{display:flex;align-items:center;gap:8px;padding:2.5px 4px;border-radius:6px;cursor:pointer}
+.lrow:hover{background:var(--panel2)}
+.lrow .sw{width:14px;height:4px;border-radius:2px}
+.lrow .key{margin-left:auto;color:var(--dim);font-size:10px;border:1px solid var(--line);
+  border-radius:4px;padding:0 4px}
+.lrow input{margin:0}
+/* ---- problem areas ---- */
+.arow{display:flex;align-items:center;gap:6px;padding:2.5px 4px;border-radius:6px}
+.arow:hover{background:var(--panel2)}
+.akey{font:10.5px ui-monospace,monospace;color:var(--accent);background:#1c2940;
+  border:1px solid #2a3a58;border-radius:5px;padding:0 5px;cursor:copy;white-space:nowrap}
+.akey:hover{border-color:var(--accent)}
+.aname{flex:1;color:var(--dim);cursor:pointer;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:12px}
+.arow:hover .aname{color:var(--fg)}
+.adot{width:16px;height:16px;border-radius:4px;font-size:9px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  border:1px solid var(--line);color:var(--dim);flex:none}
+.adot.ok{background:#153826;color:var(--ok);border-color:#1e4a32}
+.adot.miss{background:#2a1a1c;color:#a06060;border-color:#3a2a2c}
+.asnap{font-size:10px;padding:0 5px;height:16px;line-height:1;flex:none}
+.arealabel{font:10px ui-monospace,monospace;color:#dfe3ee;background:#20263acc;
+  border:1px solid #3a4a6a;border-radius:4px;padding:0 4px;cursor:copy;
+  white-space:nowrap;pointer-events:auto}
+
+/* ---- service (time of day/week) ---- */
+.daybtn{font-size:11px;padding:2px 8px}
+.daybtn.active{background:#2a4a78;border-color:#3a5a8a;font-weight:600}
+
+/* ---- dials ---- */
+.dgroup{margin-bottom:6px}
+.dgroup summary{cursor:pointer;color:var(--dim);font-size:12px;padding:2px 0}
+.dgrid{display:grid;grid-template-columns:1fr 5.2em;gap:3px 8px;margin:5px 0 3px;font-size:12px}
+.dgrid label{color:var(--dim);align-self:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgrid input{padding:2px 6px;width:100%;text-align:right}
+.dgrid input.mod{border-color:var(--warn)}
+
+/* ---- log ---- */
+#log{font:11px/1.5 ui-monospace,monospace;white-space:pre-wrap;color:#b9c4d8;
+  max-height:200px;overflow-y:auto;margin:6px 0 0;background:var(--bg);
+  border:1px solid var(--line);border-radius:7px;padding:8px}
+
+/* ---- map popup ---- */
+.maplibregl-popup-content{background:var(--panel)!important;color:var(--fg)!important;
+  border:1px solid var(--line);border-radius:9px!important;padding:9px 11px!important;
+  font:12px system-ui;box-shadow:0 4px 18px #000a!important;max-width:280px}
+.maplibregl-popup-tip{border-top-color:var(--panel)!important;border-bottom-color:var(--panel)!important}
+.insp-row{display:flex;align-items:center;gap:6px;padding:1.5px 0}
+.insp-row .sw{width:10px;height:10px;border-radius:3px;flex:none}
+.insp-row .k{color:var(--dim)}
+.insp-coord{color:var(--dim);font-size:10.5px;margin-top:5px;cursor:pointer}
+.insp-coord:hover{color:var(--accent)}
 </style>
-<div id="map"></div>
-<div id="layers">
-  <b style="opacity:.7">stages</b>
-  <label><input type="checkbox" id="ck-final" checked> final ribbons</label>
-  <label><input type="checkbox" id="ck-trackcenter"> track-group centerlines</label>
-  <label><input type="checkbox" id="ck-nodes"> nodes</label>
-  <label><input type="checkbox" id="ck-strands"> track strands</label>
-  <label><input type="checkbox" id="ck-rail"> OSM tracks (raw)</label>
-  <label><input type="checkbox" id="ck-sketch"> sketch overlay</label>
-  <label><input type="checkbox" id="ck-base" checked> basemap</label>
-  <hr style="border-color:#333">
-  <b style="opacity:.7">problem areas</b>
-  <select id="probsel" style="width:100%;background:#222;color:#ddd;border:1px solid #333;border-radius:6px;padding:3px"></select>
-  <hr style="border-color:#333">
-  <details id="dials"><summary style="cursor:pointer"><b style="opacity:.7">tuning dials</b></summary>
-    <div id="dialgrid" style="display:grid;grid-template-columns:auto 5.5em;gap:2px 6px;margin-top:6px;font-size:12px"></div>
-  </details>
+
+<div id="app">
+  <aside id="side">
+    <header>
+      <div class="title">portolan <span>· atlas</span></div>
+      <select id="feed" title="feed"></select>
+      <button id="themebtn" title="toggle map theme" style="padding:4px 7px"></button>
+      <a id="sketchlink" href="/sketch" title="ground-truth editor">sketch ↗</a>
+    </header>
+    <div class="actions">
+      <button id="build" class="primary" title="run the pipeline (b)">⟳ build</button>
+      <button id="score" title="score against the drawn network (s)">⚖ score</button>
+      <label style="color:var(--dim);font-size:11px;display:flex;gap:4px;align-items:center">
+        <input type="checkbox" id="autoscore" checked style="margin:0">auto
+      </label>
+      <div id="status">ready</div>
+    </div>
+    <section id="scorecard">
+      <h3>score <span class="spacer"></span><span id="scoremeta" style="text-transform:none;letter-spacing:0"></span></h3>
+      <div id="scorebody"><div class="empty">not scored yet — hit ⚖</div></div>
+    </section>
+    <section>
+      <h3>layers</h3>
+      <div id="layerlist"></div>
+    </section>
+    <section id="servicesec" style="display:none">
+      <h3>service <span class="spacer"></span>
+        <button id="svcnow" style="font-size:10px;padding:1px 6px" title="jump to the current day and hour">now</button></h3>
+      <div id="svcdaybtns" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px"></div>
+      <div id="svchourrow" style="display:none;align-items:center;gap:8px">
+        <input type="range" id="svchour" min="0" max="23" step="1" style="flex:1;padding:0">
+        <span id="svchourlab" style="font-variant-numeric:tabular-nums;color:var(--dim);width:40px;text-align:right"></span>
+      </div>
+      <div id="svcinfo" style="color:var(--dim);font-size:11.5px;margin-top:5px"></div>
+    </section>
+    <section>
+      <h3>problem areas <span class="spacer"></span>
+        <button id="areaadd" style="font-size:10px;padding:1px 6px" title="draw a new problem area on the map">+ area</button>
+        <button id="areasnapall" style="font-size:10px;padding:1px 6px" title="re-capture the portolan screenshot of every area">⟳ snaps</button>
+        <button id="copyview" style="font-size:10px;padding:1px 6px" title="copy a link to this exact view">link</button></h3>
+      <div id="arealist"></div>
+      <div style="color:var(--dim);font-size:10px;margin-top:4px">
+        P = portolan snap · A = Apple ref (click a missing A to copy the capture command)</div>
+    </section>
+    <section>
+      <h3>dials <span class="spacer"></span>
+        <button id="dialreset" style="font-size:10px;padding:1px 6px">reset</button></h3>
+      <div id="dialgroups"></div>
+      <div style="color:var(--dim);font-size:10.5px">changed dials apply on the next build</div>
+    </section>
+    <section style="border-bottom:0">
+      <h3 style="cursor:pointer" id="logtoggle">run log ▸</h3>
+      <pre id="log" style="display:none"></pre>
+    </section>
+  </aside>
+  <div id="map"></div>
 </div>
+
 <script>
-// Embedded/background panes report the tab as hidden; requestAnimationFrame
-// then never fires and MapLibre's load+render loop stalls forever. Fall back
-// to a timer while hidden so the map works headlessly (browser panes, CI
-// screenshots) — no effect in a normal foreground tab.
+// Hidden panes (embedded browsers, CI) stall requestAnimationFrame and
+// MapLibre's render scheduling — patch RAF and keep poking the render loop.
 (function(){
   const raf = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = cb => document.hidden
     ? setTimeout(() => cb(performance.now()), 33)
     : raf(cb);
+  setInterval(() => { if (window.map) window.map.triggerRepaint(); }, 400);
 })();
 </script>
-<script src="/vendor/maplibre-gl.js"></script>
+<script src="/vendor/maplibre-gl.js?v=2"></script>
 <script>
-const FEED = new URLSearchParams(location.search).get('feed') || '5';
-const START = FEED === '29' ? [-87.6321, 41.8799] : [-74.0045, 40.7124];
+'use strict';
+const $ = id => document.getElementById(id);
+const QS = new URLSearchParams(location.search);
+const FEED = QS.get('feed') || '5';
+$('sketchlink').href = '/sketch?feed=' + FEED;
+// ?bare=1 — clean full-bleed map for reference captures (visual benchmarks)
+if (QS.get('bare')) $('side').style.display = 'none';
+// map theme: ?theme= wins (so captures can pin one), else saved preference
+const THEME = QS.get('theme') || localStorage.getItem('atlas-theme') || 'light';
+$('themebtn').textContent = THEME === 'dark' ? '☀' : '🌙';
+$('themebtn').onclick = () => {
+  localStorage.setItem('atlas-theme', THEME === 'dark' ? 'light' : 'dark');
+  location.reload(); // tiles live in the style — rebuild it clean
+};
 
-// ── parchment's transit_line_segments render model, verbatim ─────────────
-// steady: constant signed offset_px · transition: off_from_px → off_to_px
-// eased along ['line-progress'] INSIDE line-offset — fork-only capability.
-const zoomScaledOffset = e => ['interpolate',['linear'],['zoom'],
-  11, ['*', e, 0.5], 14, e];
+// ---------- camera: #zoom/lat/lon in the URL, restored on load ----------
+const DEFAULTS = { '29': {c:[-87.6321,41.8799], z:13} };
+const start = DEFAULTS[FEED] || {c:[-74.0045,40.7124], z:13};
+const hash = location.hash.slice(1).split('/').map(Number);
+if (hash.length === 3 && hash.every(isFinite)) { start.z = hash[0]; start.c = [hash[2], hash[1]]; }
+
+// ---------- parchment transit_line_segments render model, verbatim ------
+const zoomScaledOffset = e => ['interpolate',['linear'],['zoom'], 11, ['*', e, 0.5], 14, e];
 const STEADY_OFFSET = zoomScaledOffset(['get','offset_px']);
 const TRANSITION_OFFSET = zoomScaledOffset(
   ['interpolate',['cubic-bezier',.4,0,.6,1],['line-progress'],
@@ -54,143 +215,785 @@ const TRANSITION_OFFSET = zoomScaledOffset(
 const COLOR = ['concat','#',['get','route_color']];
 const WIDTH = ['interpolate',['linear'],['zoom'],10,1.0,13,2.0,15,3.0,16,3.6];
 const CASING_W = ['interpolate',['linear'],['zoom'],10,1.9,13,3.2,15,4.4,16,5.2];
+const BANDS = [{min:15,max:24,key:15},{min:14,max:15,key:14},{min:13,max:14,key:13},{min:0,max:13,key:0}];
 
+const BASE = THEME === 'dark' ? 'dark_all' : 'light_all';
 const map = new maplibregl.Map({
-  container:'map', center:START, zoom:13,
-  style:{
-    version:8,
-    sources:{ osm:{ type:'raster',
-      tiles:['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-             'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'],
-      tileSize:256, attribution:'© OpenStreetMap · © CARTO' } },
-    layers:[{id:'base', type:'raster', source:'osm',
-             paint:{'raster-saturation':-0.7,'raster-opacity':0.85}}]
-  }
+  container:'map', center:start.c, zoom:start.z, attributionControl:{compact:true},
+  // the canvas doubles as the capture surface everywhere now (per-area
+  // ⟳ snap buttons, snapall) — keep the buffer so toBlob() works
+  preserveDrawingBuffer: true,
+  style:{version:8,
+    sources:{osm:{type:'raster',
+      tiles:[`https://a.basemaps.cartocdn.com/${BASE}/{z}/{x}/{y}@2x.png`,
+             `https://b.basemaps.cartocdn.com/${BASE}/{z}/{x}/{y}@2x.png`],
+      tileSize:256, attribution:'© OpenStreetMap · © CARTO'}},
+    layers:[{id:'base',type:'raster',source:'osm',
+             paint: THEME === 'dark'
+               ? {'raster-saturation':-0.3,'raster-opacity':0.92}
+               : {'raster-saturation':-0.7,'raster-opacity':0.85}}]}
 });
-window.map = map; // debuggability
-map.on('error', e => console.error('map error:', e && e.error && e.error.message || e));
-map.addControl(new maplibregl.NavigationControl());
-new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
+window.map = map;
+map.addControl(new maplibregl.NavigationControl({showCompass:false}));
+new ResizeObserver(() => map.resize()).observe($('map'));
+map.on('error', e => console.error('map error:', e?.error?.message || e));
+map.on('moveend', () => {
+  const c = map.getCenter();
+  history.replaceState(null, '',
+    `?feed=${FEED}${svcQS()}#${map.getZoom().toFixed(2)}/${c.lat.toFixed(5)}/${c.lng.toFixed(5)}`);
+});
 
-// zoom bands: each band's features render only in its zoom range
-const BANDS = [
-  {min:15, max:24, key:15},
-  {min:14, max:15, key:14},
-  {min:13, max:14, key:13},
-  {min:0,  max:13, key:0},
+// ---------- layers ----------
+let ribbonIds = [], inspectIds = [];
+const LAYERS = [
+  {key:'ribbons',     label:'final ribbons',     sw:'linear-gradient(90deg,#d82,#f6b,#095)', on:true},
+  {key:'sketch',      label:'sketch (truth)',    sw:'#e91ee3', on:true},
+  {key:'defects',     label:'defect markers',    sw:'#e5484d', on:true},
+  {key:'areas',       label:'problem areas',     sw:'#7a86c8', on:true},
+  {key:'trackcenter', label:'segment centerlines', sw:'#12b5a4', on:false},
+  {key:'paths',       label:'matched paths',     sw:'#7a9dd4', on:false},
+  {key:'nodes',       label:'junction nodes',    sw:'#e33',    on:false},
+  {key:'strands',     label:'track strands',     sw:'#c26bd1', on:false},
+  {key:'rail',        label:'OSM tracks',        sw:'#8a8a8a', on:true},
+  {key:'base',        label:'basemap',           sw:'#666',    on:true},
 ];
+const layerIds = key => key === 'ribbons' ? ribbonIds : [key];
 
 map.on('load', async () => {
-  map.addSource('build',   {type:'geojson', data:'/api/build.geojson?feed='+FEED,  lineMetrics:true});
-  map.addSource('trackcenter', {type:'geojson', data:'/api/trackcenter.geojson?feed='+FEED});
-  map.addSource('strands', {type:'geojson', data:'/api/strands.geojson?feed='+FEED});
-  map.addSource('nodes',   {type:'geojson', data:'/api/nodes.geojson?feed='+FEED});
-  map.addSource('rail',    {type:'geojson', data:'/api/rail.geojson?feed='+FEED});
-  map.addSource('sketch',  {type:'geojson', data:{type:'FeatureCollection',features:[]}});
+  const src = (n, data) => map.addSource(n, {type:'geojson', data,
+    ...(n === 'build' ? {lineMetrics:true} : {})});
+  // ?nodata=1: start the build source empty (debugging aid — lets a wedged
+  // dataset be bisected via setData without wedging the worker on load)
+  src('build', QS.get('nodata') ? {type:'FeatureCollection',features:[]}
+                                : `/api/build.geojson?feed=${FEED}&t=${Date.now()}`);
+  src('trackcenter', `/api/trackcenter.geojson?feed=${FEED}`);
+  src('paths',   `/api/paths.geojson?feed=${FEED}`);
+  src('nodes',   `/api/nodes.geojson?feed=${FEED}`);
+  src('strands', `/api/strands.geojson?feed=${FEED}`);
+  src('rail',    `/api/rail.geojson?feed=${FEED}`);
+  src('sketch',  {type:'FeatureCollection',features:[]});
+  src('defects', {type:'FeatureCollection',features:[]});
+  src('areas',   {type:'FeatureCollection',features:[]});
+  src('drawbox', {type:'FeatureCollection',features:[]});
 
-  map.addLayer({id:'rail', type:'line', source:'rail',
-    paint:{'line-color':'#8a8a8a','line-width':0.8,'line-opacity':0.7},
-    layout:{visibility:'none'}});
-  map.addLayer({id:'strands', type:'line', source:'strands',
-    paint:{'line-color':'#c26bd1','line-width':1.4,'line-opacity':0.8},
-    layout:{visibility:'none'}});
-  map.addLayer({id:'trackcenter', type:'line', source:'trackcenter',
-    paint:{'line-color':'#12b5a4','line-width':2.4,'line-opacity':0.9},
-    layout:{visibility:'none'}});
-  map.addLayer({id:'nodes', type:'circle', source:'nodes',
-    paint:{'circle-radius':['+',2,['get','degree']],'circle-color':'#e33',
-           'circle-opacity':0.8,'circle-stroke-color':'#fff','circle-stroke-width':1},
-    layout:{visibility:'none'}});
-
+  map.addLayer({id:'rail',type:'line',source:'rail',
+    paint:{'line-color':'#8a8a8a','line-width':0.8,'line-opacity':0.7}});
+  map.addLayer({id:'strands',type:'line',source:'strands',
+    paint:{'line-color':'#c26bd1','line-width':1.4,'line-opacity':0.8}});
+  map.addLayer({id:'paths',type:'line',source:'paths',
+    paint:{'line-color':['concat','#',['get','color']],'line-width':1.6,'line-opacity':0.75}});
+  map.addLayer({id:'trackcenter',type:'line',source:'trackcenter',
+    paint:{'line-color':['case',['get','gap'],'#e0a336','#12b5a4'],
+           'line-width':2.2,'line-opacity':0.9}});
+  // no casing: bare colored ribbons only (casing wiped neighbors white at
+  // junction overlaps; separation comes from ORDER's slot gaps)
+  const KINDS = [['steady',STEADY_OFFSET],['transition',TRANSITION_OFFSET],['bridge',STEADY_OFFSET]];
   for (const b of BANDS) {
-    const bandFilter = ['==',['get','band_min'], b.key===0?0:b.key];
-    for (const [kind, offset] of [['steady',STEADY_OFFSET],['transition',TRANSITION_OFFSET],['bridge',STEADY_OFFSET]]) {
-      const f = ['all', bandFilter, ['==',['get','kind'],kind]];
-      map.addLayer({id:`casing-${b.key}-${kind}`, type:'line', source:'build',
-        minzoom:b.min===0?0:b.min, maxzoom:b.max===24?24:b.max, filter:f,
+    const bf = ['==',['get','band_min'], b.key];
+    for (const [kind, off] of KINDS) {
+      const id = `line-${b.key}-${kind}`;
+      map.addLayer({id, type:'line', source:'build',
+        minzoom:b.min===0?0:b.min, maxzoom:b.max===24?24:b.max,
+        filter:['all', bf, ['==',['get','kind'],kind]],
         layout:{'line-cap':'butt','line-join':'round'},
-        paint:{'line-color':'#ffffff','line-width':CASING_W,'line-offset':offset}});
-      map.addLayer({id:`line-${b.key}-${kind}`, type:'line', source:'build',
-        minzoom:b.min===0?0:b.min, maxzoom:b.max===24?24:b.max, filter:f,
-        layout:{'line-cap':'butt','line-join':'round'},
-        paint:{'line-color':COLOR,'line-width':WIDTH,'line-offset':offset,
-               'line-dasharray': kind==='bridge' ? [2,2] : [1,0]}});
+        // bridges render EXACTLY like regular ribbons — the gap-bridge
+        // distinction is pipeline bookkeeping, not something riders see.
+        // (Also: any dasharray routes a layer through lineSDF, which
+        // bypasses the fork's variable line-offset.)
+        paint:{'line-color':COLOR,'line-width':WIDTH,'line-offset':off}});
+      ribbonIds.push(id);
+      inspectIds.push(id);
     }
   }
+  map.addLayer({id:'nodes',type:'circle',source:'nodes',
+    paint:{'circle-radius':['+',2,['get','degree']],'circle-color':'#e33',
+           'circle-opacity':0.8,'circle-stroke-color':'#fff','circle-stroke-width':1}});
+  map.addLayer({id:'sketch',type:'line',source:'sketch',
+    paint:{'line-color':'#e91ee3','line-width':1.6,'line-dasharray':[2,2],'line-opacity':0.85}});
+  // spikes render bigger than dup hotspots; details live in the inspector
+  // (the style has no glyph server, so no text layers)
+  map.addLayer({id:'defects',type:'circle',source:'defects',
+    paint:{'circle-radius':['case',['>',['get','deg'],0],6,4],
+           'circle-color':['get','color'],'circle-opacity':0.85,
+           'circle-stroke-color':'#fff','circle-stroke-width':1.5}});
+  // problem-area bounding boxes (labels are DOM markers — no glyph server)
+  map.addLayer({id:'areas',type:'line',source:'areas',
+    paint:{'line-color':'#7a86c8','line-width':1.4,'line-opacity':0.75,
+           'line-dasharray':[3,2]}});
+  map.addLayer({id:'drawbox',type:'line',source:'drawbox',
+    paint:{'line-color':'#e0a336','line-width':2}});
+  inspectIds.push('trackcenter','paths','nodes','defects');
+  refreshAreaLayer();
 
-  // sketch overlay (drawn ground truth, dashed magenta)
-  const net = await (await fetch('/api/network?feed='+FEED)).json();
-  map.getSource('sketch').setData({type:'FeatureCollection',
-    features:(net.lines||[]).filter(l=>(l.coords||[]).length>1).map(l=>({
-      type:'Feature',properties:{},
-      geometry:{type:'LineString',coordinates:l.coords}}))});
-  map.addLayer({id:'sketch', type:'line', source:'sketch',
-    paint:{'line-color':'#e91ee3','line-width':1.6,'line-dasharray':[2,2],
-           'line-opacity':0.85},
-    layout:{visibility:'none'}});
+  try {
+    const net = await (await fetch('/api/network?feed='+FEED)).json();
+    map.getSource('sketch').setData({type:'FeatureCollection',
+      features:(net.lines||[]).filter(l=>(l.coords||[]).length>1).map(l=>({
+        type:'Feature',properties:{},geometry:{type:'LineString',coordinates:l.coords}}))});
+  } catch (e) { console.error('sketch load failed:', e); }
 
-  const toggles = {
-    'ck-final': BANDS.flatMap(b=>['steady','transition','bridge']
-                 .flatMap(k=>[`casing-${b.key}-${k}`,`line-${b.key}-${k}`])),
-    'ck-rail': ['rail'], 'ck-sketch': ['sketch'],
-    'ck-strands': ['strands'], 'ck-trackcenter': ['trackcenter','trackcenter-labels'],
-    'ck-nodes': ['nodes'], 'ck-base': ['base'],
-  };
-  // layer visibility persists across reloads
-  const LS_KEY = 'portolan-layers';
-  const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
-  for (const [ck, ids] of Object.entries(toggles)) {
-    const el = document.getElementById(ck);
-    if (!el) continue;
-    if (ck in saved) el.checked = saved[ck];
-    const apply = () => ids.forEach(id =>
-      map.setLayoutProperty(id, 'visibility', el.checked ? 'visible' : 'none'));
-    apply();
-    el.onchange = () => {
-      apply();
-      saved[ck] = el.checked;
-      localStorage.setItem(LS_KEY, JSON.stringify(saved));
-    };
-  }
-
-  // problem-area dropdown: named locations, zoom on select
-  const locs = await (await fetch('/api/locations')).json();
-  const sel = document.getElementById('probsel');
-  sel.append(new Option('— jump to problem area —',''));
-  for (const [key,name,lat,lon,feed] of locs) {
-    if (feed !== FEED) continue;
-    const o = new Option(name, key);
-    o.dataset.lat = lat; o.dataset.lon = lon;
-    sel.append(o);
-  }
-  sel.onchange = () => {
-    const o = sel.selectedOptions[0];
-    if (o && o.dataset.lat) map.jumpTo({center:[+o.dataset.lon,+o.dataset.lat], zoom:15.5});
-  };
-
-  // tuning dials: generated from /api/params, POSTed with rebuild
-  const params = await (await fetch('/api/params')).json();
-  const grid = document.getElementById('dialgrid');
-  for (const [k,v] of Object.entries(params)) {
-    const lab = document.createElement('label');
-    lab.textContent = k;
-    const inp = document.createElement('input');
-    inp.type = 'number'; inp.step = 'any'; inp.value = v; inp.id = 'dial-'+k;
-    inp.style.cssText = 'background:#222;color:#ddd;border:1px solid #333;border-radius:4px;padding:1px 4px;width:5.5em';
-    grid.append(lab, inp);
-  }
-  window.portolanDials = () => {
-    const out = {};
-    for (const k of Object.keys(params)) out[k] = +document.getElementById('dial-'+k).value;
-    return out;
-  };
+  renderLayerList();
+  restoreScore();
 });
 
-// nav.js hook: reload sources after a rebuild finishes
-window.portolanReload = () => {
-  for (const s of ['build','strands','nodes','trackcenter']) {
+// layer toggles: persisted, keyboard 1..9
+const layerState = Object.assign(
+  Object.fromEntries(LAYERS.map(l=>[l.key,l.on])),
+  JSON.parse(localStorage.getItem('atlas-layers') || '{}'));
+function applyLayer(key) {
+  if (!map.getLayer(layerIds(key)[0]) && key!=='ribbons') return;
+  const vis = layerState[key] ? 'visible' : 'none';
+  for (const id of layerIds(key)) if (map.getLayer(id)) map.setLayoutProperty(id,'visibility',vis);
+  // the area labels are DOM markers, not style layers
+  if (key === 'areas' && typeof refreshAreaLayer === 'function') refreshAreaLayer();
+}
+function renderLayerList() {
+  const el = $('layerlist'); el.innerHTML = '';
+  LAYERS.forEach((l, i) => {
+    const row = document.createElement('div'); row.className = 'lrow';
+    row.innerHTML = `<input type="checkbox" ${layerState[l.key]?'checked':''}>
+      <div class="sw" style="background:${l.sw}"></div>${l.label}
+      <span class="key">${i+1}</span>`;
+    row.onclick = e => { if (e.target.tagName!=='INPUT')
+      row.querySelector('input').checked = !(layerState[l.key]);
+      toggleLayer(l.key); };
+    el.append(row);
+    applyLayer(l.key);
+  });
+}
+function toggleLayer(key) {
+  layerState[key] = !layerState[key];
+  localStorage.setItem('atlas-layers', JSON.stringify(layerState));
+  applyLayer(key);
+  renderLayerList();
+}
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const n = +e.key;
+  if (n >= 1 && n <= LAYERS.length) toggleLayer(LAYERS[n-1].key);
+  if (e.key === 'b') $('build').click();
+  if (e.key === 's') $('score').click();
+});
+
+// ---------- inspector: click anything, learn what it is ----------
+map.on('click', e => {
+  const feats = map.queryRenderedFeatures(
+    [[e.point.x-4,e.point.y-4],[e.point.x+4,e.point.y+4]],
+    {layers: inspectIds.filter(id => map.getLayer(id))});
+  if (!feats.length) return;
+  const seen = new Set(); const rows = [];
+  for (const f of feats) {
+    const p = f.properties || {};
+    const k = [p.kind,p.label,p.color,p.offset_px,p.routes,p.degree,p.deg].join('|');
+    if (seen.has(k)) continue; seen.add(k);
+    if (p.degree !== undefined) { rows.push(`<div class="insp-row"><div class="sw" style="background:#e33"></div><b>node</b>&nbsp;<span class="k">degree ${p.degree}</span></div>`); continue; }
+    if (p.deg !== undefined) { rows.push(`<div class="insp-row"><div class="sw" style="background:${p.color}"></div><b>${p.label||'defect'}</b></div>`); continue; }
+    const off = p.kind==='transition' ? `${p.off_from_px}→${p.off_to_px}px` :
+                p.offset_px !== undefined ? `${p.offset_px}px` : '';
+    const bits = [p.kind, p.routes && `routes ${p.routes}`, off,
+                  p.band_min !== undefined && `z${p.band_min}+`,
+                  p.len_m !== undefined && `${p.len_m}m`,
+                  p.tracks !== undefined && `${p.tracks}trk`,
+                  p.gap && 'GAP', p.edge !== undefined && `edge ${p.edge}`]
+                 .filter(Boolean).join(' · ');
+    rows.push(`<div class="insp-row">
+      <div class="sw" style="background:#${p.color||'888'}"></div>
+      <b>${p.label ?? p.routes ?? '?'}</b>&nbsp;<span class="k">${bits}</span></div>`);
+    if (rows.length >= 8) break;
+  }
+  const ll = `${e.lngLat.lat.toFixed(5)},${e.lngLat.lng.toFixed(5)}`;
+  new maplibregl.Popup({closeButton:false, maxWidth:'300px'})
+    .setLngLat(e.lngLat)
+    .setHTML(rows.join('') +
+      `<div class="insp-coord" onclick="navigator.clipboard.writeText('${ll}')" title="copy">📍 ${ll} (click to copy)</div>`)
+    .addTo(map);
+});
+map.on('mousemove', e => {
+  const hit = map.queryRenderedFeatures(
+    [[e.point.x-3,e.point.y-3],[e.point.x+3,e.point.y+3]],
+    {layers: inspectIds.filter(id => map.getLayer(id))}).length;
+  map.getCanvas().style.cursor = hit ? 'pointer' : '';
+});
+
+// ---------- feeds & places ----------
+fetch('/api/config').then(r=>r.json()).then(cfg => {
+  for (const [id, f] of Object.entries(cfg.feeds || {})) {
+    const o = new Option(f.name || id, id, false, id === FEED);
+    $('feed').append(o);
+  }
+});
+$('feed').onchange = () => location.href = '/map?feed=' + $('feed').value;
+$('copyview').onclick = () => {
+  navigator.clipboard.writeText(location.href);
+  $('copyview').textContent = 'copied!';
+  setTimeout(()=>$('copyview').textContent = 'link', 1200);
+};
+
+// ---------- problem areas ----------
+// Every area is a row in locations.json: [key, name, lat, lon, feed] with
+// an optional [w,s,e,n] bbox (drawn from the UI). The key is the id used
+// EVERYWHERE — refs/{portolan,apple}/<key>.png, chat references, bench
+// scripts. Point-only legacy rows get a default ~700×500 m box.
+let AREAS = [];      // {key,name,lat,lon,bbox:[w,s,e,n]}
+let REFSTAT = {};    // key → {portolan:mtime, apple:mtime}
+let areaMarkers = [];
+const defaultBox = (lat, lon) => {
+  const dlon = 350/(111320*Math.cos(lat*Math.PI/180)), dlat = 250/110540;
+  return [lon-dlon, lat-dlat, lon+dlon, lat+dlat];
+};
+function copyText(t, el, flash) {
+  navigator.clipboard.writeText(t);
+  if (el) { const old = el.textContent; el.textContent = flash || 'copied!';
+    setTimeout(()=>el.textContent = old, 900); }
+  setStatus(`copied <b>${t.length > 40 ? t.slice(0,40)+'…' : t}</b>`);
+}
+async function loadAreas() {
+  const locs = await (await fetch('/api/locations')).json();
+  AREAS = locs.filter(l => l[4] === FEED).map(([key,name,lat,lon,,bbox]) =>
+    ({key, name, lat, lon, bbox: bbox || defaultBox(lat, lon), drawn: !!bbox}));
+  try { REFSTAT = await (await fetch('/api/refs/status')).json(); } catch {}
+  renderAreaList();
+  refreshAreaLayer();
+}
+function setAreasData() {
+  if (map.getSource && map.getSource('areas'))
+    map.getSource('areas').setData({type:'FeatureCollection',
+      features: AREAS.map(a => { const [w,s,e,n] = a.bbox; return {
+        type:'Feature', properties:{key:a.key},
+        geometry:{type:'Polygon', coordinates:[[[w,s],[e,s],[e,n],[w,n],[w,s]]]}};})});
+}
+function refreshAreaLayer() {
+  setAreasData();
+  for (const m of areaMarkers) m.remove();
+  areaMarkers = [];
+  const show = layerState['areas'] && !QS.get('bare');
+  if (!show) return;
+  for (const a of AREAS) {
+    const el = document.createElement('div');
+    el.className = 'arealabel'; el.textContent = a.key;
+    el.title = a.name + ' — click to copy id';
+    el.onclick = ev => { ev.stopPropagation(); copyText(a.key); };
+    areaMarkers.push(new maplibregl.Marker({element:el, anchor:'bottom-left'})
+      .setLngLat([a.bbox[0], a.bbox[3]]).addTo(map));
+  }
+}
+
+// ---- resize an existing area: ✎ shows draggable corner handles (SW/NE);
+// every release saves. Editing a legacy point-only area upgrades it to a
+// real drawn bbox.
+let editKey = null, editHandles = [];
+async function saveArea(a) {
+  const resp = await fetch('/api/locations', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key:a.key, name:a.name, feed:FEED, bbox:a.bbox})});
+  if (!resp.ok) setStatus('save failed: ' + await resp.text());
+}
+function stopEditArea() {
+  for (const h of editHandles) h.remove();
+  editHandles = [];
+  editKey = null;
+  map.getSource('drawbox').setData({type:'FeatureCollection',features:[]});
+  renderAreaList();
+}
+function startEditArea(a) {
+  stopEditArea();
+  editKey = a.key;
+  const [w,s,e,n] = a.bbox;
+  map.fitBounds([[w,s],[e,n]], {padding:90, speed:2.2});
+  const mkHandle = corner => {
+    const el = document.createElement('div');
+    el.style.cssText = 'width:12px;height:12px;border-radius:3px;background:#e0a336;'
+      + 'border:2px solid #fff;cursor:nwse-resize;box-shadow:0 1px 4px #0008';
+    const m = new maplibregl.Marker({element:el, draggable:true})
+      .setLngLat(corner === 'sw' ? [a.bbox[0], a.bbox[1]] : [a.bbox[2], a.bbox[3]])
+      .addTo(map);
+    const upd = () => {
+      const p1 = editHandles[0].getLngLat(), p2 = editHandles[1].getLngLat();
+      a.bbox = [Math.min(p1.lng,p2.lng), Math.min(p1.lat,p2.lat),
+                Math.max(p1.lng,p2.lng), Math.max(p1.lat,p2.lat)];
+      setAreasData();
+      map.getSource('drawbox').setData({type:'Feature', properties:{},
+        geometry:{type:'Polygon', coordinates:[[[a.bbox[0],a.bbox[1]],[a.bbox[2],a.bbox[1]],
+          [a.bbox[2],a.bbox[3]],[a.bbox[0],a.bbox[3]],[a.bbox[0],a.bbox[1]]]]}});
+    };
+    m.on('drag', upd);
+    m.on('dragend', async () => {
+      upd();
+      a.drawn = true;
+      await saveArea(a);
+      refreshAreaLayer();
+      setStatus(`resized <b>${a.key}</b> — saved`);
+    });
+    return m;
+  };
+  editHandles = [mkHandle('sw')];
+  editHandles.push(mkHandle('ne'));
+  // seed the highlight box
+  map.getSource('drawbox').setData({type:'Feature', properties:{},
+    geometry:{type:'Polygon', coordinates:[[[w,s],[e,s],[e,n],[w,n],[w,s]]]}});
+  renderAreaList();
+  setStatus(`editing <b>${a.key}</b> — drag the corners, ✎ again to finish`);
+}
+function fmtAge(sec) {
+  if (!sec) return 'missing';
+  const d = (Date.now()/1000 - sec)/3600;
+  return d < 1 ? `${Math.round(d*60)}m ago` : d < 48 ? `${Math.round(d)}h ago` : `${Math.round(d/24)}d ago`;
+}
+function renderAreaList() {
+  const el = $('arealist'); el.innerHTML = '';
+  for (const a of AREAS) {
+    const st = REFSTAT[a.key] || {};
+    const row = document.createElement('div'); row.className = 'arow';
+    const key = document.createElement('code');
+    key.className = 'akey'; key.textContent = a.key;
+    key.title = 'copy id';
+    key.onclick = () => copyText(a.key, key);
+    const name = document.createElement('span');
+    name.className = 'aname'; name.textContent = a.name; name.title = a.name;
+    name.onclick = () => { const [w,s,e,n] = a.bbox;
+      map.fitBounds([[w,s],[e,n]], {padding:60, speed:2.2}); };
+    const dotP = document.createElement('div');
+    dotP.className = 'adot ' + (st.portolan ? 'ok' : 'miss'); dotP.textContent = 'P';
+    dotP.title = 'portolan snap: ' + fmtAge(st.portolan) +
+      (st.portolan ? ' — click to view' : ' — click ⟳ to capture');
+    dotP.onclick = () => { if (st.portolan)
+      window.open('/refs/portolan/'+a.key+'.png?t='+st.portolan, '_blank'); };
+    const dotA = document.createElement('div');
+    dotA.className = 'adot ' + (st.apple ? 'ok' : 'miss'); dotA.textContent = 'A';
+    dotA.title = 'Apple ref: ' + fmtAge(st.apple) +
+      (st.apple ? ' — click to view' : ' — click to copy the capture command');
+    dotA.onclick = () => st.apple
+      ? window.open('/refs/apple/'+a.key+'.png?t='+st.apple, '_blank')
+      : copyText('tools/visual-bench.sh apple '+a.key, dotA, '📋');
+    const snap = document.createElement('button');
+    snap.className = 'asnap'; snap.textContent = '⟳';
+    snap.title = 're-capture the portolan screenshot of this area';
+    snap.onclick = () => snapProblemAreas([a]);
+    const edit = document.createElement('button');
+    edit.className = 'asnap'; edit.textContent = '✎';
+    edit.title = 'resize this area (drag the corner handles)';
+    if (a.key === editKey) edit.style.borderColor = 'var(--warn)';
+    edit.onclick = () => a.key === editKey ? stopEditArea() : startEditArea(a);
+    row.append(key, name, dotP, dotA, edit, snap);
+    el.append(row);
+  }
+  if (!AREAS.length)
+    el.innerHTML = '<div class="empty">no problem areas for this feed — hit + area</div>';
+}
+loadAreas();
+
+// capture the clean render (ribbons+basemap only) of the given areas
+let snapping = false;
+async function snapProblemAreas(list) {
+  if (snapping) return;
+  snapping = true;
+  const keep = Object.assign({}, layerState);
+  for (const l of LAYERS) { layerState[l.key] = l.key==='ribbons'||l.key==='base'; applyLayer(l.key); }
+  refreshAreaLayer();
+  const view = {center: map.getCenter(), zoom: map.getZoom()};
+  try {
+    setStatus(`snapping ${list.length} area${list.length>1?'s':''}…`);
+    await window.snapAreas(list);
+  } finally {
+    Object.assign(layerState, keep);
+    for (const l of LAYERS) applyLayer(l.key);
+    map.jumpTo(view);
+    snapping = false;
+  }
+  await loadAreas();
+  setStatus(`snapped ${list.map(a=>a.key).join(' ')}`);
+}
+$('areasnapall').onclick = () => snapProblemAreas(AREAS);
+
+// ---- draw a new area: + area → drag a box → name it → id lands in the
+// clipboard, ready to paste into chat
+let draw = null;
+function endDraw() {
+  if (!draw) return;
+  map.off('mousemove', draw.move);
+  map.getCanvas().style.cursor = '';
+  map.dragPan.enable();
+  map.getSource('drawbox').setData({type:'FeatureCollection',features:[]});
+  draw = null;
+  $('areaadd').textContent = '+ area';
+}
+$('areaadd').onclick = () => {
+  if (draw) { endDraw(); setStatus('draw cancelled'); return; }
+  stopEditArea();
+  draw = {};
+  $('areaadd').textContent = '✕ cancel';
+  map.getCanvas().style.cursor = 'crosshair';
+  map.dragPan.disable();
+  setStatus('drag a box around the problem area');
+  map.once('mousedown', e => {
+    if (!draw) return;
+    draw.a = e.lngLat;
+    draw.move = ev => {
+      draw.b = ev.lngLat;
+      const w = Math.min(draw.a.lng, draw.b.lng), e2 = Math.max(draw.a.lng, draw.b.lng);
+      const s = Math.min(draw.a.lat, draw.b.lat), n = Math.max(draw.a.lat, draw.b.lat);
+      map.getSource('drawbox').setData({type:'Feature', properties:{},
+        geometry:{type:'Polygon', coordinates:[[[w,s],[e2,s],[e2,n],[w,n],[w,s]]]}});
+    };
+    map.on('mousemove', draw.move);
+    map.once('mouseup', async ev => {
+      if (!draw) return;
+      const a = draw.a, b = ev.lngLat;
+      endDraw();
+      const w = Math.min(a.lng,b.lng), e2 = Math.max(a.lng,b.lng);
+      const s = Math.min(a.lat,b.lat), n = Math.max(a.lat,b.lat);
+      if ((e2-w)*111320*Math.cos(s*Math.PI/180) < 60 || (n-s)*110540 < 60) {
+        setStatus('box too small — try again'); return;
+      }
+      const name = prompt('problem area name (what looks wrong here)?');
+      if (!name) { setStatus('draw cancelled'); return; }
+      let key = name.toLowerCase().replace(/[^a-z0-9]+/g,'_')
+        .replace(/^_+|_+$/g,'').slice(0,30) || 'area';
+      const keys = new Set(AREAS.map(x=>x.key));
+      for (let i=2; keys.has(key); i++) key = key.replace(/_\d+$/,'') + '_' + i;
+      const resp = await fetch('/api/locations', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({key, name, feed:FEED, bbox:[w,s,e2,n]})});
+      if (!resp.ok) { setStatus('save failed: ' + await resp.text()); return; }
+      await loadAreas();
+      copyText(key);
+      setStatus(`area <b>${key}</b> created — id copied, paste it in chat`);
+    });
+  });
+};
+
+// ---------- service: time-of-day/week scenarios ----------
+// Each scenario is a full pipeline layout for one distinct service map
+// (weekday day, late night, weekend …) — switching time swaps the build
+// source's data wholesale, so lines stay bundled and smoothly connected:
+// the geometry was laid out for exactly the set of lines that run then.
+const DAYN = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+let SVC = null;              // /api/scenarios payload
+let svcSel = Object.assign(
+  {mode:'all', day:(new Date().getDay()+6)%7, hour:new Date().getHours()},
+  JSON.parse(localStorage.getItem('atlas-svc-'+FEED) || '{}'));
+if (QS.get('service')) {     // ?service=all | ?service=<day>.<hour> (captures)
+  const m = QS.get('service').match(/^(\d)\.(\d{1,2})$/);
+  if (m) svcSel = {mode:'time', day:+m[1], hour:+m[2]};
+  else if (QS.get('service') === 'all') svcSel.mode = 'all';
+}
+const svcQS = () => svcSel.mode === 'time' ? `&service=${svcSel.day}.${svcSel.hour}` : '';
+const activeScenario = () => {
+  if (!SVC || svcSel.mode !== 'time') return null;
+  const id = (SVC.grid[svcSel.day] || [])[svcSel.hour] || '';
+  return {id, sc: SVC.scenarios.find(s => s.id === id) || null};
+};
+function buildDataURL() {
+  const a = activeScenario();
+  const scen = a && a.sc && a.sc.built ? `&scenario=${a.id}` : '';
+  return `/api/build.geojson?feed=${FEED}${scen}&t=${Date.now()}`;
+}
+fetch('/api/scenarios?feed='+FEED).then(r=>r.json()).then(s => {
+  if (!s.available) return;
+  SVC = s;
+  $('servicesec').style.display = '';
+  renderService();
+  if (svcSel.mode === 'time') applyService();
+});
+function svcDayGroups() {
+  const groups = [], seen = {};
+  for (let d = 0; d < 7; d++) {
+    const key = SVC.grid[d].join('|');
+    if (seen[key] !== undefined) groups[seen[key]].days.push(d);
+    else { seen[key] = groups.length; groups.push({days:[d]}); }
+  }
+  for (const g of groups) {
+    const runs = [];
+    for (let i = 0; i < g.days.length;) {
+      let j = i;
+      while (j+1 < g.days.length && g.days[j+1] === g.days[j]+1) j++;
+      runs.push(j > i ? DAYN[g.days[i]]+'–'+DAYN[g.days[j]] : DAYN[g.days[i]]);
+      i = j+1;
+    }
+    g.label = runs.join(',');
+  }
+  return groups;
+}
+function renderService() {
+  const el = $('svcdaybtns'); el.innerHTML = '';
+  const mk = (label, active, on) => {
+    const b = document.createElement('button');
+    b.className = 'daybtn' + (active ? ' active' : '');
+    b.textContent = label; b.onclick = on;
+    el.append(b);
+  };
+  mk('all service', svcSel.mode === 'all', () => { svcSel.mode = 'all'; applyService(); });
+  for (const g of svcDayGroups())
+    mk(g.label, svcSel.mode === 'time' && g.days.includes(svcSel.day), () => {
+      svcSel.mode = 'time';
+      if (!g.days.includes(svcSel.day)) svcSel.day = g.days[0];
+      applyService();
+    });
+  $('svchourrow').style.display = svcSel.mode === 'time' ? 'flex' : 'none';
+  $('svchour').value = svcSel.hour;
+  $('svchourlab').textContent = String(svcSel.hour).padStart(2,'0')+':00';
+}
+let svcAppliedKey = null; // dedupes setData while sliding within a scenario
+function applyService() {
+  localStorage.setItem('atlas-svc-'+FEED, JSON.stringify(svcSel));
+  history.replaceState(null, '', `?feed=${FEED}${svcQS()}${location.hash}`);
+  renderService();
+  const info = $('svcinfo');
+  const a = svcSel.mode === 'time' ? activeScenario() : null;
+  let key, data;
+  if (svcSel.mode === 'all') {
+    info.textContent = 'all-service union map';
+    key = 'all'; data = () => buildDataURL();
+  } else if (!a.sc) {
+    info.textContent = 'no service at this hour';
+    key = 'none'; data = () => ({type:'FeatureCollection',features:[]});
+  } else {
+    info.innerHTML = `${a.sc.label} · ${a.sc.patterns} patterns` +
+      (a.sc.built ? '' :
+        ` · <span style="color:var(--warn)">not built — showing all-service</span>
+          <button id="svcbuild" style="font-size:10px;padding:1px 6px">⟳ build</button>`);
+    if (!a.sc.built && $('svcbuild'))
+      $('svcbuild').onclick = () => runChart(a.id);
+    key = a.sc.built ? 'scen-'+a.id : 'all';
+    data = () => buildDataURL();
+  }
+  if (key === svcAppliedKey) return;
+  const set = () => { const src = map.getSource('build');
+    if (src) { src.setData(data()); svcAppliedKey = key; } };
+  map.loaded() ? set() : map.once('load', set);
+}
+$('svchour').oninput = () => { svcSel.hour = +$('svchour').value; applyService(); };
+$('svcnow').onclick = () => {
+  svcSel = {mode:'time', day:(new Date().getDay()+6)%7, hour:new Date().getHours()};
+  applyService();
+};
+
+let flyMarker = null;
+function flyTo(lat, lon, zoom) {
+  map.flyTo({center:[lon,lat], zoom: zoom || Math.max(map.getZoom(), 15.5), speed: 2.2});
+  if (flyMarker) flyMarker.remove();
+  flyMarker = new maplibregl.Marker({color:'#e5484d', scale:0.8})
+    .setLngLat([lon,lat]).addTo(map);
+  setTimeout(() => { if (flyMarker) { flyMarker.remove(); flyMarker = null; } }, 6000);
+}
+
+// ---------- dials ----------
+let dialDefaults = {}, dialValues = {};
+fetch('/api/params').then(r=>r.json()).then(p => {
+  dialDefaults = p;
+  dialValues = Object.assign({}, p,
+    JSON.parse(localStorage.getItem('atlas-dials-'+FEED) || '{}'));
+  renderDials();
+});
+function renderDials() {
+  const groups = {};
+  for (const k of Object.keys(dialDefaults)) {
+    const g = k.includes('_') && ['match','split','fair'].includes(k.split('_')[0])
+      ? k.split('_')[0] : 'general';
+    (groups[g] = groups[g] || []).push(k);
+  }
+  const el = $('dialgroups'); el.innerHTML = '';
+  for (const g of ['match','split','fair','general']) {
+    if (!groups[g]) continue;
+    const det = document.createElement('details'); det.className = 'dgroup';
+    const changed = groups[g].some(k => dialValues[k] !== dialDefaults[k]);
+    det.open = changed;
+    det.innerHTML = `<summary>${g}${changed ? ' ·' : ''}</summary>`;
+    const grid = document.createElement('div'); grid.className = 'dgrid';
+    for (const k of groups[g]) {
+      const lab = document.createElement('label');
+      lab.textContent = g === 'general' ? k : k.slice(g.length+1);
+      lab.title = k;
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.step = 'any'; inp.value = dialValues[k];
+      if (dialValues[k] !== dialDefaults[k]) inp.className = 'mod';
+      inp.onchange = () => {
+        dialValues[k] = +inp.value;
+        inp.className = dialValues[k] !== dialDefaults[k] ? 'mod' : '';
+        localStorage.setItem('atlas-dials-'+FEED, JSON.stringify(dialValues));
+      };
+      grid.append(lab, inp);
+    }
+    det.append(grid); el.append(det);
+  }
+}
+$('dialreset').onclick = () => {
+  dialValues = Object.assign({}, dialDefaults);
+  localStorage.removeItem('atlas-dials-'+FEED);
+  renderDials();
+};
+
+// ---------- build & score ----------
+const logEl = $('log');
+$('logtoggle').onclick = () => {
+  const open = logEl.style.display === 'none';
+  logEl.style.display = open ? 'block' : 'none';
+  $('logtoggle').textContent = 'run log ' + (open ? '▾' : '▸');
+};
+function setStatus(html) { $('status').innerHTML = html; }
+
+let building = false;
+// runChart('') builds the all-service union map; runChart(id) builds one
+// service scenario's layout (its output lands beside the union build and
+// the time control swaps to it when done).
+async function runChart(scenario) {
+  if (building) return;
+  building = true; $('build').disabled = true;
+  const t0 = Date.now();
+  const scenQ = scenario ? `&scenario=${scenario}` : '';
+  const r = await fetch(`/api/run?cmd=chart&feed=${FEED}${scenQ}`, {method:'POST',
+    body: JSON.stringify(dialValues), headers:{'Content-Type':'application/json'}});
+  if (r.status === 409) { setStatus('busy'); building = false; $('build').disabled = false; return; }
+  logEl.style.display = 'block'; $('logtoggle').textContent = 'run log ▾';
+  const tick = setInterval(async () => {
+    const st = await (await fetch('/api/run/status')).json();
+    logEl.textContent = (st.log || []).join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+    setStatus(`building… ${((Date.now()-t0)/1000).toFixed(0)}s`);
+    if (st.done) {
+      clearInterval(tick);
+      building = false; $('build').disabled = false;
+      setStatus(st.ok ? `built in ${((Date.now()-t0)/1000).toFixed(0)}s` : '<span class="badge bad">build failed</span>');
+      if (st.ok) {
+        if (scenario) {
+          // refresh built flags, then swap the map to the fresh scenario
+          const s = await (await fetch('/api/scenarios?feed='+FEED)).json();
+          if (s.available) SVC = s;
+          applyService();
+        } else {
+          reloadSources();
+          if ($('autoscore').checked) $('score').click();
+        }
+      }
+    }
+  }, 500);
+}
+$('build').onclick = () => runChart('');
+
+$('score').onclick = async () => {
+  setStatus('scoring…');
+  const res = await (await fetch('/api/score?feed='+FEED)).json();
+  if (res.error) {
+    $('scorebody').innerHTML = `<div class="empty" style="color:var(--bad)">${res.error}</div>`;
+    setStatus('<span class="badge bad">score error</span>');
+    return;
+  }
+  localStorage.setItem('atlas-score-'+FEED, JSON.stringify(res));
+  renderScore(res);
+};
+
+function restoreScore() {
+  const raw = localStorage.getItem('atlas-score-'+FEED);
+  if (raw) renderScore(JSON.parse(raw), true);
+}
+
+function renderScore(res, restored) {
+  const R = res.result, G = res.gates;
+  const fails = R.Failures || 0;
+  setStatus(fails ? `<span class="badge bad">FAIL · ${fails}</span>`
+                  : '<span class="badge ok">PASS</span>');
+  $('scoremeta').textContent = restored ? 'last run' : `${res.ms}ms`;
+
+  const chip = (label, val, bad) =>
+    `<div class="chip${bad?' bad':''}">${label} <b>${val}</b></div>`;
+  let html = '<div id="chips">'
+    + chip('fwd p90', R.FwdP90.toFixed(1)+'m', false)
+    + chip('wobble', R.WobbleP90.toFixed(1)+'m', R.WobbleP90 > G.wobble)
+    + chip('jag', R.JagMaxDeg.toFixed(0)+'°', R.JagMaxDeg > G.jag_max)
+    + chip('spikes', (R.Spikes||[]).length + ` (${R.JagPerKm.toFixed(1)}/km)`, R.JagPerKm > G.jag_per_km)
+    + '</div>';
+
+  html += `<table class="score"><tr><th>line</th><th>p90</th><th>cov%</th><th>dup%</th></tr>`;
+  (R.Lines||[]).forEach((l, i) => {
+    html += `<tr data-line="${i}" title="km ${l.Km.toFixed(1)} · mean ${l.Mean.toFixed(1)} · max ${l.Max.toFixed(1)} — click: worst spot">
+      <td>${l.Label}</td>
+      <td class="${l.P90 > G.p90 ? 'bad':''}">${l.P90.toFixed(1)}</td>
+      <td class="${l.CoverPct < G.cover ? 'bad':''}">${l.CoverPct.toFixed(0)}</td>
+      <td class="${l.DupPct > G.dup ? 'bad':''}">${l.DupPct.toFixed(1)}</td></tr>`;
+  });
+  html += '</table>';
+
+  const spikes = (R.Spikes||[]).slice(0, 12);
+  if (spikes.length) {
+    html += '<div class="deflist">' + spikes.map((s,i) =>
+      `<div class="defrow" data-spike="${i}"><span class="deg">${s.Deg.toFixed(0)}°</span>
+       <span>${s.At.Lat.toFixed(5)}, ${s.At.Lon.toFixed(5)}</span></div>`).join('') + '</div>';
+  }
+  $('scorebody').innerHTML = html;
+
+  $('scorebody').querySelectorAll('tr[data-line]').forEach(tr =>
+    tr.onclick = () => { const l = R.Lines[+tr.dataset.line];
+      if (l.WorstAt) flyTo(l.WorstAt.Lat, l.WorstAt.Lon, 16); });
+  $('scorebody').querySelectorAll('.defrow').forEach(d =>
+    d.onclick = () => { const s = R.Spikes[+d.dataset.spike];
+      flyTo(s.At.Lat, s.At.Lon, 16.5); });
+
+  // defect markers on the map: spikes red, dup hotspots amber
+  const feats = [];
+  for (const s of (R.Spikes||[]))
+    feats.push({type:'Feature', properties:{color:'#e5484d', deg:s.Deg, label:s.Deg.toFixed(0)+'°'},
+      geometry:{type:'Point', coordinates:[s.At.Lon, s.At.Lat]}});
+  for (const l of (R.Lines||[])) for (const d of (l.DupAt||[]))
+    feats.push({type:'Feature', properties:{color:'#e0a336', deg:0, label:'dup '+l.Label},
+      geometry:{type:'Point', coordinates:[d.Lon, d.Lat]}});
+  const setDefects = () => map.getSource('defects') &&
+    map.getSource('defects').setData({type:'FeatureCollection', features:feats});
+  map.loaded() ? setDefects() : map.once('load', setDefects);
+}
+
+function reloadSources() {
+  svcAppliedKey = null; // force a re-fetch even within the same scenario
+  const b = map.getSource('build');
+  if (b) b.setData(buildDataURL()); // respects the active service scenario
+  for (const s of ['strands','nodes','trackcenter','paths']) {
     const src = map.getSource(s);
     if (src) src.setData(`/api/${s}.geojson?feed=${FEED}&t=${Date.now()}`);
   }
+}
+window.portolanReload = reloadSources;
+
+// ---- visual-bench capture: ?bare=1&snapall=1 walks every problem area
+// for this feed and saves each rendered frame via /api/snap — the
+// portolan half of tools/visual-bench.sh. window.snapAreas() is the
+// manual version. Title flips to "snap done" when finished.
+const SNAP_ZOOM = { chi_loop: 14.8, chi_loop_nw: 15.5, dekalb: 15.3 };
+if (QS.get('bare') && QS.get('snapall')) map.once('idle', async () => {
+  for (const l of LAYERS) { // refs are always ribbons + basemap, nothing else
+    layerState[l.key] = l.key === 'ribbons' || l.key === 'base';
+    applyLayer(l.key);
+  }
+  const locs = await (await fetch('/api/locations')).json();
+  const areas = locs.filter(l => l[4] === FEED)
+    .map(([key,,lat,lon,,bbox]) => ({key, lat, lon, bbox, zoom: SNAP_ZOOM[key] || (bbox ? undefined : 15.4)}));
+  const saved = await window.snapAreas(areas);
+  console.log('snapall:', saved.join(' '));
+  document.title = 'snap done · ' + saved.length;
+});
+window.snapAreas = async areas => {
+  // poll map.loaded() rather than waiting on 'idle' events — under
+  // background-tab timer throttling the event machinery starves and a
+  // one-shot stall guard captures a half-rendered frame (empty-basemap
+  // refs shipped exactly that way)
+  const settle = async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 20000 && !map.loaded()) {
+      map.triggerRepaint();
+      await new Promise(r => setTimeout(r, 300));
+    }
+    await new Promise(r => setTimeout(r, 500));
+    map.triggerRepaint();
+    await new Promise(r => setTimeout(r, 200));
+  };
+  const saved = [];
+  for (const a of areas) {
+    if (a.bbox) map.fitBounds([[a.bbox[0],a.bbox[1]],[a.bbox[2],a.bbox[3]]],
+      {padding:20, animate:false, maxZoom: a.zoom || 16.5});
+    else map.jumpTo({center:[a.lon, a.lat], zoom: a.zoom || 15.3});
+    await settle();
+    const blob = await new Promise(r => map.getCanvas().toBlob(r, 'image/png'));
+    const resp = await fetch('/api/snap?name=' + a.key, {method:'POST', body: blob});
+    saved.push(a.key + ':' + resp.status);
+  }
+  return saved;
 };
 </script>

@@ -14,7 +14,6 @@ package stages
 import (
 	"errors"
 
-	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 )
@@ -26,7 +25,16 @@ var ErrNotImplemented = errors.New("stage not implemented — see docs/FRESH-STA
 type Path struct {
 	Pattern gtfs.Pattern
 	Line    *geo.Line
-	WayIDs  []string // the OSM ways walked, in order
+	WayIDs  []string   // the OSM ways walked, in order ("gap" marks bridges)
+	Steps   []PathStep // the exact walk, for SPLIT
+}
+
+// PathStep is one hop of a matched walk: a directed graph piece, or a gap
+// bridge carrying shape geometry where OSM has no track.
+type PathStep struct {
+	Piece int  // track-graph piece id, -1 for a gap
+	Rev   bool // ridden against the piece's storage orientation
+	Gap   *geo.Line
 }
 
 // Network is the segment graph every stage after SPLIT operates on: edges
@@ -46,6 +54,7 @@ type Edge struct {
 	Pts      []geo.Pt
 	Routes   []string // route ids riding this segment
 	Tracks   int      // physical track count, if derived
+	Gap      bool     // shape-bridged (no OSM track) — render dashed
 }
 
 // Segment is one emitted ribbon feature (parchment transit_line_segments
@@ -65,33 +74,4 @@ type Segment struct {
 	BandMin   int
 	BandMax   int
 	Line      *geo.Line
-}
-
-// Match path-matches each GTFS pattern onto the mode-appropriate OSM layer
-// (rails for trains, roads for buses, sea routes for ferries). Owner's
-// rules: routes on similar paths MUST land on the same matched path; no
-// jumping between paths — always follow real ways, with crossover segments
-// (short ways connecting longer ways: switches, median turns) penalized;
-// mainlines only — spurs and yards ignored except at station terminals.
-func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Path, error) {
-	return nil, ErrNotImplemented
-}
-
-// Split detects junctions where matched paths intersect or diverge,
-// divides the paths into segments at each junction, and assigns each
-// segment the set of routes riding it.
-func Split(paths []Path) (*Network, error) {
-	return nil, ErrNotImplemented
-}
-
-// Order assigns each segment's COLOR GROUPS to parallel-line slots
-// minimizing crossings at junctions (same-color routes share one ribbon).
-func Order(n *Network) (map[int][]string, error) {
-	return nil, ErrNotImplemented
-}
-
-// Fair draws the junction connections with smooth curvature between slot
-// positions (circular arcs preserve parallelism) and cuts zoom bands.
-func Fair(n *Network, slots map[int][]string) ([]Segment, error) {
-	return nil, ErrNotImplemented
 }

@@ -25,6 +25,7 @@ type Params struct {
 	OffsetSigma float64 // gaussian over the OFFSET SERIES, in samples
 	FinishSigma float64 // final light low-pass over geometry (m)
 	MinParallel float64 // |cos| heading agreement for a crossing to count
+	SlopeMax    float64 // max lateral-offset slope (m per m of arc)
 }
 
 func DefaultParams() Params {
@@ -39,6 +40,7 @@ func DefaultParams() Params {
 		OffsetSigma: 5.0,
 		FinishSigma: 8.0,
 		MinParallel: 0.82, // ~35°
+		SlopeMax:    0.08, // max lateral-offset slope (m per m of arc)
 	}
 }
 
@@ -118,6 +120,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		}
 		offStar := make([]float64, n)
 		has := make([]bool, n)
+		var strandCounts []int
 		for i := 1; i < n-1; i++ {
 			tan := pts[i+1].Sub(pts[i-1]).Unit()
 			// curve-following persistence probes (LESSONS #3)
@@ -131,8 +134,25 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				if m.DistTo(pa) >= p.Reach || m.DistTo(pb) >= p.Reach {
 					continue // kiss guard: not persistent alongside
 				}
+				// kiss rule PER PASS: a chained strand can cross the
+				// section several times (both directional tracks, a loop
+				// limb, a terminal return). Each crossing votes only if
+				// THAT pass stays alongside the centerline for the probe
+				// span — walk the member's own arc from the crossing and
+				// require both probes to land near the centerline's probe
+				// points. Corridor tracks persist; turnaround limbs curve
+				// away and are dropped exactly where they diverge.
 				for _, c := range m.CrossSection(pts[i], tan, p.Reach) {
-					if c.Parallel >= p.MinParallel {
+					if c.Parallel < p.MinParallel {
+						continue
+					}
+					qa := m.AtArc(c.Arc - p.SpanProbe)
+					qb := m.AtArc(c.Arc + p.SpanProbe)
+					near := func(q geo.Pt) bool {
+						return q.Dist(pa) < p.Reach*1.5 ||
+							q.Dist(pb) < p.Reach*1.5
+					}
+					if near(qa) && near(qb) {
 						offs = append(offs, c.Offset)
 					}
 				}
@@ -140,19 +160,39 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			if len(offs) == 0 {
 				continue
 			}
-			o := MedianStrand(Strands(offs, p.StrandGap))
+			st := Strands(offs, p.StrandGap)
+			strandCounts = append(strandCounts, len(st))
+			o := MedianStrand(st)
 			offStar[i] = math.Max(-p.Reach, math.Min(p.Reach, o))
 			has[i] = true
 		}
 		filt := medianFilter(offStar, has, 2)
-		filt, has = gaussianSeries(filt, has, p.OffsetSigma)
+		// Stiffness scales with corridor width. On a wide interlocking
+		// (W 4 St: two stacked 4-track levels flattened to 2D) the strand
+		// count flickers as tracks interleave and every flicker steps the
+		// median half a track spacing — at the base sigma that survives as
+		// a visible S-wobble. The centerline of a wide bundle is
+		// structurally straighter than any of its tracks, so smooth the
+		// offset SERIES harder the more strands the sections carry; this
+		// preserves constant corrections (and therefore real curves) and
+		// leaves 1–2-track corridors at the base sigma.
+		sigma := p.OffsetSigma
+		if k := medianInt(strandCounts); k > 2 {
+			sigma *= float64(k) / 2
+		}
+		filt, has = gaussianSeries(filt, has, sigma)
+		// a drawn line eases lateral shifts. Two step sources: the median
+		// jumping when strand membership changes at a divergence, and
+		// coverage boundaries (has flipping) where a moved sample abuts a
+		// pinned one. Fill coverage gaps by interpolation (uncovered ends
+		// ramp to zero) and slope-limit the WHOLE series so every lateral
+		// correction eases in at a bounded grade.
+		filt = fillGaps(filt, has)
+		filt = slopeLimit(filt, nil, p.SlopeMax*p.Step)
 		out := make([]geo.Pt, n)
 		copy(out, pts)
 		moved := 0.0
 		for i := 1; i < n-1; i++ {
-			if !has[i] {
-				continue
-			}
 			nrm := pts[i+1].Sub(pts[i-1]).Unit().Perp()
 			o := filt[i] * p.Damp
 			if math.Abs(o) > moved {
@@ -170,12 +210,19 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 
 // throughMembers keeps members present along ≥ ThroughFrac of the line —
 // a branch peeling off mid-corridor is the fork's geometry, not this
-// centerline's (it drags the median into an S-wiggle otherwise).
+// centerline's (it drags the median into an S-wiggle otherwise). The
+// requirement is CORRIDOR-scale: on a megachain edge (several corridors
+// long), demanding presence along 80% of the whole chain would exclude
+// every local track group and freeze refinement there (the B/Q Prospect
+// Park tunnel stayed unrefined beside a 14.7 km Brighton edge) — so the
+// threshold caps at ~1.5 km of arc.
 func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
+	const corridorScaleM = 1500.0
 	base := cl.Resample(12.0)
 	if len(base) < 3 {
 		return members
 	}
+	need := p.ThroughFrac * math.Min(float64(len(base)), corridorScaleM/12.0)
 	var through []*geo.Line
 	for _, m := range members {
 		near := 0
@@ -184,7 +231,7 @@ func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
 				near++
 			}
 		}
-		if float64(near) >= p.ThroughFrac*float64(len(base)) {
+		if float64(near) >= need {
 			through = append(through, m)
 		}
 	}
@@ -192,6 +239,15 @@ func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
 		return members
 	}
 	return through
+}
+
+func medianInt(v []int) int {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]int(nil), v...)
+	sort.Ints(s)
+	return s[len(s)/2]
 }
 
 // medianFilter kills single-sample strand flips (window ±w samples).
@@ -218,6 +274,80 @@ func medianFilter(v []float64, has []bool, w int) []float64 {
 // gaussianSeries low-passes the offset SERIES (σ in samples): a strand-count
 // step (express pair peeling) becomes a long ramp; converged sections are ~0
 // so it is a no-op there.
+// fillGaps produces a fully-defined offset series: interior runs without
+// coverage are linearly interpolated between their covered neighbors, and
+// uncovered leading/trailing runs are zero (no correction far from any
+// evidence — the slope limit then eases the boundary).
+func fillGaps(v []float64, has []bool) []float64 {
+	n := len(v)
+	out := make([]float64, n)
+	last := -1
+	for i := 0; i < n; i++ {
+		if !has[i] {
+			continue
+		}
+		out[i] = v[i]
+		if last < 0 {
+			// leading uncovered run stays zero
+		} else if last < i-1 {
+			for j := last + 1; j < i; j++ {
+				t := float64(j-last) / float64(i-last)
+				out[j] = v[last]*(1-t) + v[i]*t
+			}
+		}
+		last = i
+	}
+	return out
+}
+
+// slopeLimit bounds |dv/di| to maxDelta per sample, easing steps into
+// symmetric ramps: forward and backward clamped passes are averaged, so
+// regions already within the limit pass through unchanged.
+func slopeLimit(v []float64, has []bool, maxDelta float64) []float64 {
+	n := len(v)
+	fwd := make([]float64, n)
+	bwd := make([]float64, n)
+	copy(fwd, v)
+	copy(bwd, v)
+	prev := -1
+	for i := 0; i < n; i++ {
+		if has != nil && !has[i] {
+			continue
+		}
+		if prev >= 0 {
+			lim := maxDelta * float64(i-prev)
+			d := fwd[i] - fwd[prev]
+			if d > lim {
+				fwd[i] = fwd[prev] + lim
+			} else if d < -lim {
+				fwd[i] = fwd[prev] - lim
+			}
+		}
+		prev = i
+	}
+	prev = -1
+	for i := n - 1; i >= 0; i-- {
+		if has != nil && !has[i] {
+			continue
+		}
+		if prev >= 0 {
+			lim := maxDelta * float64(prev-i)
+			d := bwd[i] - bwd[prev]
+			if d > lim {
+				bwd[i] = bwd[prev] + lim
+			} else if d < -lim {
+				bwd[i] = bwd[prev] - lim
+			}
+		}
+		prev = i
+	}
+	out := make([]float64, n)
+	for i := range v {
+		out[i] = 0.5 * (fwd[i] + bwd[i])
+	}
+	return out
+}
+
 func gaussianSeries(v []float64, has []bool, sigma float64) ([]float64, []bool) {
 	n := len(v)
 	out := make([]float64, n)

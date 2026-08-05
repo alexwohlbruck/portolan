@@ -186,17 +186,19 @@ func (l *Line) CrossSection(p, tangent Pt, reach float64) []Crossing {
 	r1 := p.Sub(nrm.Scale(reach))
 	r2 := p.Add(nrm.Scale(reach))
 	var out []Crossing
+	arc := 0.0
 	for i := 1; i < len(l.Pts); i++ {
 		q, ok := SegIntersect(r1, r2, l.Pts[i-1], l.Pts[i])
-		if !ok {
-			continue
+		if ok {
+			dir := l.Pts[i].Sub(l.Pts[i-1]).Unit()
+			out = append(out, Crossing{
+				Offset:   q.Sub(p).Dot(nrm),
+				Parallel: math.Abs(dir.Dot(tangent)),
+				At:       q,
+				Arc:      arc + l.Pts[i-1].Dist(q),
+			})
 		}
-		dir := l.Pts[i].Sub(l.Pts[i-1]).Unit()
-		out = append(out, Crossing{
-			Offset:   q.Sub(p).Dot(nrm),
-			Parallel: math.Abs(dir.Dot(tangent)),
-			At:       q,
-		})
+		arc += l.Pts[i].Dist(l.Pts[i-1])
 	}
 	return out
 }
@@ -206,6 +208,7 @@ type Crossing struct {
 	Offset   float64 // signed lateral offset from the section origin
 	Parallel float64 // |cos| of heading agreement with the section tangent
 	At       Pt
+	Arc      float64 // arc position of the crossing along the crossed line
 }
 
 // MaxTurnDeg returns the maximum per-vertex turn angle in degrees.
