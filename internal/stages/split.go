@@ -389,6 +389,66 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	for ni := range net.Nodes {
 		placeNodeAtMeet(net, ni, p)
 	}
+	// a stub shorter than the junction cuts that will consume it, strung
+	// between two junction nodes, is interior connective tissue (Tower 18
+	// crossing legs) — its body can never render, and leaving it splits
+	// every turning movement into fragment-hopping transitions. Collapse
+	// it to a single node at its midpoint.
+	for {
+		rebuildAdj(net)
+		target := -1
+		for ei, e := range net.Edges {
+			if e.Gap || len(e.Pts) == 0 || e.From == e.To {
+				continue
+			}
+			if geo.NewLine(e.Pts).Len() >= 60 {
+				continue
+			}
+			if len(net.Nodes[e.From].Adj) < 3 || len(net.Nodes[e.To].Adj) < 3 {
+				continue
+			}
+			target = ei
+			break
+		}
+		if target < 0 {
+			break
+		}
+		e := &net.Edges[target]
+		mid := geo.Lerp(e.Pts[0], e.Pts[len(e.Pts)-1], 0.5)
+		keep, drop := e.From, e.To
+		net.Nodes[keep].At = mid
+		for j := range net.Edges {
+			if net.Edges[j].From == drop {
+				net.Edges[j].From = keep
+			}
+			if net.Edges[j].To == drop {
+				net.Edges[j].To = keep
+			}
+		}
+		var out []Edge
+		for j, e2 := range net.Edges {
+			if j != target {
+				out = append(out, e2)
+			}
+		}
+		net.Edges = out
+	}
+	// leg welds can turn a remaining short edge into a self-loop on the
+	// merged junction node — sweep those, then contract the deg-2
+	// same-route joints the collapse exposed.
+	{
+		kept := net.Edges[:0]
+		for _, e := range net.Edges {
+			if !e.Gap && e.From == e.To && len(e.Pts) > 0 &&
+				geo.NewLine(e.Pts).Len() < 250 {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		net.Edges = kept
+	}
+	rebuildAdj(net)
+	contractChains(net)
 	return net, nil
 }
 
@@ -431,8 +491,12 @@ func contractChains(net *Network) {
 		if len(a) != len(b) {
 			return false
 		}
-		for i := range a {
-			if a[i] != b[i] {
+		m := map[string]bool{}
+		for _, r := range a {
+			m[r] = true
+		}
+		for _, r := range b {
+			if !m[r] {
 				return false
 			}
 		}
