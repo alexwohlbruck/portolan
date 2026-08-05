@@ -205,7 +205,12 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 	}
 
-paths, err := stages.Match(rail, tracks, frame)
+if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
+		var la, lo float64
+		fmt.Sscanf(v, "%f,%f", &la, &lo)
+		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
+	}
+	paths, err := stages.Match(rail, tracks, frame)
 	if err != nil {
 		return fmt.Errorf("MATCH: %w", err)
 	}
@@ -373,11 +378,9 @@ func writeNetwork(out string, net *stages.Network, frame geo.Frame) error {
 func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) error {
 	fc := collection{Type: "FeatureCollection"}
 	for si, s := range segs {
-		step := 8.0
-		if s.Kind == "steady" {
-			step = 6.0
-		}
-		if f, ok := lineFeature(map[string]any{
+		// FAIR emits visually-smoothed polylines — resampling at a coarse
+		// step would re-facet every rounded corner. Emit vertices as-is.
+		if f, ok := vertexFeature(map[string]any{
 			"seg": si, "kind": s.Kind,
 			"color": s.Color, "route_color": s.Color,
 			"routes": strings.Join(s.Routes, ","), "label": s.Label,
@@ -388,11 +391,23 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 			"off_to_px":   s.OffToPx,
 			"band_min": s.BandMin, "band_max": s.BandMax,
 			"len_m": int(s.Line.Len()),
-		}, s.Line, step, frame); ok {
+		}, s.Line, frame); ok {
 			fc.Features = append(fc.Features, f)
 		}
 	}
 	return writeFC(path, fc)
+}
+
+// vertexFeature emits a line's own vertices (no resampling).
+func vertexFeature(props map[string]any, l *geo.Line, frame geo.Frame) (feature, bool) {
+	var cs [][2]float64
+	for _, p := range l.Pts {
+		ll := frame.ToLL(p)
+		cs = append(cs, [2]float64{ll.Lon, ll.Lat})
+	}
+	raw, _ := json.Marshal(cs)
+	return feature{Type: "Feature", Props: props,
+		Geom: geomJSON{Type: "LineString", Coords: raw}}, len(cs) >= 2
 }
 
 // LoadBuildFeatures reads a segments GeoJSON for scoring (z15 band only).

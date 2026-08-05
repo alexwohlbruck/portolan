@@ -1,6 +1,8 @@
 package stages
 
 import (
+	"os"
+	"fmt"
 	"math"
 	"sort"
 
@@ -52,6 +54,10 @@ var fairBands = []struct {
 
 // Fair draws the junction connections with smooth curvature between slot
 // positions (circular arcs preserve parallelism) and cuts zoom bands.
+var dbg3Pt geo.Pt
+
+func SetDbg3(p geo.Pt) { dbg3Pt = p }
+
 func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]Segment, error) {
 	p := defaultFairParams()
 
@@ -255,6 +261,17 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 		})
 		for _, c := range cands {
 			a, cur := c.a, c.cur
+			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+				for _, e := range []int{a, cur} {
+					pts2 := n.Edges[e].Pts
+					if len(pts2) > 0 && pts2[len(pts2)-1].Dist(dbg3Pt) < 100 ||
+						len(pts2) > 0 && pts2[0].Dist(dbg3Pt) < 100 {
+						fmt.Printf("CAND3 %s a=e%d cur=e%d mids=%d aAtTo=%v bAtFrom=%v\n",
+							c.color, a, cur, len(c.mids), c.aAtTo, c.bAtFrom)
+						break
+					}
+				}
+			}
 			skip := absorbed[[2]int{a, colorIdx(a, c.color)}] ||
 				absorbed[[2]int{cur, colorIdx(cur, c.color)}]
 			for _, k := range c.mids {
@@ -265,6 +282,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			ck := [5]int{a, boolIdx(c.aAtTo), cur, boolIdx(!c.bAtFrom), colorIdx(a, c.color)}
 			rk := [5]int{cur, boolIdx(!c.bAtFrom), a, boolIdx(c.aAtTo), colorIdx(cur, c.color)}
 			if skip || emitted[ck] || emitted[rk] {
+				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+					fmt.Printf("  REJ3 skip=%v em=%v/%v\n", skip, emitted[ck], emitted[rk])
+				}
 				continue
 			}
 			tail := endPiece(lines[a], c.aAtTo, cut[a][boolIdx(c.aAtTo)])
@@ -274,17 +294,46 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			if len(chain) < 2 {
 				continue
 			}
-			// opposing end tangents are a topology decision, not a
-			// smoothing problem (the Grand Central lesson): leave
-			// both sides as steady stubs, never a hairpin connector
+			// opposing TRAVEL directions are a topology decision, not a
+			// smoothing problem (the Grand Central lesson): leave both
+			// sides as steady stubs, never a hairpin connector. Measured
+			// at the OUTER ends — entry direction into the connection vs
+			// exit direction out of it — because the inner ends carry
+			// corner overshoot (each edge owns half the curve at a 90°
+			// street corner, and their meeting tangents oppose even
+			// though the movement is a plain turn).
 			tl, hl := geo.NewLine(tail), geo.NewLine(head)
-			if tl.Len() > 2 && hl.Len() > 2 &&
-				tl.TangentAtArc(tl.Len(), 10).Dot(hl.TangentAtArc(0, 10)) < -0.5 {
+			entryArc := math.Min(30, lines[a].Len()/3)
+			exitArc := math.Min(30, lines[cur].Len()/3)
+			var entry, exit geo.Pt
+			if c.aAtTo {
+				entry = lines[a].TangentAtArc(lines[a].Len()-entryArc, 10)
+			} else {
+				entry = lines[a].TangentAtArc(entryArc, 10).Scale(-1)
+			}
+			if c.bAtFrom {
+				exit = lines[cur].TangentAtArc(exitArc, 10)
+			} else {
+				exit = lines[cur].TangentAtArc(lines[cur].Len()-exitArc, 10).Scale(-1)
+			}
+			if entry.Dot(exit) < -0.5 {
+				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+					fmt.Printf("  REJ3 hairpin\n")
+				}
 				continue
 			}
+			_ = tl
+			_ = hl
 			freeR := math.Min(p.FilletR*band.scale,
 				0.8*math.Min(tl.Len(), hl.Len()))
 			chain = blendFreeArea(chain, len(tail)-1, freeR)
+			// a connector that cannot be DRAWN smoothly is a topology
+			// decision, not a smoothing problem — the tangent guard above
+			// catches net reversals, this catches everything else that
+			// would emit as a visible kink.
+			if maxTurn12(smoothPolyline(geo.NewLine(chain))) > 25 {
+				continue
+			}
 			segs = append(segs, Segment{
 				Kind:      "transition",
 				Color:     c.color,
@@ -361,6 +410,15 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 
 // smoothPolyline: collinear-run simplification followed by two rounds of
 // endpoint-pinned Chaikin corner cutting.
+// maxTurn12: worst turn at uniform 12 m sampling — the scale the eye
+// (and the jaggedness gate) sees; dense vertices hide nothing here.
+func maxTurn12(l *geo.Line) float64 {
+	if l.Len() < 24 {
+		return geo.MaxTurnDeg(l.Pts)
+	}
+	return geo.MaxTurnDeg(l.Resample(12))
+}
+
 func smoothPolyline(l *geo.Line) *geo.Line {
 	pts := l.Pts
 	if len(pts) < 3 {
@@ -376,7 +434,14 @@ func smoothPolyline(l *geo.Line) *geo.Line {
 		}
 	}
 	simp = append(simp, pts[len(pts)-1])
-	for round := 0; round < 2; round++ {
+	// corner fillets: a REAL corner (sharp localized turn — the Loop's
+	// 90° street corners) is drawn as a circular arc tangent to both
+	// arms, the way a hand with a compass would round it. Gentle curves
+	// (low per-vertex turns) never trigger and keep following the steel.
+	if os.Getenv("PORTOLAN_NOFILLET") == "" {
+		simp = filletCorners(simp, 25, 15, 30)
+	}
+	for round := 0; round < 3; round++ {
 		if len(simp) < 3 {
 			break
 		}
@@ -398,6 +463,192 @@ func smoothPolyline(l *geo.Line) *geo.Line {
 		simp = out
 	}
 	return geo.NewLine(simp)
+}
+
+// filletCorners replaces clusters of consecutive sharp vertices (each
+// turning >= minVertex deg, cluster total >= minTotal deg) with a
+// circular arc of up to radius R tangent to the straightened arms — the
+// way a hand with a compass rounds a corner. Every candidate is judged
+// against the original window and the locally smoothest wins, so a
+// wiggly seam that only looks like a corner is never made worse.
+// Endpoints are never touched.
+func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
+	n := len(pts)
+	if n < 3 {
+		return pts
+	}
+	turn := make([]float64, n)
+	for i := 1; i < n-1; i++ {
+		turn[i] = geo.TurnDeg(pts[i-1], pts[i], pts[i+1])
+	}
+	type window struct {
+		lo, hi int
+		repl   []geo.Pt // nil = keep original
+	}
+	var wins []window
+	i := 1
+	for i < n-1 {
+		if turn[i] < minVertex {
+			i++
+			continue
+		}
+		j, total, apex := i, 0.0, i
+		for j < n-1 && turn[j] >= minVertex {
+			total += turn[j]
+			if turn[j] > turn[apex] {
+				apex = j
+			}
+			j++
+		}
+		if total < minTotal {
+			i = j
+			continue
+		}
+		lo, hi := i, j-1
+		minLo := 1
+		if len(wins) > 0 {
+			minLo = wins[len(wins)-1].hi + 2
+		}
+		// swallow the corner's gentle shoulders too — a real track
+		// corner tapers in and out, and an arc that replaces only the
+		// apex leaves chord-and-bend residue on both sides
+		for lo > minLo && (pts[lo-1].Dist(pts[apex]) < r ||
+			(turn[lo-1] >= 5 && pts[lo-1].Dist(pts[apex]) < 1.8*r)) {
+			lo--
+		}
+		for hi < n-2 && (pts[hi+1].Dist(pts[apex]) < r ||
+			(turn[hi+1] >= 5 && pts[hi+1].Dist(pts[apex]) < 1.8*r)) {
+			hi++
+		}
+		if lo < 1 || hi > n-2 {
+			i = j
+			continue
+		}
+		a, b := pts[lo-1], pts[hi+1]
+		orig := append(append([]geo.Pt{a}, pts[lo:hi+1]...), b)
+		var best []geo.Pt
+		bestScore := geo.MaxTurnDeg(orig)
+		// classical street-corner fillet: the arms are the ENTRY and EXIT
+		// LINES (the segments crossing the window boundary — the streets
+		// themselves, not chords across the curved cluster). The arc is
+		// tangent to both lines at distance d from their intersection, so
+		// its ends lie exactly ON the streets and the connecting chords
+		// carry no lateral drift.
+		u1 := pts[apex].Sub(a).Unit()
+		if lo < apex {
+			u1 = pts[lo].Sub(a).Unit()
+		}
+		u2 := b.Sub(pts[apex]).Unit()
+		if hi > apex {
+			u2 = b.Sub(pts[hi]).Unit()
+		}
+		cosT := u1.Dot(u2)
+		theta := math.Acos(math.Max(-1, math.Min(1, cosT)))
+		den := u1.Cross(u2)
+		if theta > 0.05 && math.Abs(den) > 1e-9 {
+			// virtual apex: intersection of line(a,u1) and line(b,u2)
+			ab := b.Sub(a)
+			t1 := ab.Cross(u2) / den
+			vx := a.Add(u1.Scale(t1))
+			armA := vx.Dist(a)
+			armB := vx.Dist(b)
+			sign := 1.0
+			if den < 0 {
+				sign = -1
+			}
+			dBase := math.Min(r*math.Tan(theta/2),
+				0.45*math.Min(armA, armB))
+			for _, scale := range []float64{1, 0.5, 0.25} {
+				d := dBase * scale
+				rEff := d / math.Tan(theta/2)
+				if rEff < 12 {
+					break // below drawing scale — an arc this tight reads as a kink
+				}
+				p1 := vx.Sub(u1.Scale(d))
+				nrm1 := geo.Pt{X: -u1.Y * sign, Y: u1.X * sign}
+				c := p1.Add(nrm1.Scale(rEff))
+				a0 := math.Atan2(p1.Y-c.Y, p1.X-c.X)
+				steps := int(math.Max(4, theta*rEff/3))
+				arc := make([]geo.Pt, 0, steps+1)
+				for st := 0; st <= steps; st++ {
+					ang := a0 + sign*theta*float64(st)/float64(steps)
+					arc = append(arc, geo.Pt{X: c.X + rEff*math.Cos(ang), Y: c.Y + rEff*math.Sin(ang)})
+				}
+				cand := append(append([]geo.Pt{a}, arc...), b)
+				if sc := geo.MaxTurnDeg(cand); sc < bestScore {
+					bestScore = sc
+					best = arc
+				}
+			}
+		}
+		// fallback candidate: local corner cutting of the original
+		// window — when no arc fits (curved arms), this still beats the
+		// raw elbow
+		{
+			cc := append([]geo.Pt(nil), orig...)
+			for round := 0; round < 3; round++ {
+				if len(cc) < 3 {
+					break
+				}
+				nxt := []geo.Pt{cc[0]}
+				for x := 0; x+1 < len(cc); x++ {
+					q := geo.Lerp(cc[x], cc[x+1], 0.25)
+					rr := geo.Lerp(cc[x], cc[x+1], 0.75)
+					if x == 0 {
+						nxt = append(nxt, rr)
+					} else if x+2 == len(cc) {
+						nxt = append(nxt, q)
+					} else {
+						nxt = append(nxt, q, rr)
+					}
+				}
+				nxt = append(nxt, cc[len(cc)-1])
+				cc = nxt
+			}
+			if sc := geo.MaxTurnDeg(cc); sc < bestScore {
+				bestScore = sc
+				best = cc[1 : len(cc)-1]
+			}
+		}
+		if best != nil {
+			if os.Getenv("PORTOLAN_DBGF") != "" {
+				span := pts[hi+1].Dist(pts[lo-1])
+				if pts[apex].Dist(dbg3Pt) < 400 {
+					fmt.Printf("FWIN apex=%d span=%.0fm win=[%d,%d]/%d score=%.1f arcpts=%d theta-arms a=(%.1f,%.1f) apex=(%.1f,%.1f) b=(%.1f,%.1f)\n",
+						apex, span, lo, hi, n, bestScore, len(best),
+						pts[lo-1].X-pts[apex].X, pts[lo-1].Y-pts[apex].Y,
+						pts[apex].X, pts[apex].Y,
+						pts[hi+1].X-pts[apex].X, pts[hi+1].Y-pts[apex].Y)
+					for z := lo - 1; z <= hi+1 && z < n; z++ {
+						fmt.Printf("   pts[%d]=(%.1f,%.1f) turn=%.0f\n", z, pts[z].X-pts[apex].X, pts[z].Y-pts[apex].Y, turn[z])
+					}
+					for z, q := range best {
+						if z%4 == 0 {
+							fmt.Printf("   arc[%d]=(%.1f,%.1f)\n", z, q.X-pts[apex].X, q.Y-pts[apex].Y)
+						}
+					}
+				}
+			}
+			wins = append(wins, window{lo, hi, best})
+		}
+		i = j
+	}
+	if len(wins) == 0 {
+		return pts
+	}
+	var out []geo.Pt
+	k := 0
+	for _, w := range wins {
+		for ; k < w.lo; k++ {
+			out = append(out, pts[k])
+		}
+		out = append(out, w.repl...)
+		k = w.hi + 1
+	}
+	for ; k < n; k++ {
+		out = append(out, pts[k])
+	}
+	return out
 }
 
 func segDistPt(p, a, b geo.Pt) float64 {
