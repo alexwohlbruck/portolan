@@ -348,7 +348,63 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			}
 		}
 	}
+	// visual smoothing: the working geometry is polygonal at ~6 m vertex
+	// spacing, which reads as facets at high zoom even when every turn
+	// matches the steel. Simplify straight runs, then corner-cut the
+	// remainder — endpoints pinned exactly, so segment-to-segment drawn
+	// continuity is untouched.
+	for i := range segs {
+		segs[i].Line = smoothPolyline(segs[i].Line)
+	}
 	return segs, nil
+}
+
+// smoothPolyline: collinear-run simplification followed by two rounds of
+// endpoint-pinned Chaikin corner cutting.
+func smoothPolyline(l *geo.Line) *geo.Line {
+	pts := l.Pts
+	if len(pts) < 3 {
+		return l
+	}
+	// drop vertices that deviate < 0.3 m from the chord of their
+	// neighbors — straight runs collapse so corner cutting doesn't bloat
+	// the output
+	simp := []geo.Pt{pts[0]}
+	for i := 1; i < len(pts)-1; i++ {
+		if segDistPt(pts[i], simp[len(simp)-1], pts[i+1]) > 0.3 {
+			simp = append(simp, pts[i])
+		}
+	}
+	simp = append(simp, pts[len(pts)-1])
+	for round := 0; round < 2; round++ {
+		if len(simp) < 3 {
+			break
+		}
+		out := make([]geo.Pt, 0, 2*len(simp))
+		out = append(out, simp[0])
+		for i := 0; i+1 < len(simp); i++ {
+			a, b := simp[i], simp[i+1]
+			q := geo.Lerp(a, b, 0.25)
+			r := geo.Lerp(a, b, 0.75)
+			if i == 0 {
+				out = append(out, r)
+			} else if i+2 == len(simp) {
+				out = append(out, q)
+			} else {
+				out = append(out, q, r)
+			}
+		}
+		out = append(out, simp[len(simp)-1])
+		simp = out
+	}
+	return geo.NewLine(simp)
+}
+
+func segDistPt(p, a, b geo.Pt) float64 {
+	ab := b.Sub(a)
+	t := p.Sub(a).Dot(ab) / math.Max(1e-12, ab.Dot(ab))
+	t = math.Max(0, math.Min(1, t))
+	return p.Dist(a.Add(ab.Scale(t)))
 }
 
 func shareRoute(a, b []string) bool {
