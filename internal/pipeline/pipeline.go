@@ -146,6 +146,11 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 	}
 	stages.SetWayLevels(lvls)
+	cls := map[string]string{}
+	for _, w := range ways {
+		cls[w.ID] = w.Tags["railway"]
+	}
+	stages.SetWayRailClass(cls)
 	strands := bundle.Chain(tracks, d.JoinTol)
 	logf("chart: %d rail ways → %d strands (%.1fs)",
 		len(ways), len(strands), time.Since(t0).Seconds())

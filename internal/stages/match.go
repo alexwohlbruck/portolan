@@ -93,6 +93,33 @@ var wayLevels map[string]int
 
 func SetWayLevels(m map[string]int) { wayLevels = m }
 
+// wayRailClass: the OSM railway= class per way. A metro route does not
+// ride light-rail steel that happens to hug its shape (the O'Hare
+// people-mover parallels the Blue Line exactly where the GTFS shape
+// drifts off the subway). The penalty only applies when compatible-class
+// track is actually present at the sample — systems that genuinely run on
+// another class (SIR on railway=rail) see uniform costs and are unmoved.
+var wayRailClass map[string]string
+
+func SetWayRailClass(m map[string]string) { wayRailClass = m }
+
+func classCompat(routeType int, cls string) bool {
+	if cls == "" {
+		return true
+	}
+	switch routeType {
+	case 1, 401: // metro
+		return cls == "subway"
+	case 0, 900: // tram / light rail
+		return cls == "light_rail" || cls == "tram"
+	case 2, 100: // rail
+		return cls == "rail" || cls == "narrow_gauge"
+	}
+	return true
+}
+
+const classPen = 100.0
+
 const crossoverPen = 120.0
 const levelJumpPen = 300.0
 
@@ -230,11 +257,22 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		if len(near) > maxCand {
 			near = near[:maxCand]
 		}
+		hasCompat := false
+		if wayRailClass != nil {
+			for _, c := range near {
+				if classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way]) {
+					hasCompat = true
+					break
+				}
+			}
+		}
 		usable := false
 		for _, c := range near {
+			compat := !hasCompat ||
+				classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way])
 			ptan := m.g.pieces[c.piece].TangentAtArc(c.arc, 10)
 			dot := ptan.Dot(tan)
-			if c.d < m.p.GapFree && math.Abs(dot) >= 0.5 {
+			if compat && c.d < m.p.GapFree && math.Abs(dot) >= 0.5 {
 				usable = true
 			}
 			bonus := 0.0
@@ -252,7 +290,11 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 					dd = -dd
 				}
 				e := 2*c.piece + dir
-				cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)) - bonus})
+				pen := 0.0
+				if !compat {
+					pen = classPen
+				}
+				cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)+pen) - bonus})
 			}
 		}
 		gapEmit[i] = barredGap

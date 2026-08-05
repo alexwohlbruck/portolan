@@ -336,13 +336,40 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	foldRings(net)
 	refineEdges(net, strandLines, sgrid, p, rp)
 	dropShadowStubs(net)
+	// a gap edge whose ENDPOINTS nearly coincide is not missing track —
+	// it is a deviating shape's bulge pinched between two matched anchors
+	// (the O'Hare approach, where the GTFS shape leaves the subway for
+	// ~100 m). Weld the nodes and drop the gap; chain contraction then
+	// fuses the halves into one continuous line on real track.
+	for ei := range net.Edges {
+		e := &net.Edges[ei]
+		if !e.Gap || len(e.Pts) == 0 || e.From == e.To {
+			continue
+		}
+		if net.Nodes[e.From].At.Dist(net.Nodes[e.To].At) > 20 {
+			continue
+		}
+		keep, drop := e.From, e.To
+		for j := range net.Edges {
+			if net.Edges[j].From == drop {
+				net.Edges[j].From = keep
+			}
+			if net.Edges[j].To == drop {
+				net.Edges[j].To = keep
+			}
+		}
+		e.Pts = nil
+	}
 	// node welds during ring deletion can collapse a small leftover
 	// fragment's two endpoints into one node, leaving a self-loop far
 	// below renderable balloon size — unreachable by any other sweep.
 	{
 		kept := net.Edges[:0]
 		for _, e := range net.Edges {
-			if len(e.Pts) > 0 && e.From == e.To && geo.NewLine(e.Pts).Len() < 250 {
+			if len(e.Pts) == 0 {
+				continue // swept above (healed gaps)
+			}
+			if e.From == e.To && geo.NewLine(e.Pts).Len() < 250 {
 				continue
 			}
 			kept = append(kept, e)
