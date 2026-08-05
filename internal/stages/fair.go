@@ -58,7 +58,7 @@ var dbg3Pt geo.Pt
 
 func SetDbg3(p geo.Pt) { dbg3Pt = p }
 
-func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]Segment, error) {
+func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, paths []Path) ([]Segment, error) {
 	p := defaultFairParams()
 
 	colorOf := func(rid string) string {
@@ -125,8 +125,112 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 		return routes[rs[0]].Type
 	}
 
+	// matched walks per route id — the authority on which junction movements
+	// a route actually makes. A loop circulator carries its id on three legs
+	// of a corner but rides only two of the three pairings; the unridden
+	// pairing must not get a turn drawn.
+	patIdx := map[string][]int{}
+	for i := range paths {
+		rid := paths[i].Pattern.Route.ID
+		patIdx[rid] = append(patIdx[rid], i)
+	}
+	elines := make([]*geo.Line, len(n.Edges))
+	for ei, e := range n.Edges {
+		elines[ei] = geo.NewLine(e.Pts)
+	}
+	const probeArc = 60.0 // how far down a leg to probe
+	const probeTol = 28.0 // walk counts as passing within this of the probe
+	probePt := func(ei, ni int) (geo.Pt, float64) {
+		l := elines[ei]
+		d := math.Min(probeArc, l.Len()/2)
+		if n.Edges[ei].To == ni {
+			return l.AtArc(l.Len() - d), d
+		}
+		return l.AtArc(d), d
+	}
+	// arcs along pattern pi where the walk passes the probe of (edge, node)
+	passCache := map[[3]int][]float64{}
+	passesNear := func(pi, ei, ni int, probe geo.Pt) []float64 {
+		key := [3]int{pi, ei, ni}
+		if arcs, ok := passCache[key]; ok {
+			return arcs
+		}
+		var arcs []float64
+		pts := paths[pi].Line.Pts
+		arc, best, bestArc := 0.0, math.Inf(1), 0.0
+		in := false
+		for i := 1; i < len(pts); i++ {
+			d := segDistPt(probe, pts[i-1], pts[i])
+			if d < probeTol {
+				in = true
+				if d < best {
+					best, bestArc = d, arc
+				}
+			} else if in {
+				arcs = append(arcs, bestArc)
+				in, best = false, math.Inf(1)
+			}
+			arc += pts[i].Sub(pts[i-1]).Norm()
+		}
+		if in {
+			arcs = append(arcs, bestArc)
+		}
+		passCache[key] = arcs
+		return arcs
+	}
+	// ridesPair: some shared route's walk passes both probes in one short
+	// span (arc separation comparable to the probe spans, not a lap of a
+	// loop). Attest-false only when the walks demonstrably pass BOTH legs
+	// yet never consecutively — a walk that misses a probe entirely is a
+	// geometry mismatch (merged medians drift), not evidence of a phantom.
+	ridesPair := func(shared []string, a, b, ni int) bool {
+		pa, da := probePt(a, ni)
+		pb, db := probePt(b, ni)
+		// slack covers the junction interior between the probe passes —
+		// welded legs and station throats stretch it to ~300 m at DeKalb.
+		// A phantom pairing (a circulator crossing its own path) separates
+		// by half a loop lap, kilometres — orders of magnitude clear.
+		sepMax := da + db + 400
+		dbg := os.Getenv("PORTOLAN_DBG3") != "" && n.Nodes[ni].At.Dist(dbg3Pt) < 100
+		for _, rid := range shared {
+			pis := patIdx[rid]
+			if len(pis) == 0 {
+				return true
+			}
+			sawA, sawB := false, false
+			for _, pi := range pis {
+				aArcs := passesNear(pi, a, ni, pa)
+				bArcs := passesNear(pi, b, ni, pb)
+				sawA = sawA || len(aArcs) > 0
+				sawB = sawB || len(bArcs) > 0
+				if dbg {
+					minSep := math.Inf(1)
+					for _, x := range aArcs {
+						for _, y := range bArcs {
+							minSep = math.Min(minSep, math.Abs(x-y))
+						}
+					}
+					fmt.Printf("  RIDE3 %s pat=%d passesA=%d passesB=%d minSep=%.0f sepMax=%.0f da=%.0f db=%.0f\n",
+						rid, pi, len(aArcs), len(bArcs), minSep, sepMax, da, db)
+				}
+				for _, x := range aArcs {
+					for _, y := range bArcs {
+						if math.Abs(x-y) <= sepMax {
+							return true
+						}
+					}
+				}
+			}
+			if !sawA || !sawB {
+				return true
+			}
+		}
+		return false
+	}
+
 	// through-pairs per node/color: two incident edges sharing a route id of
-	// that color really carry it through (walks are continuous — Law 1)
+	// that color really carry it through (walks are continuous — Law 1),
+	// gated on the walk actually making that movement at this node
 	type pair struct{ a, b int }
 	throughs := make([]map[string][]pair, len(n.Nodes))
 	for ni, nd := range n.Nodes {
@@ -142,7 +246,16 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 					if !ok {
 						continue
 					}
-					if !shareRoute(ras, rbs) {
+					shared := sharedRoutes(ras, rbs)
+					if len(shared) == 0 {
+						continue
+					}
+					rides := ridesPair(shared, a, b, ni)
+					if os.Getenv("PORTOLAN_DBG3") != "" && nd.At.Dist(dbg3Pt) < 100 {
+						fmt.Printf("GATE3 node=%d color=%s a=e%d(%v) b=e%d(%v) shared=%v rides=%v\n",
+							ni, c, a, n.Edges[a].Routes, b, n.Edges[b].Routes, shared, rides)
+					}
+					if !rides {
 						continue
 					}
 					throughs[ni][c] = append(throughs[ni][c], pair{a, b})
@@ -221,6 +334,25 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			color            string
 			mid              []geo.Pt
 			mids             [][2]int
+			bend             float64
+		}
+		// entry/exit travel tangents of a connection, measured at the OUTER
+		// ends (steady side) — inner ends carry corner overshoot
+		pairTangents := func(a, cur int, aAtTo, bAtFrom bool) (geo.Pt, geo.Pt) {
+			entryArc := math.Min(30, lines[a].Len()/3)
+			exitArc := math.Min(30, lines[cur].Len()/3)
+			var entry, exit geo.Pt
+			if aAtTo {
+				entry = lines[a].TangentAtArc(lines[a].Len()-entryArc, 10)
+			} else {
+				entry = lines[a].TangentAtArc(entryArc, 10).Scale(-1)
+			}
+			if bAtFrom {
+				exit = lines[cur].TangentAtArc(exitArc, 10)
+			} else {
+				exit = lines[cur].TangentAtArc(lines[cur].Len()-exitArc, 10).Scale(-1)
+			}
+			return entry, exit
 		}
 		var cands []cand
 		for ni := range n.Nodes {
@@ -252,8 +384,41 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 						hops++
 					}
 					bAtFrom := n.Edges[cur].From == curNode
-					cands = append(cands, cand{a, cur, aAtTo, bAtFrom, color, mid, mids})
+					en, ex := pairTangents(a, cur, aAtTo, bAtFrom)
+					bend := math.Acos(math.Max(-1, math.Min(1, en.Dot(ex)))) * 180 / math.Pi
+					cands = append(cands, cand{a, cur, aAtTo, bAtFrom, color, mid, mids, bend})
 				}
+			}
+		}
+		// per-color node fronts: a straight-through movement holds bundle
+		// formation until a short cut — its slot swing happens inside the
+		// junction — while a turning movement keeps the full span its curve
+		// needs. Per (edge, end, color) the effective cut is the max any of
+		// that color's movements needs, so every transition tail and the
+		// steady body meet at the same arc.
+		const straightBend = 30.0
+		effCut := map[[3]int]float64{}
+		cutFor := func(ei, end, ci int) float64 {
+			if v, ok := effCut[[3]int{ei, end, ci}]; ok {
+				return v
+			}
+			return cut[ei][end]
+		}
+		for _, c := range cands {
+			endA, endB := boolIdx(c.aAtTo), boolIdx(!c.bAtFrom)
+			cA, cB := cut[c.a][endA], cut[c.cur][endB]
+			if c.bend < straightBend {
+				short := 1.5 * p.MinShortCut * band.scale
+				cA = math.Min(cA, short)
+				cB = math.Min(cB, short)
+			}
+			kA := [3]int{c.a, endA, colorIdx(c.a, c.color)}
+			kB := [3]int{c.cur, endB, colorIdx(c.cur, c.color)}
+			if v, ok := effCut[kA]; !ok || cA > v {
+				effCut[kA] = cA
+			}
+			if v, ok := effCut[kB]; !ok || cB > v {
+				effCut[kB] = cB
 			}
 		}
 		// longest chains first: a chained connection claims the fragment
@@ -289,8 +454,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 				}
 				continue
 			}
-			tail := endPiece(lines[a], c.aAtTo, cut[a][boolIdx(c.aAtTo)])
-			head := startPiece(lines[cur], c.bAtFrom, cut[cur][boolIdx(!c.bAtFrom)])
+			tail := endPiece(lines[a], c.aAtTo, cutFor(a, boolIdx(c.aAtTo), colorIdx(a, c.color)))
+			head := startPiece(lines[cur], c.bAtFrom, cutFor(cur, boolIdx(!c.bAtFrom), colorIdx(cur, c.color)))
 			chain := chainPts(tail, c.mid)
 			chain = chainPts(chain, head)
 			if len(chain) < 2 {
@@ -305,19 +470,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			// street corner, and their meeting tangents oppose even
 			// though the movement is a plain turn).
 			tl, hl := geo.NewLine(tail), geo.NewLine(head)
-			entryArc := math.Min(30, lines[a].Len()/3)
-			exitArc := math.Min(30, lines[cur].Len()/3)
-			var entry, exit geo.Pt
-			if c.aAtTo {
-				entry = lines[a].TangentAtArc(lines[a].Len()-entryArc, 10)
-			} else {
-				entry = lines[a].TangentAtArc(entryArc, 10).Scale(-1)
-			}
-			if c.bAtFrom {
-				exit = lines[cur].TangentAtArc(exitArc, 10)
-			} else {
-				exit = lines[cur].TangentAtArc(lines[cur].Len()-exitArc, 10).Scale(-1)
-			}
+			entry, exit := pairTangents(a, cur, c.aAtTo, c.bAtFrom)
 			if entry.Dot(exit) < -0.5 {
 				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
 					fmt.Printf("  REJ3 hairpin\n")
@@ -336,7 +489,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			// allowance scales with how much the connection MUST turn: a
 			// 90° street corner concentrates ~35-40° per 12 m at sane
 			// radii, while a straight-through weave has no excuse.
-			bend := math.Acos(math.Max(-1, math.Min(1, entry.Dot(exit)))) * 180 / math.Pi
+			bend := c.bend
 			allow := 25 + 20*math.Min(1, bend/90)
 			// a TURNING movement follows the steel: the junction's
 			// connector track is in the data — trace it between the cut
@@ -427,11 +580,11 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 				if absorbed[[2]int{ei, ci}] {
 					continue // fully covered by a chained transition
 				}
-				from := cut[ei][0]
+				from := cutFor(ei, 0, ci)
 				if !served[[3]int{ei, 0, ci}] {
 					from = 0
 				}
-				to := cut[ei][1]
+				to := cutFor(ei, 1, ci)
 				if !served[[3]int{ei, 1, ci}] {
 					to = 0
 				}
@@ -1016,6 +1169,19 @@ func segDistPt(p, a, b geo.Pt) float64 {
 	t := p.Sub(a).Dot(ab) / math.Max(1e-12, ab.Dot(ab))
 	t = math.Max(0, math.Min(1, t))
 	return p.Dist(a.Add(ab.Scale(t)))
+}
+
+func sharedRoutes(a, b []string) []string {
+	var out []string
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				out = append(out, x)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func shareRoute(a, b []string) bool {

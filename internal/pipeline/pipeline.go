@@ -232,7 +232,7 @@ if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
 	if err != nil {
 		return fmt.Errorf("ORDER: %w", err)
 	}
-	segs, err := stages.Fair(net, slots, feed.Routes)
+	segs, err := stages.Fair(net, slots, feed.Routes, paths)
 	if err != nil {
 		return fmt.Errorf("FAIR: %w", err)
 	}
