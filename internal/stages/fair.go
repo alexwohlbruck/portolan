@@ -160,18 +160,13 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 			base := p.CutBase * band.scale
 			for end := 0; end < 2; end++ {
 				c := math.Min(base, lines[ei].Len()/3)
-				// a gently curvy approach is real geometry — shrink the
-				// cut rather than lay a synthetic connector across it.
-				// But a CORNER-class end (the approach itself turns hard —
-				// a junction sitting at a street corner) is the opposite
-				// case: the transition must own the whole curve, or the
-				// turn gets crammed into whatever sliver of cut is left
-				// and draws at an impossible radius.
-				if approachTurn(lines[ei], end == 1, c) <= 60 {
-					for c > p.MinShortCut &&
-						approachTurn(lines[ei], end == 1, c) > p.MaxTurn {
-						c *= 0.7
-					}
+				// a curvy approach is real geometry — shrink the cut
+				// rather than lay a synthetic connector across it; the
+				// Bézier fallback turns compactly from whatever cut is
+				// left, hugging the junction like the steel does
+				for c > p.MinShortCut &&
+					approachTurn(lines[ei], end == 1, c) > p.MaxTurn {
+					c *= 0.7
 				}
 				cut[ei][end] = math.Max(c, 0)
 			}
@@ -454,6 +449,69 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route) ([]S
 
 // smoothPolyline: collinear-run simplification followed by two rounds of
 // endpoint-pinned Chaikin corner cutting.
+// trackParallelCorner finds a track (from the level index — every loaded
+// track) passing the corner parallel to both arms and returns its curve
+// between the arm projections, offset laterally by the drawn line's
+// distance from it. Nil when no suitable track exists.
+func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
+	if lvlGrid == nil {
+		return nil
+	}
+	best := -1
+	bestSpread := 10.0
+	var bestOff float64
+	lvlGrid.Near(apex, 25, func(ti int) {
+		t := lvlLines[ti]
+		da := t.DistTo(a)
+		db := t.DistTo(b)
+		dx := t.DistTo(apex)
+		if da > 25 || db > 25 || dx > 25 {
+			return
+		}
+		// parallel means the offsets agree along the whole window
+		spread := math.Max(da, math.Max(db, dx)) - math.Min(da, math.Min(db, dx))
+		if spread < bestSpread {
+			bestSpread = spread
+			best = ti
+			bestOff = (da + db) / 2
+		}
+	})
+	if best < 0 {
+		return nil
+	}
+	t := lvlLines[best]
+	sa, _ := t.ProjectArc(a)
+	sb, _ := t.ProjectArc(b)
+	if math.Abs(sb-sa) < 10 || math.Abs(sb-sa) > 400 {
+		return nil
+	}
+	sub := bundle.SubLine(t, math.Min(sa, sb), math.Max(sa, sb))
+	pts := sub.Pts
+	if sb < sa {
+		pts = reversedPts(pts)
+	}
+	// signed offset: which side of the track is the drawn line on?
+	arcA, _ := t.ProjectArc(a)
+	tanA := t.TangentAtArc(arcA, 10)
+	side := 1.0
+	if tanA.Cross(a.Sub(t.AtArc(arcA))) < 0 {
+		side = -1
+	}
+	if sb < sa {
+		side = -side
+	}
+	o := side * bestOff
+	l := geo.NewLine(pts)
+	var out []geo.Pt
+	step := 4.0
+	for arc := 0.0; arc <= l.Len(); arc += step {
+		q := l.AtArc(arc)
+		nrm := l.TangentAtArc(arc, 8).Perp()
+		out = append(out, q.Add(nrm.Scale(o)))
+	}
+	return out
+}
+
 // maxTurn12: worst turn at uniform 12 m sampling — the scale the eye
 // (and the jaggedness gate) sees; dense vertices hide nothing here.
 func maxTurn12(l *geo.Line) float64 {
@@ -755,6 +813,18 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 		}
 		_ = i
 		_ = j
+		// TRACK-PARALLEL candidate: the corner the steel actually makes.
+		// Find a ridden track running parallel to both arms, take its
+		// curve through the corner, and offset it laterally by the drawn
+		// line's distance from it — the drawn corner then matches the
+		// real track curve exactly.
+		if tp := trackParallelCorner(a, b, pts[apex]); tp != nil {
+			cand := append(append([]geo.Pt{a}, tp...), b)
+			if sc := maxTurn12(geo.NewLine(cand)); sc < bestScore {
+				bestScore = sc
+				best = tp
+			}
+		}
 		if best != nil {
 			if os.Getenv("PORTOLAN_DBGF") != "" {
 				span := pts[hi+1].Dist(pts[lo-1])
