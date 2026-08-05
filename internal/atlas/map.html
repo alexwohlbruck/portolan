@@ -296,7 +296,10 @@ map.on('load', async () => {
       map.addLayer({id, type:'line', source:'build',
         minzoom:b.min===0?0:b.min, maxzoom:b.max===24?24:b.max,
         filter:['all', bf, ['==',['get','kind'],kind]],
-        layout:{'line-cap':'butt','line-join':'round'},
+        // round caps: at a transition↔steady seam the eased line arrives
+      // with lateral slope while the steady leaves flat — butt caps cut
+      // at those two angles leave a wedge notch at every seam
+      layout:{'line-cap':'round','line-join':'round'},
         // bridges render EXACTLY like regular ribbons — the gap-bridge
         // distinction is pipeline bookkeeping, not something riders see.
         // (Also: any dasharray routes a layer through lineSDF, which

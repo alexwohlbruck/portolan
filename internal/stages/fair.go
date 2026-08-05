@@ -270,9 +270,21 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// the whole bundle visibly wobbles. Near-straight runs collapse to
 	// their chord; real curves fail the heading cone at the first bend
 	// and keep every vertex. Shared per edge so all colors stay parallel.
+	// then merge near-collinear chord joints: a slow multi-chord drift
+	// (2-3 m over hundreds of metres) otherwise leaves chords meeting
+	// mid-block — read as an extra split point in the bundle. Real curves
+	// facet at several degrees per chord and are untouched.
 	straightPts := make([][]geo.Pt, len(n.Edges))
 	for ei, e := range n.Edges {
-		straightPts[ei] = straightenRuns(e.Pts, dial("fair_straight_tol", 2.2))
+		tol := dial("fair_straight_tol", 2.2)
+		// pass 1 cone ~5.7°: wide enough to flatten corridor micro-waves,
+		// tight enough that a real gradual curve keeps vertices every
+		// ~11° of bend (a wider cone concentrated the Union Square elbow
+		// into one sharp vertex). pass 2 merges ≤2° drift joints with
+		// every dropped vertex re-checked against the final chord.
+		straightPts[ei] = straightenCone(
+			straightenCone(e.Pts, tol, 0.995),
+			tol*1.6, 0.99939)
 	}
 
 	var segs []Segment
@@ -783,10 +795,12 @@ func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
 
 // maxTurn12: worst turn at uniform 12 m sampling — the scale the eye
 // (and the jaggedness gate) sees; dense vertices hide nothing here.
-// straightenRuns replaces near-straight runs with their chord: every
+// straightenCone replaces near-straight runs with their chord: every
 // interior point within tol of the chord AND every segment heading
-// within a tight cone of the chord heading. Endpoints never move.
-func straightenRuns(pts []geo.Pt, tol float64) []geo.Pt {
+// within a cone (coneDot = cos of the half-angle) of the chord heading.
+// Endpoints never move; every dropped vertex is checked against the
+// final chord, so deviation is hard-bounded by tol.
+func straightenCone(pts []geo.Pt, tol, coneDot float64) []geo.Pt {
 	if len(pts) < 3 {
 		return pts
 	}
@@ -809,7 +823,7 @@ func straightenRuns(pts []geo.Pt, tol float64) []geo.Pt {
 			}
 			for k := i; k < j && ok; k++ {
 				seg := pts[k+1].Sub(pts[k])
-				if seg.Norm() > 1e-9 && seg.Unit().Dot(u) < 0.98 {
+				if seg.Norm() > 1e-9 && seg.Unit().Dot(u) < coneDot {
 					ok = false
 				}
 			}
@@ -879,8 +893,20 @@ func smoothPolylineOnce(l *geo.Line, fillets bool) *geo.Line {
 		out = append(out, simp[0])
 		for i := 0; i+1 < len(simp); i++ {
 			a, b := simp[i], simp[i+1]
-			q := geo.Lerp(a, b, 0.25)
-			r := geo.Lerp(a, b, 0.75)
+			// corner-cut distance is CAPPED: Chaikin's 1/4 ratio assumes
+			// dense (~6 m) vertices. On chord-straightened lines segments
+			// run hundreds of metres and a plain 1/4 cut sweeps a real
+			// curve elbow tens of metres off the steel (Union Square cut
+			// 50 m west). Capping keeps dense behavior identical and
+			// rounds sparse corners tightly, like a hand would.
+			d := a.Dist(b)
+			qf, rf := 0.25, 0.75
+			if d > 32 {
+				qf = 8 / d
+				rf = 1 - 8/d
+			}
+			q := geo.Lerp(a, b, qf)
+			r := geo.Lerp(a, b, rf)
 			if i == 0 {
 				out = append(out, r)
 			} else if i+2 == len(simp) {
