@@ -51,6 +51,11 @@ layers, and saves each rendered frame to `refs/portolan/<key>.png` via
 to "snap done" when finished. `?bare=1#<zoom>/<lat>/<lon>` alone gives a
 clean single view.
 
+Both sides read the city list from `portolan.json`, so a new city benches
+itself as soon as it has areas in `locations.json` (docs/CITIES.md). The
+portolan side skips cities with no build output yet; pass one feed —
+`tools/visual-bench.sh portolan london` — to snap just that city.
+
 **Apple side** (`tools/visual-bench.sh apple`): drives Maps.app through
 each area (`open "maps://?ll=<lat>,<lon>&z=16&t=r"` — `z` only loosely
 honored; the transit style reads best at the ~750 ft scale bar) and

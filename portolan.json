@@ -6,14 +6,72 @@
       "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/5.zip",
       "rail": "testdata/nyc-rail.geojson",
       "out": "build/nyc.geojson",
-      "network": "sketches/network-5.json"
+      "network": "sketches/network-5.json",
+      "bbox": [-74.06, 40.55, -73.7, 40.92]
     },
     "29": {
       "name": "Chicago",
       "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/29.zip",
       "rail": "build/chi-rail.geojson",
       "out": "build/chi.geojson",
-      "network": "sketches/network-29.json"
+      "network": "sketches/network-29.json",
+      "bbox": [-87.95, 41.7, -87.52, 42.08]
+    },
+    "atlanta": {
+      "name": "Atlanta",
+      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/17.zip",
+      "rail": "build/atlanta-rail.geojson",
+      "out": "build/atlanta.geojson",
+      "network": "sketches/network-atlanta.json",
+      "bbox": [-84.55, 33.61, -84.2, 33.96]
+    },
+    "charlotte": {
+      "name": "Charlotte",
+      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/886.zip",
+      "rail": "build/charlotte-rail.geojson",
+      "out": "build/charlotte.geojson",
+      "network": "sketches/network-charlotte.json",
+      "bbox": [-80.94, 35.06, -80.68, 35.35]
+    },
+    "la": {
+      "name": "Los Angeles",
+      "gtfs": "data/gtfs/la.zip",
+      "rail": "build/la-rail.geojson",
+      "out": "build/la.geojson",
+      "network": "sketches/network-la.json",
+      "bbox": [-118.52, 33.74, -117.86, 34.2]
+    },
+    "london": {
+      "name": "London",
+      "gtfs": "data/gtfs/london.zip",
+      "rail": "build/london-rail.geojson",
+      "out": "build/london.geojson",
+      "network": "sketches/network-london.json",
+      "bbox": [-0.55, 51.3, 0.25, 51.72]
+    },
+    "paris": {
+      "name": "Paris",
+      "gtfs": "data/gtfs/paris.zip",
+      "rail": "build/paris-rail.geojson",
+      "out": "build/paris.geojson",
+      "network": "sketches/network-paris.json",
+      "bbox": [2.1, 48.72, 2.55, 48.98]
+    },
+    "berlin": {
+      "name": "Berlin",
+      "gtfs": "data/gtfs/berlin.zip",
+      "rail": "build/berlin-rail.geojson",
+      "out": "build/berlin.geojson",
+      "network": "sketches/network-berlin.json",
+      "bbox": [13.05, 52.35, 13.78, 52.68]
+    },
+    "tokyo": {
+      "name": "Tokyo",
+      "gtfs": "data/gtfs/tokyo.zip",
+      "rail": "build/tokyo-rail.geojson",
+      "out": "build/tokyo.geojson",
+      "network": "sketches/network-tokyo.json",
+      "bbox": [139.65, 35.6, 139.85, 35.78]
     }
   }
 }

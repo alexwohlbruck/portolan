@@ -81,14 +81,45 @@ page, hot-reloading the map when done. Point `--maplibre` at the fork's
 
 ## Getting a rail extract
 
+```bash
+tools/city.sh rail london    # one Overpass query for that city's bbox
 ```
-# Overpass: all regular-service rail in a bbox (yards/sidings excluded)
-[out:json][timeout:120];
-way["railway"~"^(rail|subway|light_rail|tram)$"]["service"!~"."]({{bbox}});
+
+The window and the output path come from the city's row in `portolan.json`;
+the query is the one below, piped through `tools/overpass2geojson.py` into
+the GeoJSON `internal/osm` reads. (Service tags are kept, not filtered —
+`osm.Load` drops yards and sidings itself and needs the crossovers.)
+
+```
+[out:json][timeout:600];
+way["railway"~"^(rail|subway|light_rail|tram)$"]({{bbox}});
 out geom;
 ```
 
-Convert to GeoJSON (`osmtogeojson`, or `portolan fetch` once implemented).
+## Test cities
+
+Nine cities are wired: NYC and Chicago (the tuning pair), plus Atlanta,
+Charlotte, LA, London, Paris, Berlin and Tokyo. A city is a row in
+`portolan.json` and nothing else — no city-specific code anywhere, which is
+what the extra cities are there to keep honest.
+
+```bash
+tools/city.sh list           # every city + which of its inputs exist yet
+tools/city.sh all charlotte  # rail extract, then chart + score
+```
+
+The GTFS zip for each is yours to supply; sources, the per-city status and
+the bring-up steps are in [docs/CITIES.md](docs/CITIES.md).
+
+## Modes
+
+Today the pipeline draws metros: `chart` keeps `route_type` 0/1/2 and the
+100-series, and the OSM loader keeps rails. Widening that to trams,
+commuter and intercity rail, ferries, gondolas, funiculars and buses is
+designed in [docs/MODES.md](docs/MODES.md) — mode classes, the mode-aware
+trunk key (colour for rail, corridor for bus, so a street's ribbon count
+stops depending on how many routes ride it), per-mode zoom floors, and the
+observation pass needed to ground them. Not implemented yet.
 
 ## Ground truth
 

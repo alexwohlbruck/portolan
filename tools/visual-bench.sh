@@ -6,6 +6,7 @@
 #   tools/visual-bench.sh apple      # drive Maps.app + screencapture (takes over the screen)
 #   tools/visual-bench.sh apple KEY  # capture just one problem area
 #   tools/visual-bench.sh portolan   # open the atlas snapall pages in your browser
+#   tools/visual-bench.sh portolan F # just one feed (default: every city that has a build)
 #   tools/visual-bench.sh index      # regenerate refs/index.html side-by-side viewer
 #   tools/visual-bench.sh all
 #
@@ -31,17 +32,22 @@ areas() { # $1 = feed id
      else 16 end) as $z |
     "\(.[0]) \(.[2]) \(.[3]) \($z)"' locations.json
 }
-AREAS_5="$(areas 5)"
-AREAS_29="$(areas 29)"
+# every city in portolan.json, so a new feed benches itself the moment it
+# has areas in locations.json — nothing here is per-city.
+FEEDS="$(jq -r '.feeds | keys[]' portolan.json)"
+built() { # feeds whose build output exists — the only ones portolan can snap
+  for f in $FEEDS; do
+    [ -s "$(jq -r --arg f "$f" '.feeds[$f].out' portolan.json)" ] && echo "$f"
+  done
+}
 
 apple() { # optional $1 = single area key
   local only="${1:-}"
   mkdir -p refs/apple
   echo "capturing Apple Maps transit views — keep the screen free…"
   open -a Maps; sleep 3
-  for feed in 5 29; do
-    areas=$([ "$feed" = 5 ] && echo "$AREAS_5" || echo "$AREAS_29")
-    echo "$areas" | while read -r key lat lon zoom; do
+  for feed in $FEEDS; do
+    areas "$feed" | while read -r key lat lon zoom; do
       [ -z "$key" ] && continue
       [ -n "$only" ] && [ "$key" != "$only" ] && continue
       open "maps://?ll=${lat},${lon}&z=${zoom:-16}&t=r"
@@ -52,12 +58,14 @@ apple() { # optional $1 = single area key
   done
 }
 
-portolan() {
+portolan() { # optional $1 = single feed
   mkdir -p refs/portolan
   echo "opening atlas snapall pages (each tab saves via /api/snap, then titles 'snap done')…"
-  open "${ATLAS}/map?feed=5&bare=1&snapall=1"
-  sleep 2
-  open "${ATLAS}/map?feed=29&bare=1&snapall=1"
+  for feed in ${1:-$(built)}; do
+    echo "  ${feed}"
+    open "${ATLAS}/map?feed=${feed}&bare=1&snapall=1"
+    sleep 2
+  done
   echo "watch refs/portolan/ fill; close the tabs when their titles read 'snap done'"
 }
 
@@ -68,11 +76,11 @@ index() {
     echo 'h2{margin:28px 0 8px;font-size:15px}img{width:49%;border:1px solid #333;border-radius:8px;background:#fff}'
     echo '.pair{display:flex;gap:1%}</style>'
     echo "<h1 style='font-size:17px'>Apple (left) vs portolan (right) — $(date +%F)</h1>"
-    for feed in 5 29; do
-      areas=$([ "$feed" = 5 ] && echo "$AREAS_5" || echo "$AREAS_29")
-      echo "$areas" | while read -r key lat lon zoom; do
+    for feed in $FEEDS; do
+      name=$(jq -r --arg f "$feed" '.feeds[$f].name' portolan.json)
+      areas "$feed" | while read -r key lat lon zoom; do
         [ -z "$key" ] && continue
-        echo "<h2>${key} · ${lat},${lon}</h2><div class=pair>"
+        echo "<h2>${name} · ${key} · ${lat},${lon}</h2><div class=pair>"
         echo "<img src='apple/${key}.png' loading=lazy><img src='portolan/${key}.png' loading=lazy></div>"
       done
     done
@@ -82,8 +90,8 @@ index() {
 
 case "${1:-all}" in
   apple) apple "${2:-}" ;;
-  portolan) portolan ;;
+  portolan) portolan "${2:-}" ;;
   index) index ;;
   all) portolan; apple; index ;;
-  *) echo "usage: $0 apple|portolan|index|all"; exit 2 ;;
+  *) echo "usage: $0 apple|portolan [KEY|FEED]|index|all"; exit 2 ;;
 esac
