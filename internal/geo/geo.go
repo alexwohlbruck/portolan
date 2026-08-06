@@ -4,6 +4,7 @@ package geo
 
 import (
 	"math"
+	"runtime"
 	"sync"
 )
 
@@ -275,6 +276,8 @@ func TurnDeg(a, b, c Pt) float64 {
 // GaussianArc low-passes a polyline along its arc (endpoints pinned). Light
 // finishing only — heavy blur smears real geometry (LESSONS: σ22 hid defects
 // AND detail; the refined centerline needs only σ≈8).
+// Each output point is a pure function of (pts, arc, i) written by index,
+// so long lines fan the loop out across workers with identical results.
 func GaussianArc(pts []Pt, sigma float64) []Pt {
 	n := len(pts)
 	if n < 5 || sigma <= 0 {
@@ -287,7 +290,7 @@ func GaussianArc(pts []Pt, sigma float64) []Pt {
 	win := 3 * sigma
 	out := make([]Pt, n)
 	out[0], out[n-1] = pts[0], pts[n-1]
-	for i := 1; i < n-1; i++ {
+	one := func(i int) {
 		var sx, sy, sw float64
 		for j := i; j >= 0 && arc[i]-arc[j] <= win; j-- {
 			w := math.Exp(-sq(arc[i]-arc[j]) / (2 * sigma * sigma))
@@ -303,7 +306,36 @@ func GaussianArc(pts []Pt, sigma float64) []Pt {
 		}
 		out[i] = Pt{sx / sw, sy / sw}
 	}
+	ParFor(1, n-1, one)
 	return out
+}
+
+// ParFor runs fn(i) for i in [lo, hi) — serially below a spawn threshold,
+// otherwise strided across NumCPU workers. fn must write only per-i state;
+// results are then identical to the serial loop.
+func ParFor(lo, hi int, fn func(i int)) {
+	n := hi - lo
+	if n < 256 {
+		for i := lo; i < hi; i++ {
+			fn(i)
+		}
+		return
+	}
+	nw := runtime.NumCPU()
+	if nw > n {
+		nw = n
+	}
+	var wg sync.WaitGroup
+	for wk := 0; wk < nw; wk++ {
+		wg.Add(1)
+		go func(wk int) {
+			defer wg.Done()
+			for i := lo + wk; i < hi; i += nw {
+				fn(i)
+			}
+		}(wk)
+	}
+	wg.Wait()
 }
 
 func sq(x float64) float64 { return x * x }

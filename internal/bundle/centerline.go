@@ -8,6 +8,7 @@ package bundle
 import (
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 )
@@ -110,7 +111,6 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 	}
 	members = throughMembers(cl, members, p)
 	cur := cl
-	var offs []float64
 	for it := 0; it < p.Iters; it++ {
 		line := geo.NewLine(cur.Densify(p.Step))
 		pts := line.Pts
@@ -118,13 +118,20 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		arcOf := line.ArcTable() // the identical cumulative sum, already built
 		offStar := make([]float64, n)
 		has := make([]bool, n)
-		var strandCounts []int
-		for i := 1; i < n-1; i++ {
+		// per-sample work reads only immutable state and writes its own
+		// index; strand counts land by index too and are consumed as a
+		// sorted multiset (medianInt), so the fan-out is bit-identical
+		countAt := make([]int, n)
+		var offsPool sync.Pool
+		geo.ParFor(1, n-1, func(i int) {
 			tan := pts[i+1].Sub(pts[i-1]).Unit()
 			// curve-following persistence probes (LESSONS #3)
 			pa := line.AtArc(arcOf[i] - p.SpanProbe)
 			pb := line.AtArc(arcOf[i] + p.SpanProbe)
-			offs = offs[:0]
+			var offs []float64
+			if v := offsPool.Get(); v != nil {
+				offs = (*v.(*[]float64))[:0]
+			}
 			for _, m := range members {
 				if !m.Within(pts[i], p.Reach) {
 					continue
@@ -156,13 +163,21 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				}
 			}
 			if len(offs) == 0 {
-				continue
+				offsPool.Put(&offs)
+				return
 			}
 			st := Strands(offs, p.StrandGap)
-			strandCounts = append(strandCounts, len(st))
+			countAt[i] = len(st)
 			o := MedianStrand(st)
 			offStar[i] = math.Max(-p.Reach, math.Min(p.Reach, o))
 			has[i] = true
+			offsPool.Put(&offs)
+		})
+		var strandCounts []int
+		for i := 1; i < n-1; i++ {
+			if has[i] {
+				strandCounts = append(strandCounts, countAt[i])
+			}
 		}
 		filt := medianFilter(offStar, has, 2)
 		// Stiffness scales with corridor width. On a wide interlocking
