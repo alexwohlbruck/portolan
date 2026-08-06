@@ -42,6 +42,36 @@ func (g *Grid) eachCell(a, b Pt, fn func([2]int)) {
 	}
 }
 
+// segWithin reports segDist(p,a,b) <= reach with the identical outcome but
+// (almost) never the square root: the squared comparison decides outside a
+// ±1e-9 relative band around reach², and the knife edge falls back to the
+// exact compare. (fl(dx²+dy²) is within (1±3ε) of the true square and Hypot
+// within 1 ulp of the true distance, so decisions outside the band agree.)
+func segWithin(p, a, b Pt, reach float64) bool {
+	d2, _, _ := segDist2(p, a, b)
+	r2 := reach * reach
+	if d2 <= r2*(1-1e-9) {
+		return true
+	}
+	if d2 > r2*(1+1e-9) {
+		return false
+	}
+	return segDist(p, a, b) <= reach
+}
+
+// segWithinStrict is segWithin for the strict comparison segDist < reach.
+func segWithinStrict(p, a, b Pt, reach float64) bool {
+	d2, _, _ := segDist2(p, a, b)
+	r2 := reach * reach
+	if d2 < r2*(1-1e-9) {
+		return true
+	}
+	if d2 >= r2*(1+1e-9) {
+		return false
+	}
+	return segDist(p, a, b) < reach
+}
+
 // Near visits every distinct line with at least one segment within reach of
 // p, passing the line index. Visits are deduplicated.
 func (g *Grid) Near(p Pt, reach float64, fn func(line int)) {
@@ -55,7 +85,7 @@ func (g *Grid) Near(p Pt, reach float64, fn func(line int)) {
 					continue
 				}
 				l := g.lines[ref.line]
-				if segDist(p, l.Pts[ref.seg-1], l.Pts[ref.seg]) <= reach {
+				if segWithin(p, l.Pts[ref.seg-1], l.Pts[ref.seg], reach) {
 					seen[ref.line] = true
 					fn(ref.line)
 				}
@@ -67,19 +97,23 @@ func (g *Grid) Near(p Pt, reach float64, fn func(line int)) {
 // NearestDist returns the distance from p to the nearest indexed segment
 // within maxReach, or +Inf.
 func (g *Grid) NearestDist(p Pt, maxReach float64) float64 {
-	best := math.Inf(1)
+	best2 := math.Inf(1)
+	var bdx, bdy float64
 	r := int(math.Ceil(maxReach/g.cell)) + 1
 	k := g.key(p)
 	for dx := -r; dx <= r; dx++ {
 		for dy := -r; dy <= r; dy++ {
 			for _, ref := range g.cells[[2]int{k[0] + dx, k[1] + dy}] {
 				l := g.lines[ref.line]
-				d := segDist(p, l.Pts[ref.seg-1], l.Pts[ref.seg])
-				if d < best {
-					best = d
+				d2, ddx, ddy := segDist2(p, l.Pts[ref.seg-1], l.Pts[ref.seg])
+				if d2 < best2 {
+					best2, bdx, bdy = d2, ddx, ddy
 				}
 			}
 		}
 	}
-	return best
+	if math.IsInf(best2, 1) {
+		return best2
+	}
+	return math.Hypot(bdx, bdy)
 }
