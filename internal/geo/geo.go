@@ -2,7 +2,10 @@
 // local metric frame. Every rule here is load-bearing — see docs/LESSONS.md.
 package geo
 
-import "math"
+import (
+	"math"
+	"sync"
+)
 
 // Pt is a point in the local metric frame (meters).
 type Pt struct{ X, Y float64 }
@@ -37,10 +40,14 @@ func (f Frame) ToLL(p Pt) LL {
 	return LL{f.lon0 + p.X/(mPerDegLat*f.coslat), f.lat0 + p.Y/mPerDegLat}
 }
 
-// Line is a polyline in the metric frame with a cached cumulative-arc table.
+// Line is a polyline in the metric frame with a cached cumulative-arc table
+// and a lazy segment index for capped distance queries (lineindex.go).
+// Lines are immutable after NewLine — nothing may assign Pts or arc later.
 type Line struct {
-	Pts []Pt
-	arc []float64 // cumulative arc length; arc[0]=0
+	Pts     []Pt
+	arc     []float64 // cumulative arc length; arc[0]=0
+	idx     *lineIndex
+	idxOnce sync.Once
 }
 
 func NewLine(pts []Pt) *Line {
@@ -55,6 +62,11 @@ func (l *Line) rebuildArc() {
 		l.arc[i] = l.arc[i-1] + l.Pts[i].Dist(l.Pts[i-1])
 	}
 }
+
+// ArcTable exposes the cached cumulative-arc table (read-only; arc[0]=0,
+// arc[i] = arc[i-1] + Pts[i].Dist(Pts[i-1]) — the exact accumulation every
+// caller would otherwise rebuild).
+func (l *Line) ArcTable() []float64 { return l.arc }
 
 func (l *Line) Len() float64 {
 	if len(l.arc) == 0 {

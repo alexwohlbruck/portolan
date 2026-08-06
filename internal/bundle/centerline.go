@@ -110,14 +110,12 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 	}
 	members = throughMembers(cl, members, p)
 	cur := cl
+	var offs []float64
 	for it := 0; it < p.Iters; it++ {
-		pts := geo.NewLine(cur.Densify(p.Step)).Pts
-		line := geo.NewLine(pts)
+		line := geo.NewLine(cur.Densify(p.Step))
+		pts := line.Pts
 		n := len(pts)
-		arcOf := make([]float64, n)
-		for i := 1; i < n; i++ {
-			arcOf[i] = arcOf[i-1] + pts[i].Dist(pts[i-1])
-		}
+		arcOf := line.ArcTable() // the identical cumulative sum, already built
 		offStar := make([]float64, n)
 		has := make([]bool, n)
 		var strandCounts []int
@@ -126,12 +124,12 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			// curve-following persistence probes (LESSONS #3)
 			pa := line.AtArc(arcOf[i] - p.SpanProbe)
 			pb := line.AtArc(arcOf[i] + p.SpanProbe)
-			var offs []float64
+			offs = offs[:0]
 			for _, m := range members {
-				if m.DistTo(pts[i]) >= p.Reach {
+				if !m.Within(pts[i], p.Reach) {
 					continue
 				}
-				if m.DistTo(pa) >= p.Reach || m.DistTo(pb) >= p.Reach {
+				if !m.Within(pa, p.Reach) || !m.Within(pb, p.Reach) {
 					continue // kiss guard: not persistent alongside
 				}
 				// kiss rule PER PASS: a chained strand can cross the
@@ -142,7 +140,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				// require both probes to land near the centerline's probe
 				// points. Corridor tracks persist; turnaround limbs curve
 				// away and are dropped exactly where they diverge.
-				for _, c := range m.CrossSection(pts[i], tan, p.Reach) {
+				for _, c := range m.CrossSectionNear(pts[i], tan, p.Reach) {
 					if c.Parallel < p.MinParallel {
 						continue
 					}
@@ -227,7 +225,7 @@ func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
 	for _, m := range members {
 		near := 0
 		for _, q := range base {
-			if m.DistTo(q) < p.Reach {
+			if m.Within(q, p.Reach) {
 				near++
 			}
 		}
@@ -352,6 +350,12 @@ func gaussianSeries(v []float64, has []bool, sigma float64) ([]float64, []bool) 
 	n := len(v)
 	out := make([]float64, n)
 	w := int(2 * sigma)
+	// kernel depends only on |j-i|: tabulate the identical Exp values once
+	// ((j-i)*(j-i) == d*d exactly in int arithmetic)
+	kern := make([]float64, w+1)
+	for d := 0; d <= w; d++ {
+		kern[d] = math.Exp(-float64(d*d) / (sigma * sigma))
+	}
 	for i := range v {
 		if !has[i] {
 			continue
@@ -361,7 +365,11 @@ func gaussianSeries(v []float64, has []bool, sigma float64) ([]float64, []bool) 
 			if !has[j] {
 				continue
 			}
-			g := math.Exp(-float64((j-i)*(j-i)) / (sigma * sigma))
+			d := j - i
+			if d < 0 {
+				d = -d
+			}
+			g := kern[d]
 			sw += g
 			sv += v[j] * g
 		}

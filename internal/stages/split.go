@@ -957,7 +957,7 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid) []*geo.Line
 	counts := map[int]int{}
 	for _, q := range samples {
 		tgrid.Near(q, twinMax, func(si int) {
-			if twinLines[si].DistTo(q) < twinMax {
+			if twinLines[si].Within(q, twinMax) {
 				counts[si]++
 			}
 		})
