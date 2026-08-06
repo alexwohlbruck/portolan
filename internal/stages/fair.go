@@ -766,6 +766,21 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 	if total > 0.1 {
 		base = turnAt[int(startArc/4)]
 	}
+	// o0 was measured at the connector's ORIGINAL start, back in the
+	// lead-in. The lead-in converges toward the corridor, so applying that
+	// stale offset at the bend start lands the curve's first point metres
+	// off the corridor line — the chord from the cut point droops off the
+	// bundle for its whole length. Re-measure at the emit start so the
+	// curve begins exactly ON the corridor tail line.
+	if startArc > 0 {
+		es := l.AtArc(startArc)
+		dir := l.TangentAtArc(startArc, 8)
+		pa, _ := tl.ProjectArc(es)
+		o0 = dir.Cross(tl.AtArc(pa).Sub(es))
+		if math.Abs(o0) > 15 {
+			return nil
+		}
+	}
 	var out []geo.Pt
 	i := 0
 	for arc := 0.0; arc <= l.Len(); arc += 4 {
@@ -784,7 +799,31 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 		out = append(out, l.AtArc(arc).Add(nrm.Scale(o)))
 		i++
 	}
-	return out
+	if len(out) == 0 {
+		return out
+	}
+	// the connector rarely spans the whole gap between the cut points — the
+	// caller bridges the rest with straight chords to p0/p3. When the
+	// corridor's own line bends inside that span (the tip dives toward the
+	// junction weld, or the approach curves), a chord SPREADS that bend
+	// over the full cut — the drawn line peels off the bundle at the seam
+	// instead of riding it to the neck. Ride the corridor pieces between
+	// the cut points and the connector's ends instead: the transition then
+	// hugs the bundle exactly until the steel takes over.
+	qa, _ := tl.ProjectArc(out[0])
+	var pre []geo.Pt
+	for arc := 4.0; arc < qa-2; arc += 4 {
+		pre = append(pre, tl.AtArc(arc))
+	}
+	qb, _ := hl.ProjectArc(out[len(out)-1])
+	for arc := qb + 2; arc < hl.Len()-2; arc += 4 {
+		out = append(out, hl.AtArc(arc))
+	}
+	if os.Getenv("PORTOLAN_DBG3") != "" && near.Dist(dbg3Pt) < 150 {
+		fmt.Printf("TCB len=%.0f total=%.3f startArc=%.0f o0=%.1f o1=%.1f qa=%.0f/%.0f qb=%.0f/%.0f\n",
+			l.Len(), total, startArc, o0, o1, qa, tl.Len(), qb, hl.Len())
+	}
+	return append(pre, out...)
 }
 
 // trackParallelCorner finds a track (from the level index — every loaded
