@@ -1,7 +1,9 @@
 package stages
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"sort"
 
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
@@ -54,8 +56,8 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		return -1
 	}
 	// outward tangent of an edge standing at node ni (unit vector pointing
-	// away from the node along the edge)
-	outTan := func(ei, ni int) (float64, float64) {
+	// away from the node along the edge), sampled `win` metres out
+	outTanD := func(ei, ni int, win float64) (float64, float64) {
 		pts := n.Edges[ei].Pts
 		if len(pts) < 2 {
 			return 0, 0
@@ -63,12 +65,12 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		var a, b int
 		if n.Edges[ei].From == ni {
 			a, b = 0, 1
-			for b < len(pts)-1 && pts[a].Dist(pts[b]) < 12 {
+			for b < len(pts)-1 && pts[a].Dist(pts[b]) < win {
 				b++
 			}
 		} else {
 			a, b = len(pts)-1, len(pts)-2
-			for b > 0 && pts[a].Dist(pts[b]) < 12 {
+			for b > 0 && pts[a].Dist(pts[b]) < win {
 				b--
 			}
 		}
@@ -79,6 +81,7 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		}
 		return dx / l, dy / l
 	}
+	outTan := func(ei, ni int) (float64, float64) { return outTanD(ei, ni, 12) }
 	crossingsAt := func(ni int) int {
 		adjE := n.Nodes[ni].Adj
 		total := 0
@@ -220,8 +223,13 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 				if a == b {
 					continue
 				}
-				ax, ay := outTan(a, ni)
-				bx, by := outTan(b, ni)
+				// side measured 80 m out: the first metres of a departing
+				// edge are weld-tail geometry running parallel to the
+				// corridor, so a short window reads "no side" and the
+				// departure crosses the bundle for free (blue parked
+				// mid-ribbon at the Lake join)
+				ax, ay := outTanD(a, ni, 80)
+				bx, by := outTanD(b, ni, 80)
 				// travel direction into the node along a
 				dx, dy := -ax, -ay
 				cr := dx*by - dy*bx
@@ -241,7 +249,12 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 						}
 						pd := pos(a, d, aStorage)
 						if (bLeft && pd < pc) || (!bLeft && pd > pc) {
-							total++
+							// weight 3: these are real drawn crossings — at 1
+							// a distant tie elsewhere could still park a
+							// joining line mid-bundle (blue between G and
+							// Pink on Lake); below 8 so a genuinely cheaper
+							// continuing order still wins
+							total += 3
 						}
 					}
 				}
@@ -441,6 +454,145 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 			if totalCost(nodes) >= before {
 				for _, ei := range edges {
 					swapPair(ei, c1, c2) // revert
+				}
+			}
+		}
+	}
+
+	// Slide-to-edge pass. A color that joins the bundle on one side and
+	// leaves on the other must cross every resident wherever it slots —
+	// the cheapest place is an OUTER slot with the crossing concentrated
+	// at one junction (owner's rule: rest on the top or bottom edge). But
+	// reaching an outer slot from mid-bundle means sliding past several
+	// residents, and every intermediate position costs more than either
+	// endpoint: single-edge climbing and single-pair component swaps both
+	// stall in the valley (blue parked between G and Pink on Lake). Try
+	// each color at BOTH extremes of its entire continuation component in
+	// one jump, others keeping their order; keep the cheapest.
+	colorSet := map[string]bool{}
+	for ei := range n.Edges {
+		for _, c := range perm[ei] {
+			colorSet[c] = true
+		}
+	}
+	removeC := func(p []string, c string) []string {
+		out := make([]string, 0, len(p))
+		for _, x := range p {
+			if x != c {
+				out = append(out, x)
+			}
+		}
+		return out
+	}
+	for c := range colorSet {
+		// component over edges carrying c, with relative storage
+		// orientation propagated across shared nodes (To→From aligned,
+		// To→To / From→From flipped) so "front" means one consistent
+		// geometric side across the whole component
+		inComp := map[int]bool{}
+		for ei := range n.Edges {
+			if hasColor(ei, c) {
+				inComp[ei] = true
+			}
+		}
+		visited := map[int]bool{}
+		for seed := range inComp {
+			if visited[seed] {
+				continue
+			}
+			orient := map[int]bool{seed: true} // true = as-stored
+			queue := []int{seed}
+			visited[seed] = true
+			var comp []int
+			for len(queue) > 0 {
+				cur := queue[0]
+				queue = queue[1:]
+				comp = append(comp, cur)
+				for _, ni := range []int{n.Edges[cur].From, n.Edges[cur].To} {
+					curAtTo := n.Edges[cur].To == ni
+					for _, nx := range n.Nodes[ni].Adj {
+						if nx == cur || !inComp[nx] || visited[nx] {
+							continue
+						}
+						nxAtFrom := n.Edges[nx].From == ni
+						// aligned when travel continues storage-forward
+						// on both: cur arrives at To and nx departs at From
+						aligned := curAtTo == nxAtFrom
+						orient[nx] = orient[cur] == aligned
+						visited[nx] = true
+						queue = append(queue, nx)
+					}
+				}
+			}
+			nodes := map[int]bool{}
+			for _, ei := range comp {
+				nodes[n.Edges[ei].From] = true
+				nodes[n.Edges[ei].To] = true
+			}
+			saved := map[int][]string{}
+			for _, ei := range comp {
+				saved[ei] = append([]string(nil), perm[ei]...)
+			}
+			before := totalCost(nodes)
+			// GUESTS get an edge-slot budget: a color whose longest shared
+			// corridor with any cohabitant is short (blue rides Lake for
+			// 500 m; the circulators share kilometres) is threading someone
+			// else's bundle — it crosses everything anyway and reads far
+			// cleaner hugging the ribbon edge (owner's rule), worth a
+			// crossing or two. Residents need strict improvement, so a
+			// later slide can never undo a guest's edge slot in a tie.
+			maxShared := 0.0
+			for d := range colorSet {
+				if d == c {
+					continue
+				}
+				if v := affinity[pairKey(c, d)]; v > maxShared {
+					maxShared = v
+				}
+			}
+			budget := 0
+			if maxShared < 1500 {
+				budget = 6
+			}
+			bestExtreme := math.MaxInt32
+			var bestPerms map[int][]string
+			for side := 0; side < 2; side++ {
+				for _, ei := range comp {
+					rest := removeC(saved[ei], c)
+					front := side == 0
+					if !orient[ei] {
+						front = !front
+					}
+					if front {
+						perm[ei] = append([]string{c}, rest...)
+					} else {
+						perm[ei] = append(append([]string(nil), rest...), c)
+					}
+				}
+				t := totalCost(nodes)
+				if os.Getenv("PORTOLAN_DBGO") == c {
+					fmt.Printf("SLIDE3 %s comp=%d edges side=%d cost=%d (before %d)\n",
+						c, len(comp), side, t, before)
+				}
+				if t < bestExtreme {
+					bestExtreme = t
+					bestPerms = map[int][]string{}
+					for _, ei := range comp {
+						bestPerms[ei] = append([]string(nil), perm[ei]...)
+					}
+				}
+			}
+			accept := bestExtreme < before
+			if budget > 0 && bestExtreme <= before+budget {
+				accept = true
+			}
+			if accept {
+				for _, ei := range comp {
+					perm[ei] = append([]string(nil), bestPerms[ei]...)
+				}
+			} else {
+				for _, ei := range comp {
+					perm[ei] = append([]string(nil), saved[ei]...)
 				}
 			}
 		}
