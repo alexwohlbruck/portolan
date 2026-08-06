@@ -204,7 +204,8 @@ $('themebtn').onclick = () => {
 const DEFAULTS = { '29': {c:[-87.6321,41.8799], z:13} };
 const start = DEFAULTS[FEED] || {c:[-74.0045,40.7124], z:13};
 const hash = location.hash.slice(1).split('/').map(Number);
-if (hash.length === 3 && hash.every(isFinite)) { start.z = hash[0]; start.c = [hash[2], hash[1]]; }
+const HAD_HASH = hash.length === 3 && hash.every(isFinite);
+if (HAD_HASH) { start.z = hash[0]; start.c = [hash[2], hash[1]]; }
 
 // ---------- parchment transit_line_segments render model, verbatim ------
 const zoomScaledOffset = e => ['interpolate',['linear'],['zoom'], 11, ['*', e, 0.5], 14, e];
@@ -424,6 +425,13 @@ fetch('/api/config').then(r=>r.json()).then(cfg => {
   for (const [id, f] of Object.entries(cfg.feeds || {})) {
     const o = new Option(f.name || id, id, false, id === FEED);
     $('feed').append(o);
+  }
+  // a feed the DEFAULTS table has never heard of used to open over
+  // Manhattan — every city added after NYC and Chicago looked empty until
+  // you found it by hand. Frame it from its own bbox (portolan.json).
+  const b = (cfg.feeds && cfg.feeds[FEED] || {}).bbox;
+  if (!HAD_HASH && !DEFAULTS[FEED] && b && b.length === 4) {
+    map.fitBounds([[b[0],b[1]],[b[2],b[3]]], {padding:30, duration:0});
   }
 });
 $('feed').onchange = () => location.href = '/map?feed=' + $('feed').value;

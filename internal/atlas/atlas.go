@@ -36,11 +36,12 @@ var navJS []byte
 
 // FeedCfg is one city in portolan.json.
 type FeedCfg struct {
-	Name    string `json:"name"`
-	GTFS    string `json:"gtfs"`
-	Rail    string `json:"rail"`
-	Out     string `json:"out"`
-	Network string `json:"network"` // drawn ground truth for scoring
+	Name    string    `json:"name"`
+	GTFS    string    `json:"gtfs"`
+	Rail    string    `json:"rail"`
+	Out     string    `json:"out"`
+	Network string    `json:"network"` // drawn ground truth for scoring
+	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window (tools/city.sh rail)
 }
 
 type Config struct {
@@ -49,8 +50,12 @@ type Config struct {
 }
 
 type Server struct {
-	cfg      Config
 	maplibre string // fork dist dir
+
+	cfgMu   sync.Mutex
+	cfgPath string
+	cfg     Config // last good parse — see config()
+	cfgMod  time.Time
 
 	mu       sync.Mutex
 	overlays map[string]*overlayCache
@@ -85,19 +90,61 @@ type overlayFeat struct {
 }
 
 func NewServer(configPath, maplibreDir string) (*Server, error) {
-	s := &Server{maplibre: maplibreDir,
+	s := &Server{maplibre: maplibreDir, cfgPath: configPath,
 		overlays: map[string]*overlayCache{}, scenarios: map[string]*scenCache{}}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("workbench config: %w (see portolan.json in the repo)", err)
 	}
-	if err := json.Unmarshal(raw, &s.cfg); err != nil {
+	cfg, err := parseConfig(raw)
+	if err != nil {
 		return nil, fmt.Errorf("workbench config: %w", err)
 	}
-	if s.cfg.Sketches == "" {
-		s.cfg.Sketches = "sketches"
+	s.cfg = cfg
+	if st, err := os.Stat(configPath); err == nil {
+		s.cfgMod = st.ModTime()
 	}
 	return s, nil
+}
+
+func parseConfig(raw []byte) (Config, error) {
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.Sketches == "" {
+		cfg.Sketches = "sketches"
+	}
+	return cfg, nil
+}
+
+// config re-reads portolan.json when it has changed on disk, so adding a
+// city (docs/CITIES.md) shows up on refresh — the same edit-and-refresh
+// deal as locations() and asset(). A long-lived atlas that had read the
+// feed list exactly once at boot silently hid seven new cities for a day.
+// A broken edit mid-save keeps the last good config rather than emptying
+// the feed picker.
+func (s *Server) config() Config {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	st, err := os.Stat(s.cfgPath)
+	if err != nil || st.ModTime().Equal(s.cfgMod) {
+		return s.cfg
+	}
+	s.cfgMod = st.ModTime()
+	raw, err := os.ReadFile(s.cfgPath)
+	if err != nil {
+		log.Printf("atlas: %s unreadable (%v) — keeping the loaded config", s.cfgPath, err)
+		return s.cfg
+	}
+	cfg, err := parseConfig(raw)
+	if err != nil {
+		log.Printf("atlas: %s invalid (%v) — keeping the loaded config", s.cfgPath, err)
+		return s.cfg
+	}
+	s.cfg = cfg
+	log.Printf("atlas: reloaded %s — %d feeds", s.cfgPath, len(cfg.Feeds))
+	return s.cfg
 }
 
 // locations returns the problem-spot list: locations.json in the working
@@ -171,7 +218,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(s.cfg)
+		json.NewEncoder(w).Encode(s.config())
 	})
 	mux.HandleFunc("/api/network", s.network)
 	mux.HandleFunc("/api/features", s.features)
@@ -278,7 +325,7 @@ func (s *Server) score(w http.ResponseWriter, r *http.Request) {
 	}
 	network := fc.Network
 	if network == "" {
-		network = filepath.Join(s.cfg.Sketches, "network-"+feed+".json")
+		network = filepath.Join(s.config().Sketches, "network-"+feed+".json")
 	}
 	t0 := time.Now()
 	res, err := pipeline.Sound(pipeline.SoundOpts{Network: network, Build: fc.Out})
@@ -302,7 +349,7 @@ func (s *Server) feedCfg(r *http.Request) (FeedCfg, string, bool) {
 	if feed == "" {
 		feed = "5"
 	}
-	fc, ok := s.cfg.Feeds[feed]
+	fc, ok := s.config().Feeds[feed]
 	return fc, feed, ok
 }
 
@@ -586,7 +633,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		case "sound":
 			net := fc.Network
 			if net == "" {
-				net = filepath.Join(s.cfg.Sketches, "network-"+feed+".json")
+				net = filepath.Join(s.config().Sketches, "network-"+feed+".json")
 			}
 			err = soundToLog(net, fc.Out, logf)
 		default:
@@ -652,7 +699,7 @@ func (s *Server) path(feed string) (string, error) {
 	if feed == "" || strings.ContainsAny(feed, "/\\.") {
 		return "", fmt.Errorf("bad feed %q", feed)
 	}
-	return filepath.Join(s.cfg.Sketches, "network-"+feed+".json"), nil
+	return filepath.Join(s.config().Sketches, "network-"+feed+".json"), nil
 }
 
 func (s *Server) network(w http.ResponseWriter, r *http.Request) {
@@ -790,7 +837,7 @@ func (s *Server) loadOverlay(feed, path string) ([]overlayFeat, error) {
 }
 
 func (s *Server) ListenAndServe(addr string) error {
-	if err := os.MkdirAll(s.cfg.Sketches, 0o755); err != nil {
+	if err := os.MkdirAll(s.config().Sketches, 0o755); err != nil {
 		return err
 	}
 	log.Printf("atlas: workbench at http://%s/  (map · sketch · run buttons)", addr)
