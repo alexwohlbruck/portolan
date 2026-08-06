@@ -575,8 +575,26 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			// (weld position), so a pieced chain through it draws a tent.
 			// Always offer the Bézier between the steady-side tangents and
 			// take it whenever it beats the chain: the hand's line.
+			// BUT straightness must hold along the CHAIN, not just at its
+			// ends: at low bands the scaled cuts absorb whole junctions, and
+			// an S-shaped chained movement (6 Av → CPW at 53 St) has parallel
+			// end tangents while the steel between swings two real bends —
+			// the Bézier would redraw hundreds of metres of real curve as a
+			// lobe far off the tracks. Total accumulated turn tells a weld
+			// tent (a few degrees) from a real S (100°+).
+			chainTurn := 0.0
+			{
+				cl := geo.NewLine(chain)
+				for arc := 12.0; arc <= cl.Len(); arc += 12 {
+					t1 := cl.TangentAtArc(arc-12, 8)
+					t2 := cl.TangentAtArc(arc, 8)
+					d := math.Max(-1, math.Min(1, t1.Dot(t2)))
+					chainTurn += math.Acos(d) * 180 / math.Pi
+				}
+			}
+			chainStraight := bend < straightBend && chainTurn < 60
 			retryAt := 25.0
-			if bend < straightBend {
+			if chainStraight {
 				retryAt = 0
 			}
 			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); !onSteel && mt > retryAt {
@@ -603,7 +621,20 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					})
 				}
 				mb := maxTurn12(geo.NewLine(bez))
-				if mb < mt-5 || (bend < straightBend && mb < mt) {
+				// when the chain genuinely curves, the Bézier may only
+				// STAND IN for it, never redraw it: bound how far it strays
+				// from the pieced geometry before letting it win.
+				bezOK := true
+				if chainTurn >= 60 {
+					bl := geo.NewLine(bez)
+					for _, cp := range chain {
+						if bl.DistTo(cp) > 40 {
+							bezOK = false
+							break
+						}
+					}
+				}
+				if bezOK && (mb < mt-5 || (chainStraight && mb < mt)) {
 					chain = bez
 					mt = mb
 				}
