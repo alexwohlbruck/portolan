@@ -729,13 +729,16 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 	// every approach (the SE-corner notch). Bend-weighted, the line holds
 	// the corridor offset until the steel starts turning and transfers
 	// through the curve itself.
+	// noise floor 0.5°/4m: the connector's gentle pre-corner divergence
+	// (a few degrees over a block) must not start the transfer — only the
+	// corner's sustained curvature moves the line off the corridor.
 	turnAt := []float64{0}
 	total := 0.0
 	for arc := 4.0; arc <= l.Len(); arc += 4 {
 		t1 := l.TangentAtArc(arc-4, 8)
 		t2 := l.TangentAtArc(arc, 8)
 		d := math.Max(-1, math.Min(1, t1.Dot(t2)))
-		total += math.Acos(d)
+		total += math.Max(0, math.Acos(d)-0.009)
 		turnAt = append(turnAt, total)
 	}
 	var out []geo.Pt
@@ -906,7 +909,12 @@ func smoothPolylineOnce(l *geo.Line, fillets bool) *geo.Line {
 	// arms, the way a hand with a compass would round it. Gentle curves
 	// (low per-vertex turns) never trigger and keep following the steel.
 	if fillets && os.Getenv("PORTOLAN_NOFILLET") == "" {
-		simp = filletCorners(simp, 25, 15, 30)
+		// minVertex 9 (was 15): chord straightening leaves corner curves as
+		// ~11°-per-joint polylines — under 15° no window ever formed and the
+		// capped Chaikin can't round long chords, so corners drew faceted
+		// (the SW Loop chamfer). Cluster total ≥30° still gates: real
+		// corners fillet, isolated drift joints don't.
+		simp = filletCorners(simp, 25, 9, 30)
 	}
 	for round := 0; round < 3; round++ {
 		if len(simp) < 3 {
@@ -1313,13 +1321,21 @@ func boolIdx(atTo bool) int {
 }
 
 // approachTurn measures the total heading change over the last cut meters
-// approaching an end (end=true → the To end).
+// approaching an end (end=true → the To end). The final 20 m are excluded
+// when the cut allows: junction nodes sit metres off the corridor axis
+// (weld centroids), and the tail's bend TO the node is weld furniture,
+// not real curvature — counting it made the shrink loop cut exactly
+// where the droop most needed cutting away (the SE-corner chevron).
 func approachTurn(l *geo.Line, toEnd bool, cutLen float64) float64 {
+	margin := 0.0
+	if cutLen > 28 {
+		margin = 20
+	}
 	var a, b float64
 	if toEnd {
-		a, b = math.Max(0, l.Len()-cutLen), l.Len()
+		a, b = math.Max(0, l.Len()-cutLen), l.Len()-margin
 	} else {
-		a, b = 0, math.Min(cutLen, l.Len())
+		a, b = margin, math.Min(cutLen, l.Len())
 	}
 	t1 := l.TangentAtArc(a, 8)
 	t2 := l.TangentAtArc(b, 8)
