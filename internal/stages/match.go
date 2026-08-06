@@ -171,6 +171,24 @@ type matcher struct {
 	usedBy    map[int]map[string]bool // piece → route ids that ride it
 	usedColor map[int]map[string]bool // piece → colors that ride it
 	walks     map[[2]int]walkRes
+	ws        walkScratch // walk() is serial (Viterbi + assemble): safe to reuse
+}
+
+// walkScratch replaces walk()'s per-call map and slice allocations with
+// epoch-stamped arrays — same membership answers, same values, no churn.
+type walkScratch struct {
+	cost, wlen []float64
+	stamp      []uint32
+	epoch      uint32
+	arena      []wlabel
+	pq         walkPQ
+}
+
+type wlabel struct {
+	edge    int
+	prevIdx int
+	cost    float64
+	walkLen float64
 }
 
 type walkRes struct {
@@ -304,7 +322,7 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		if seg <= denseSpacing {
 			return 1, 0
 		}
-		return math.Max(0.05, denseSpacing / seg), math.Min(400, seg/2)
+		return math.Max(0.05, denseSpacing/seg), math.Min(400, seg/2)
 	}
 
 	// candidates + emissions per sample; the gap gate closes wherever a
@@ -437,16 +455,23 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 	// pairs whenever the cheap path was the long way round. Each label
 	// carries its own parent chain — a shared prev map would splice
 	// fragments of different paths into broken geometry.
-	type label struct {
-		edge    int
-		prevIdx int
-		cost    float64
-		walkLen float64
+	ws := &m.ws
+	if len(ws.stamp) < len(g.edges) {
+		ws.cost = make([]float64, len(g.edges))
+		ws.wlen = make([]float64, len(g.edges))
+		ws.stamp = make([]uint32, len(g.edges))
 	}
-	arena := []label{{edge: u, prevIdx: -1}}
-	type bestPair struct{ cost, walkLen float64 }
-	best := map[int]bestPair{u: {}}
-	pq := &walkPQ{{edge: u}}
+	ws.epoch++
+	if ws.epoch == 0 { // wrapped: stale stamps could alias the new epoch
+		clear(ws.stamp)
+		ws.epoch = 1
+	}
+	epoch := ws.epoch
+	ws.arena = append(ws.arena[:0], wlabel{edge: u, prevIdx: -1})
+	arena := ws.arena
+	ws.pq = append(ws.pq[:0], walkItem{edge: u})
+	pq := &ws.pq
+	ws.stamp[u], ws.cost[u], ws.wlen[u] = epoch, 0, 0
 	for pq.Len() > 0 {
 		cur := heap.Pop(pq).(walkItem)
 		lab := arena[cur.labelIdx]
@@ -458,13 +483,15 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 			for i, j := 0, len(via)-1; i < j; i, j = i+1, j-1 {
 				via[i], via[j] = via[j], via[i]
 			}
+			ws.arena = arena
 			return walkRes{cost: lab.cost, via: via, ok: true}
 		}
-		if b, seen := best[lab.edge]; seen && lab.cost > b.cost && lab.walkLen > b.walkLen {
+		if ws.stamp[lab.edge] == epoch &&
+			lab.cost > ws.cost[lab.edge] && lab.walkLen > ws.wlen[lab.edge] {
 			continue
 		}
-		for _, nx := range g.nodes[g.edges[lab.edge].To].Out {
-			c := lab.cost + g.turnDeg(lab.edge, nx)*p.WTurn
+		for oi, nx := range g.nodes[g.edges[lab.edge].To].Out {
+			c := lab.cost + g.turn[lab.edge][oi]*p.WTurn
 			wl := lab.walkLen
 			if nx == g.rev(lab.edge) {
 				c += p.UTurnPen
@@ -472,10 +499,10 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 			if nx != v {
 				el := g.edges[nx].Line.Len()
 				c += el*p.WWalk + p.WHop
-				if crossoverWays[g.edges[nx].Way] {
+				if g.isXover[nx] {
 					c += crossoverPen
 				}
-				if wayLevels[g.edges[lab.edge].Way]*wayLevels[g.edges[nx].Way] < 0 {
+				if g.lvl[lab.edge]*g.lvl[nx] < 0 {
 					c += levelJumpPen
 				}
 				wl += el
@@ -483,19 +510,20 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 					continue
 				}
 			}
-			b, seen := best[nx]
-			if seen && c >= b.cost && wl >= b.walkLen {
-				continue // dominated
-			}
-			if !seen {
-				best[nx] = bestPair{c, wl}
+			if ws.stamp[nx] == epoch {
+				if c >= ws.cost[nx] && wl >= ws.wlen[nx] {
+					continue // dominated
+				}
+				ws.cost[nx] = math.Min(c, ws.cost[nx])
+				ws.wlen[nx] = math.Min(wl, ws.wlen[nx])
 			} else {
-				best[nx] = bestPair{math.Min(c, b.cost), math.Min(wl, b.walkLen)}
+				ws.stamp[nx], ws.cost[nx], ws.wlen[nx] = epoch, c, wl
 			}
-			arena = append(arena, label{edge: nx, prevIdx: cur.labelIdx, cost: c, walkLen: wl})
+			arena = append(arena, wlabel{edge: nx, prevIdx: cur.labelIdx, cost: c, walkLen: wl})
 			heap.Push(pq, walkItem{edge: nx, cost: c, walkLen: wl, labelIdx: len(arena) - 1})
 		}
 	}
+	ws.arena = arena
 	return walkRes{ok: false}
 }
 
