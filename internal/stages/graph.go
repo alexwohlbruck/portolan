@@ -3,6 +3,7 @@ package stages
 import (
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -39,6 +40,27 @@ type tgEdge struct {
 func (g *trackGraph) rev(e int) int { return e ^ 1 }
 
 const weldEps = 0.6 // m; OSM shared nodes survive GeoJSON at cm precision
+
+// Match and Split build the graph from the same tracks slice and already
+// rely on the two builds being identical (shared piece ids) — build once.
+// Keyed on slice identity: any other slice rebuilds.
+var (
+	graphCacheMu sync.Mutex
+	cachedTracks []bundle.Track
+	cachedGraph  *trackGraph
+)
+
+func buildTrackGraphCached(tracks []bundle.Track) *trackGraph {
+	graphCacheMu.Lock()
+	defer graphCacheMu.Unlock()
+	if cachedGraph != nil && len(tracks) > 0 && len(tracks) == len(cachedTracks) &&
+		&tracks[0] == &cachedTracks[0] {
+		return cachedGraph
+	}
+	g := buildTrackGraph(tracks)
+	cachedTracks, cachedGraph = tracks, g
+	return g
+}
 
 // buildTrackGraph welds ways into a routable graph. Deterministic for a given
 // track slice — MATCH and SPLIT rebuild the same graph and share piece ids.

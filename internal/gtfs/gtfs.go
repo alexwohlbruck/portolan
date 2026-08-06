@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 )
@@ -40,6 +41,17 @@ type Feed struct {
 // route's trips (agencies ship dozens of one-off shape variants; they are
 // noise — LESSONS: prune, don't draw them all).
 func Load(path string, coverFrac float64) (*Feed, error) {
+	return LoadFiltered(path, coverFrac, nil)
+}
+
+// LoadFiltered is Load restricted to routes the keep predicate accepts
+// (nil keeps everything). Filtering happens at the trips pass, so the
+// stop_times sweep — by far the largest file — skips foreign trips with
+// one map miss, and shapes only parse when a kept trip references them.
+// Per-route coverage pruning is independent per route and downstream
+// consumers re-filter by route type, so the kept routes' patterns are
+// identical to an unfiltered load's.
+func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, err
@@ -59,22 +71,55 @@ func Load(path string, coverFrac float64) (*Feed, error) {
 
 	feed := &Feed{Routes: map[string]Route{}}
 
+	// phase 1: routes ∥ stops (independent files, own maps)
 	rf, err := need("routes.txt")
 	if err != nil {
 		return nil, err
 	}
-	if err := eachRow(rf, func(get func(string) string) {
-		id := get("route_id")
-		t, _ := strconv.Atoi(get("route_type"))
-		feed.Routes[id] = Route{
-			ID: id, ShortName: get("route_short_name"),
-			LongName: get("route_long_name"),
-			Color:    get("route_color"), Type: t,
-		}
-	}); err != nil {
-		return nil, err
+	stopLL := map[string]geo.LL{}
+	var wg sync.WaitGroup
+	var routesErr, stopsErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		routesErr = eachRowCols(rf, []string{"route_id", "route_type",
+			"route_short_name", "route_long_name", "route_color"},
+			func(v []string) {
+				t, _ := strconv.Atoi(v[1])
+				feed.Routes[v[0]] = Route{
+					ID: v[0], ShortName: v[2], LongName: v[3],
+					Color: v[4], Type: t,
+				}
+			})
+	}()
+	// terminal stops per shape: service ends at the last stop — anything
+	// beyond it (relay loops, turnaround pockets: the Bowling Green
+	// balloon, the E 146 St lasso) is train movement, not transit, and
+	// must not draw. stops.txt + a stop_times sweep give each shape its
+	// first/last stop location.
+	if sf, err := need("stops.txt"); err == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stopsErr = eachRowCols(sf, []string{"stop_id", "stop_lat", "stop_lon"},
+				func(v []string) {
+					lat, e1 := strconv.ParseFloat(v[1], 64)
+					lon, e2 := strconv.ParseFloat(v[2], 64)
+					if e1 == nil && e2 == nil {
+						stopLL[v[0]] = geo.LL{Lon: lon, Lat: lat}
+					}
+				})
+		}()
+	}
+	wg.Wait()
+	if routesErr != nil {
+		return nil, routesErr
+	}
+	if stopsErr != nil {
+		return nil, stopsErr
 	}
 
+	// phase 2: trips (needs Routes for the keep predicate)
 	tf, err := need("trips.txt")
 	if err != nil {
 		return nil, err
@@ -82,33 +127,24 @@ func Load(path string, coverFrac float64) (*Feed, error) {
 	type key struct{ route, shape string }
 	tripCount := map[key]int{}
 	tripShape := map[string]string{}
-	if err := eachRow(tf, func(get func(string) string) {
-		k := key{get("route_id"), get("shape_id")}
-		if k.shape != "" {
-			tripCount[k]++
-			tripShape[get("trip_id")] = k.shape
-		}
-	}); err != nil {
-		return nil, err
-	}
-
-	// terminal stops per shape: service ends at the last stop — anything
-	// beyond it (relay loops, turnaround pockets: the Bowling Green
-	// balloon, the E 146 St lasso) is train movement, not transit, and
-	// must not draw. stops.txt + a stop_times sweep give each shape its
-	// first/last stop location.
-	stopLL := map[string]geo.LL{}
-	if sf, err := need("stops.txt"); err == nil {
-		if err := eachRow(sf, func(get func(string) string) {
-			lat, e1 := strconv.ParseFloat(get("stop_lat"), 64)
-			lon, e2 := strconv.ParseFloat(get("stop_lon"), 64)
-			if e1 == nil && e2 == nil {
-				stopLL[get("stop_id")] = geo.LL{Lon: lon, Lat: lat}
+	if err := eachRowCols(tf, []string{"route_id", "shape_id", "trip_id"},
+		func(v []string) {
+			if keep != nil && !keep(feed.Routes[v[0]]) {
+				return
+			}
+			if v[1] != "" {
+				tripCount[key{v[0], v[1]}]++
+				tripShape[v[2]] = v[1]
 			}
 		}); err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
+	shapeNeeded := map[string]bool{}
+	for k := range tripCount {
+		shapeNeeded[k.shape] = true
+	}
+
+	// phase 3: stop_times ∥ shapes (both keyed off the kept trips)
 	type ends struct {
 		firstSeq, lastSeq   int
 		firstStop, lastStop string
@@ -116,57 +152,73 @@ func Load(path string, coverFrac float64) (*Feed, error) {
 	}
 	shapeEnds := map[string]*ends{}
 	shapeStops := map[string]map[string]bool{}
-	if stf, err := need("stop_times.txt"); err == nil && len(stopLL) > 0 {
-		if err := eachRow(stf, func(get func(string) string) {
-			shape, ok := tripShape[get("trip_id")]
-			if !ok {
-				return
-			}
-			e := shapeEnds[shape]
-			if e == nil {
-				e = &ends{}
-				shapeEnds[shape] = e
-			}
-			seq, err := strconv.Atoi(get("stop_sequence"))
-			if err != nil {
-				return
-			}
-			sid := get("stop_id")
-			if shapeStops[shape] == nil {
-				shapeStops[shape] = map[string]bool{}
-			}
-			shapeStops[shape][sid] = true
-			if !e.ok || seq < e.firstSeq {
-				e.firstSeq, e.firstStop = seq, sid
-			}
-			if !e.ok || seq > e.lastSeq {
-				e.lastSeq, e.lastStop = seq, sid
-			}
-			e.ok = true
-		}); err != nil {
-			return nil, err
-		}
-	}
-
-	sf, err := need("shapes.txt")
-	if err != nil {
-		return nil, err
-	}
 	type spt struct {
 		seq int
 		ll  geo.LL
 	}
 	shapes := map[string][]spt{}
-	if err := eachRow(sf, func(get func(string) string) {
-		id := get("shape_id")
-		lat, e1 := strconv.ParseFloat(get("shape_pt_lat"), 64)
-		lon, e2 := strconv.ParseFloat(get("shape_pt_lon"), 64)
-		seq, e3 := strconv.Atoi(get("shape_pt_sequence"))
-		if e1 == nil && e2 == nil && e3 == nil {
-			shapes[id] = append(shapes[id], spt{seq, geo.LL{Lon: lon, Lat: lat}})
-		}
-	}); err != nil {
+	var stErr, shErr error
+	if stf, err := need("stop_times.txt"); err == nil && len(stopLL) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stErr = eachRowCols(stf, []string{"trip_id", "stop_sequence", "stop_id"},
+				func(v []string) {
+					shape, ok := tripShape[v[0]]
+					if !ok {
+						return
+					}
+					e := shapeEnds[shape]
+					if e == nil {
+						e = &ends{}
+						shapeEnds[shape] = e
+					}
+					seq, err := strconv.Atoi(v[1])
+					if err != nil {
+						return
+					}
+					sid := v[2]
+					if shapeStops[shape] == nil {
+						shapeStops[shape] = map[string]bool{}
+					}
+					shapeStops[shape][sid] = true
+					if !e.ok || seq < e.firstSeq {
+						e.firstSeq, e.firstStop = seq, sid
+					}
+					if !e.ok || seq > e.lastSeq {
+						e.lastSeq, e.lastStop = seq, sid
+					}
+					e.ok = true
+				})
+		}()
+	}
+	sf2, err := need("shapes.txt")
+	if err != nil {
 		return nil, err
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		shErr = eachRowCols(sf2, []string{"shape_id", "shape_pt_lat",
+			"shape_pt_lon", "shape_pt_sequence"},
+			func(v []string) {
+				if keep != nil && !shapeNeeded[v[0]] {
+					return
+				}
+				lat, e1 := strconv.ParseFloat(v[1], 64)
+				lon, e2 := strconv.ParseFloat(v[2], 64)
+				seq, e3 := strconv.Atoi(v[3])
+				if e1 == nil && e2 == nil && e3 == nil {
+					shapes[v[0]] = append(shapes[v[0]], spt{seq, geo.LL{Lon: lon, Lat: lat}})
+				}
+			})
+	}()
+	wg.Wait()
+	if stErr != nil {
+		return nil, stErr
+	}
+	if shErr != nil {
+		return nil, shErr
 	}
 	for id := range shapes {
 		s := shapes[id]
@@ -358,6 +410,57 @@ func exciseLoops(pts []geo.LL, stops []geo.LL) []geo.LL {
 		}
 	}
 	return pts
+}
+
+// eachRowCols streams a CSV member resolving the wanted columns to indices
+// once, with csv.ReuseRecord (field strings are substrings of a fresh
+// per-record backing string, so retaining them is safe). Missing columns
+// and short rows read as "" — the same fallback eachRow's get() applies.
+func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	r := csv.NewReader(rc)
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+	r.ReuseRecord = true
+	header, err := r.Read()
+	if err != nil {
+		return err
+	}
+	if len(header) > 0 && len(header[0]) > 2 && header[0][0] == 0xEF {
+		header[0] = header[0][3:]
+	}
+	idxs := make([]int, len(cols))
+	for j, c := range cols {
+		idxs[j] = -1
+		for i, h := range header {
+			if h == c {
+				idxs[j] = i
+				break
+			}
+		}
+	}
+	vals := make([]string, len(cols))
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for j, ix := range idxs {
+			if ix < 0 || ix >= len(row) {
+				vals[j] = ""
+			} else {
+				vals[j] = row[ix]
+			}
+		}
+		fn(vals)
+	}
 }
 
 func eachRow(f *zip.File, fn func(get func(string) string)) error {

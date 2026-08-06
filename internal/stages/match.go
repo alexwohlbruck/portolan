@@ -132,7 +132,7 @@ const levelJumpPen = 300.0
 // (short ways connecting longer ways: switches, median turns) penalized;
 // mainlines only — spurs and yards ignored except at station terminals.
 func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Path, error) {
-	g := buildTrackGraph(ways)
+	g := buildTrackGraphCached(ways)
 	p := defaultMatchParams()
 
 	// canonical patterns first: heaviest service defines the shared paths

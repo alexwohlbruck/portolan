@@ -61,7 +61,7 @@ func defaultSplitParams() splitParams {
 // segment the set of routes riding it.
 func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	setLevelIndex(tracks)
-	g := buildTrackGraph(tracks)
+	g := buildTrackGraphCached(tracks)
 	p := defaultSplitParams()
 
 	// ---- usage: route set per used piece

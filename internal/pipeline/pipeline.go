@@ -165,14 +165,21 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if o.Scenario != "" {
 		loadCover = 1.01 // scenario selection replaces union pruning
 	}
-	feed, err := gtfs.Load(o.GTFS, loadCover)
+	// rail filter at the load: the stop_times sweep (5.8M rows on Chicago,
+	// ~95% bus) skips foreign trips with one map miss, and bus shapes never
+	// parse. The kept patterns are identical — the same predicate re-runs
+	// below on what used to be the full set.
+	isRail := func(r gtfs.Route) bool {
+		t := r.Type
+		return t == 0 || t == 1 || t == 2 || (t >= 100 && t < 200)
+	}
+	feed, err := gtfs.LoadFiltered(o.GTFS, loadCover, isRail)
 	if err != nil {
 		return err
 	}
 	var rail []gtfs.Pattern
 	for _, pat := range feed.Patterns {
-		t := pat.Route.Type
-		if t == 0 || t == 1 || t == 2 || (t >= 100 && t < 200) {
+		if isRail(pat.Route) {
 			rail = append(rail, pat)
 		}
 	}
