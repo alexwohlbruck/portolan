@@ -100,7 +100,9 @@ func (l *Line) allSegs() []int32 {
 // not be modified.
 func (l *Line) candidates(p Pt, reach float64) []int32 {
 	ix := l.index()
-	if reach > ix.cell {
+	// >= not >: at reach exactly == cell a distance that ROUNDS to the cap
+	// can pass a ≤ compare while its segment sits just past the 3×3 block
+	if reach >= ix.cell {
 		return l.allSegs()
 	}
 	return ix.hood[[2]int{int(math.Floor(p.X / ix.cell)), int(math.Floor(p.Y / ix.cell))}]

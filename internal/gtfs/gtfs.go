@@ -194,6 +194,7 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	}
 	sf2, err := need("shapes.txt")
 	if err != nil {
+		wg.Wait() // the stop_times goroutine must not outlive the zip close
 		return nil, err
 	}
 	wg.Add(1)

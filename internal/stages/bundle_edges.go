@@ -257,16 +257,16 @@ func (st *bundleState) beginRound(net *Network) {
 	st.fresh = st.fresh[:0]
 	// An edge's cached candidate list changes only if geometry appeared or
 	// vanished within 25 m of one of its samples. Any such sample lies on
-	// the edge's polyline within 25+4 m of some mergeDS=8 m sample of the
-	// changed geometry (Resample keeps endpoints, so every point of a line
-	// is ≤4 m of arc from a sample) — reach 30 marks a superset of the
-	// affected edges, and over-invalidation merely recomputes identical
-	// lists.
+	// the edge's polyline within 25+6 m of some sample of the changed
+	// geometry (Resample keeps endpoints and rounds the count, so arc gaps
+	// reach 12 m on lines just over 10 m — slack 6 m, not mergeDS/2) —
+	// reach 31 marks a superset of the affected edges, and
+	// over-invalidation merely recomputes identical lists.
 	if len(st.dirty) > 0 {
 		aff := map[int]bool{}
 		for _, pts := range st.dirty {
 			for _, q := range pts {
-				st.grid.Near(q, 30, func(li int) { aff[li] = true })
+				st.grid.Near(q, 31, func(li int) { aff[li] = true })
 			}
 		}
 		for li := range aff {
