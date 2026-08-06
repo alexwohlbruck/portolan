@@ -131,7 +131,7 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 				// absorbed (2). Where the colors themselves split apart to
 				// different branches (the DeKalb fan) the reorder is where
 				// it belongs (1) — the single necessary flip slides there.
-				changed := 0
+				changedSet := map[string]bool{}
 				for _, c := range shared {
 					ra := map[string]bool{}
 					for _, r := range n.Edges[a].Routes {
@@ -177,22 +177,28 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 						}
 					}
 					if vis {
-						changed++
+						changedSet[c] = true
 					}
 				}
-				wt := 1
-				switch changed {
-				case 0:
-					wt = 8
-				case 1:
-					wt = 2
-				}
+				// the discount is PER PAIR, not per seam: a seam where orange
+				// departs must not make brown↔purple↔pink inversions cheap —
+				// the continuing group holds its order (owner's rule). Only
+				// pairs involving a changed color have a join/leave curve to
+				// absorb the crossing.
 				for x := 0; x < len(shared); x++ {
 					for y := x + 1; y < len(shared); y++ {
 						da := pos(a, shared[x], aStorage) - pos(a, shared[y], aStorage)
 						db := pos(b, shared[x], bStorage) - pos(b, shared[y], bStorage)
 						if da*db < 0 {
-							total += wt
+							cx, cy := changedSet[shared[x]], changedSet[shared[y]]
+							switch {
+							case cx && cy:
+								total += 1
+							case cx || cy:
+								total += 2
+							default:
+								total += 8
+							}
 						}
 					}
 				}

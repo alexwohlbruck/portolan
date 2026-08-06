@@ -33,23 +33,26 @@ type fairParams struct {
 func defaultFairParams() fairParams {
 	return fairParams{
 		CutBase:     dial("fair_cut_base", 60),
-		GapPx:       dial("fair_gap_px", 6),
+		GapPx:       dial("fair_gap_px", 5),
 		MaxTurn:     dial("fair_max_turn", 30),
 		FilletR:     dial("fair_fillet_r", 30),
 		MinShortCut: 12,
 	}
 }
 
-// bands: emit one full copy per zoom band; the free area and fillet double
-// per zoom-out so on-screen junction size stays constant (LESSONS #17).
+// bands: emit one full copy per zoom band; the free area and fillet grow
+// per zoom-out so on-screen junction size stays readable — but SUB-linear
+// (was ×2 per band): full doubling cut too much of the map away at low
+// zoom (owner). gap scales the slot pitch down as the map shrinks.
 var fairBands = []struct {
 	min, max int
 	scale    float64
+	gap      float64
 }{
-	{15, 24, 1},
-	{14, 15, 2},
-	{13, 14, 4},
-	{0, 13, 8},
+	{15, 24, 1, 1},
+	{14, 15, 1.5, 0.8},
+	{13, 14, 2.5, 0.65},
+	{0, 13, 4, 0.5},
 }
 
 // Fair draws the junction connections with smooth curvature between slot
@@ -90,10 +93,12 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		}
 		return -1, len(s)
 	}
-	// storage-frame px offset of a color on an edge
+	// storage-frame px offset of a color on an edge; gapNow is the current
+	// band's slot pitch (set at the top of each band iteration)
+	gapNow := p.GapPx
 	offsetPx := func(ei int, color string) float64 {
 		s, ns := slotOf(ei, color)
-		return (float64(s) - float64(ns-1)/2) * p.GapPx
+		return (float64(s) - float64(ns-1)/2) * gapNow
 	}
 	// travel-frame px offset: traveling this edge storage-forward or not
 	travelOffsetPx := func(ei int, color string, storage bool) float64 {
@@ -289,6 +294,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 
 	var segs []Segment
 	for _, band := range fairBands {
+		gapNow = p.GapPx * band.gap
 		cut := make([][2]float64, len(n.Edges)) // per edge: cut at From, To
 		lines := make([]*geo.Line, len(n.Edges))
 		for ei := range n.Edges {
