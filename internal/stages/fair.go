@@ -360,10 +360,13 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			bend             float64
 		}
 		// entry/exit travel tangents of a connection, measured at the OUTER
-		// ends (steady side) — inner ends carry corner overshoot
+		// ends (steady side) — inner ends carry corner overshoot. 100 m out:
+		// a gradual 90° sweep (the Dearborn subway peel) reads only ~29° at
+		// 30 m and was classified straight — its Bézier then cut the corner
+		// a block wide of the steel.
 		pairTangents := func(a, cur int, aAtTo, bAtFrom bool) (geo.Pt, geo.Pt) {
-			entryArc := math.Min(30, lines[a].Len()/3)
-			exitArc := math.Min(30, lines[cur].Len()/3)
+			entryArc := math.Min(100, lines[a].Len()/3)
+			exitArc := math.Min(100, lines[cur].Len()/3)
 			var entry, exit geo.Pt
 			if aAtTo {
 				entry = lines[a].TangentAtArc(lines[a].Len()-entryArc, 10)
@@ -456,8 +459,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					pts2 := n.Edges[e].Pts
 					if len(pts2) > 0 && pts2[len(pts2)-1].Dist(dbg3Pt) < 100 ||
 						len(pts2) > 0 && pts2[0].Dist(dbg3Pt) < 100 {
-						fmt.Printf("CAND3 %s a=e%d cur=e%d mids=%d aAtTo=%v bAtFrom=%v\n",
-							c.color, a, cur, len(c.mids), c.aAtTo, c.bAtFrom)
+						fmt.Printf("CAND3 %s a=e%d cur=e%d mids=%d aAtTo=%v bAtFrom=%v bend=%.0f\n",
+							c.color, a, cur, len(c.mids), c.aAtTo, c.bAtFrom, c.bend)
 						break
 					}
 				}
@@ -539,13 +542,13 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				}
 			}
 			// a straight-through pass has no excuse for ANY visible wiggle —
-			// median membership shifts at the node jog the pieced chain a
-			// couple of metres, which the compact per-color spans no longer
-			// hide. The Bézier between the steady-side tangents draws the
-			// straight line a hand would.
+			// the junction node itself sits metres off the corridor axis
+			// (weld position), so a pieced chain through it draws a tent.
+			// Always offer the Bézier between the steady-side tangents and
+			// take it whenever it beats the chain: the hand's line.
 			retryAt := 25.0
 			if bend < straightBend {
-				retryAt = 8
+				retryAt = 0
 			}
 			if mt := maxTurn12(smoothPolyline(geo.NewLine(chain))); !onSteel && mt > retryAt {
 				// the pieced chain drags junction-interior geometry (branch
@@ -571,7 +574,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					})
 				}
 				mb := maxTurn12(geo.NewLine(bez))
-				if mb < mt-5 {
+				if mb < mt-5 || (bend < straightBend && mb < mt) {
 					chain = bez
 					mt = mb
 				}
@@ -720,12 +723,32 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 	}
 	o0, o1 := bestFit.o0, bestFit.o1
 	l := geo.NewLine(pts)
+	// the lateral ramp o0→o1 keys on the connector's ACCUMULATED BEND,
+	// not its arc: an arc-linear ramp settles the drawn line onto the
+	// connector's pre-bend alignment before the curve — a visible dip on
+	// every approach (the SE-corner notch). Bend-weighted, the line holds
+	// the corridor offset until the steel starts turning and transfers
+	// through the curve itself.
+	turnAt := []float64{0}
+	total := 0.0
+	for arc := 4.0; arc <= l.Len(); arc += 4 {
+		t1 := l.TangentAtArc(arc-4, 8)
+		t2 := l.TangentAtArc(arc, 8)
+		d := math.Max(-1, math.Min(1, t1.Dot(t2)))
+		total += math.Acos(d)
+		turnAt = append(turnAt, total)
+	}
 	var out []geo.Pt
+	i := 0
 	for arc := 0.0; arc <= l.Len(); arc += 4 {
 		f := arc / l.Len()
+		if total > 0.1 && i < len(turnAt) {
+			f = turnAt[i] / total
+		}
 		o := o0*(1-f) + o1*f
 		nrm := l.TangentAtArc(arc, 8).Perp()
 		out = append(out, l.AtArc(arc).Add(nrm.Scale(o)))
+		i++
 	}
 	return out
 }
