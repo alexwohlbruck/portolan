@@ -1,7 +1,9 @@
 package stages
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -9,6 +11,18 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 )
+
+// dbgRPt reports whether the line passes near the PORTOLAN_DBGR "x,y"
+// frame point (debug only).
+func dbgRPt(l *geo.Line) bool {
+	v := os.Getenv("PORTOLAN_DBGR")
+	if v == "" {
+		return false
+	}
+	var x, y float64
+	fmt.Sscanf(v, "%f,%f", &x, &y)
+	return l.DistTo(geo.Pt{X: x, Y: y}) < 60
+}
 
 // SPLIT — owner's steps 2–3. Because MATCH converged co-running routes onto
 // identical walks, junctions are exact graph facts: a network node exists
@@ -303,6 +317,26 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// inside Refine instead: one vote per strand per cross-section, so
 	// loop limbs and terminal return legs chained into a strand cannot
 	// stack votes here.
+	// DIRECTIONAL TWINS: MATCH's convergence bonus puts both directions of
+	// a route on one track, leaving the paired other-direction rail
+	// "unridden" — but the drawn centerline must sit on the PAIR's center
+	// (the Lake corridor rode its north rail exactly). A twin is admitted
+	// per edge only when it runs parallel within track gauge for nearly
+	// the edge's whole length; turnaround arcs and yard ladders never do,
+	// so the South Ferry law holds.
+	var unriddenTracks []bundle.Track
+	for _, t := range tracks {
+		if !usedWays[t.ID] {
+			unriddenTracks = append(unriddenTracks, t)
+		}
+	}
+	twinStrands := bundle.Chain(unriddenTracks, p.JoinTol)
+	twinLines := make([]*geo.Line, len(twinStrands))
+	for i, st := range twinStrands {
+		twinLines[i] = st.Line
+	}
+	tgrid := geo.NewGrid(twinLines, 64)
+
 	strands := bundle.Chain(riddenTracks, p.JoinTol)
 	strandLines := make([]*geo.Line, len(strands))
 	for i, st := range strands {
@@ -310,7 +344,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	}
 	sgrid := geo.NewGrid(strandLines, 64)
 	rp := bundle.DefaultParams()
-	refineEdges(net, strandLines, sgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
 
 	// ---- law 3: edges sustained-parallel within mate range are ONE visual
 	// corridor — cut at the membership bounds and merge (lollipop sticks,
@@ -324,7 +358,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		if bundleParallelEdges(net) == 0 {
 			break
 		}
-		refineEdges(net, strandLines, sgrid, p, rp)
+		refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
 	}
 
 	// ---- law 16: fold rings into lollipop sticks. An edge that runs a
@@ -334,7 +368,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// halves, with the tip as a new terminal node. Apple draws exactly
 	// the folded line (the 4/5 around the Battery is a single curve).
 	foldRings(net)
-	refineEdges(net, strandLines, sgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
 	dropShadowStubs(net)
 	// a gap edge whose ENDPOINTS nearly coincide is not missing track —
 	// it is a deviating shape's bulge pinched between two matched anchors
@@ -384,7 +418,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// fragments were median-refined separately, so their joints survive
 	// contraction as kinks mid-edge — refine the merged edges as whole
 	// strands once more.
-	refineEdges(net, strandLines, sgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
 	// ---- junction nodes at the meet of their corridors' centerlines
 	for ni := range net.Nodes {
 		placeNodeAtMeet(net, ni, p)
@@ -499,6 +533,12 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		}
 	}
 	contractChains(net)
+	// final refinement: edges created or reshaped by late merge/weld/
+	// contraction rounds otherwise keep their seed geometry verbatim —
+	// the Lake corridor east of Garvey rode its seed's own track (the
+	// north rail, 6-decimal identical) instead of the pair's center.
+	// Refine moves interior vertices only, so the trimmed ends hold.
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
 	compactNodes(net)
 	return net, nil
 }
@@ -847,6 +887,7 @@ func foldRings(net *Network) {
 }
 
 func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
+	twinLines []*geo.Line, tgrid *geo.Grid,
 	p splitParams, rp bundle.Params) {
 
 	var wg sync.WaitGroup
@@ -870,13 +911,52 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 				if len(members) == 0 {
 					break
 				}
+				members = append(members, edgeTwins(cl, twinLines, tgrid)...)
 				cl = bundle.Refine(cl, members, rp)
+			}
+			if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
+				mid := cl.AtArc(cl.Len() / 2)
+				fmt.Printf("REFINE3 edge routes=%v members=%d\n", e.Routes, len(members))
+				for mi, m := range members {
+					fmt.Printf("  member %d: DistTo(mid)=%.1f len=%.0f\n", mi, m.DistTo(mid), m.Len())
+				}
 			}
 			e.Pts = cl.Pts
 			e.Tracks = trackCount(cl, members, rp)
 		}()
 	}
 	wg.Wait()
+}
+
+// edgeTwins finds unridden DIRECTIONAL TWINS of a centerline: strands
+// running parallel within track-pair gauge for nearly the edge's whole
+// length. MATCH converges both directions of a route onto one track, so
+// the paired rail is unridden steel — but the drawn line must sit on
+// the pair's center. Turnaround arcs and yard ladders parallel an edge
+// only briefly and never qualify (the South Ferry law holds).
+func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid) []*geo.Line {
+	const ds = 12.0
+	const twinMax = 6.0
+	samples := cl.Resample(ds)
+	counts := map[int]int{}
+	for _, q := range samples {
+		tgrid.Near(q, twinMax, func(si int) {
+			if twinLines[si].DistTo(q) < twinMax {
+				counts[si]++
+			}
+		})
+	}
+	need := int(0.8 * float64(len(samples)))
+	if need < 3 {
+		need = 3
+	}
+	var out []*geo.Line
+	for si, c := range counts {
+		if c >= need {
+			out = append(out, twinLines[si])
+		}
+	}
+	return out
 }
 
 // edgeMates finds the strands that form this segment's physical track group:
