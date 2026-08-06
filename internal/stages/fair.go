@@ -972,6 +972,17 @@ func straightenCone(pts []geo.Pt, tol, coneDot float64) []geo.Pt {
 	if len(pts) < 3 {
 		return pts
 	}
+	// per-segment norm/unit depend only on k, not the chord: compute once
+	// (identical operands and guard order as the inline computation)
+	segN := make([]float64, len(pts)-1)
+	segU := make([]geo.Pt, len(pts)-1)
+	for k := range segN {
+		seg := pts[k+1].Sub(pts[k])
+		segN[k] = seg.Norm()
+		if segN[k] > 1e-9 {
+			segU[k] = seg.Unit()
+		}
+	}
 	out := []geo.Pt{pts[0]}
 	i := 0
 	for i < len(pts)-1 {
@@ -990,8 +1001,7 @@ func straightenCone(pts []geo.Pt, tol, coneDot float64) []geo.Pt {
 				}
 			}
 			for k := i; k < j && ok; k++ {
-				seg := pts[k+1].Sub(pts[k])
-				if seg.Norm() > 1e-9 && seg.Unit().Dot(u) < coneDot {
+				if segN[k] > 1e-9 && segU[k].Dot(u) < coneDot {
 					ok = false
 				}
 			}

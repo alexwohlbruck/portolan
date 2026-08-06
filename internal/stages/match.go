@@ -3,7 +3,9 @@ package stages
 import (
 	"container/heap"
 	"math"
+	"runtime"
 	"sort"
+	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -182,6 +184,81 @@ type candidate struct {
 	emit float64 // emission cost at this sample
 }
 
+// emitSample computes one sample's candidate list and gap emission — the
+// body of the old per-sample loop, verbatim. It reads only immutable state
+// (graph, grid, params, usedBy/usedColor between assembles) and writes
+// only its own index, so samples run concurrently with identical results.
+func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
+	shapeArc func(int) float64, sampleConf func(float64) (float64, float64),
+	cands [][]candidate, gapEmit []float64) {
+
+	tan := shape.TangentAtArc(shapeArc(i), 15)
+	w, spread := sampleConf(shapeArc(i))
+	reach, maxCand := m.p.Reach, m.p.MaxCand
+	if spread > 0 {
+		reach += spread
+		maxCand += 8
+	}
+	type pc struct {
+		piece int
+		d     float64
+		arc   float64
+	}
+	var near []pc
+	m.g.grid.Near(q, reach, func(piece int) {
+		arc, d := m.g.pieces[piece].ProjectArc(q)
+		near = append(near, pc{piece, d, arc})
+	})
+	sort.Slice(near, func(a, b int) bool { return near[a].d < near[b].d })
+	if len(near) > maxCand {
+		near = near[:maxCand]
+	}
+	hasCompat := false
+	if wayRailClass != nil {
+		for _, c := range near {
+			if classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way]) {
+				hasCompat = true
+				break
+			}
+		}
+	}
+	usable := false
+	for _, c := range near {
+		compat := !hasCompat ||
+			classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way])
+		ptan := m.g.pieces[c.piece].TangentAtArc(c.arc, 10)
+		dot := ptan.Dot(tan)
+		if compat && c.d < m.p.GapFree && math.Abs(dot) >= 0.5 {
+			usable = true
+		}
+		bonus := 0.0
+		switch {
+		case m.usedBy[c.piece][pat.Route.ID]:
+			bonus = m.p.BonusRoute
+		case m.usedColor[c.piece][pat.Route.Color]:
+			bonus = m.p.BonusColor
+		case len(m.usedBy[c.piece]) > 0:
+			bonus = m.p.BonusOther
+		}
+		for dir := 0; dir <= 1; dir++ {
+			dd := dot
+			if dir == 1 {
+				dd = -dd
+			}
+			e := 2*c.piece + dir
+			pen := 0.0
+			if !compat {
+				pen = classPen
+			}
+			cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)+pen) - bonus})
+		}
+	}
+	gapEmit[i] = barredGap
+	if !usable {
+		gapEmit[i] = m.p.GapCost
+	}
+}
+
 func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 	pts := make([]geo.Pt, len(pat.Shape))
 	for i, ll := range pat.Shape {
@@ -233,75 +310,27 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 	// candidates + emissions per sample; the gap gate closes wherever a
 	// usable (near, heading-aligned) track exists — GAP is for missing
 	// track, never a way to jump between parallel paths
+	// Per-sample work is independent and side-effect-free: usedBy/usedColor
+	// are only written by assemble AFTER the whole pattern resolves, the
+	// graph and grid are immutable here, and every result lands by index —
+	// so the samples fan out across workers with bit-identical results.
 	cands := make([][]candidate, n)
 	gapEmit := make([]float64, n)
-	for i, q := range samples {
-		tan := shape.TangentAtArc(shapeArc(i), 15)
-		w, spread := sampleConf(shapeArc(i))
-		reach, maxCand := m.p.Reach, m.p.MaxCand
-		if spread > 0 {
-			reach += spread
-			maxCand += 8
-		}
-		type pc struct {
-			piece int
-			d     float64
-			arc   float64
-		}
-		var near []pc
-		m.g.grid.Near(q, reach, func(piece int) {
-			arc, d := m.g.pieces[piece].ProjectArc(q)
-			near = append(near, pc{piece, d, arc})
-		})
-		sort.Slice(near, func(a, b int) bool { return near[a].d < near[b].d })
-		if len(near) > maxCand {
-			near = near[:maxCand]
-		}
-		hasCompat := false
-		if wayRailClass != nil {
-			for _, c := range near {
-				if classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way]) {
-					hasCompat = true
-					break
-				}
-			}
-		}
-		usable := false
-		for _, c := range near {
-			compat := !hasCompat ||
-				classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way])
-			ptan := m.g.pieces[c.piece].TangentAtArc(c.arc, 10)
-			dot := ptan.Dot(tan)
-			if compat && c.d < m.p.GapFree && math.Abs(dot) >= 0.5 {
-				usable = true
-			}
-			bonus := 0.0
-			switch {
-			case m.usedBy[c.piece][pat.Route.ID]:
-				bonus = m.p.BonusRoute
-			case m.usedColor[c.piece][pat.Route.Color]:
-				bonus = m.p.BonusColor
-			case len(m.usedBy[c.piece]) > 0:
-				bonus = m.p.BonusOther
-			}
-			for dir := 0; dir <= 1; dir++ {
-				dd := dot
-				if dir == 1 {
-					dd = -dd
-				}
-				e := 2*c.piece + dir
-				pen := 0.0
-				if !compat {
-					pen = classPen
-				}
-				cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)+pen) - bonus})
-			}
-		}
-		gapEmit[i] = barredGap
-		if !usable {
-			gapEmit[i] = m.p.GapCost
-		}
+	var wg sync.WaitGroup
+	nw := runtime.NumCPU()
+	if nw > n {
+		nw = n
 	}
+	for wk := 0; wk < nw; wk++ {
+		wg.Add(1)
+		go func(wk int) {
+			defer wg.Done()
+			for i := wk; i < n; i += nw {
+				m.emitSample(pat, samples[i], i, shape, shapeArc, sampleConf, cands, gapEmit)
+			}
+		}(wk)
+	}
+	wg.Wait()
 
 	// Viterbi
 	type cell struct {
@@ -325,7 +354,15 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		for s, c := range dp[i-1] {
 			prevs = append(prevs, pv{s, c.cost})
 		}
-		sort.Slice(prevs, func(a, b int) bool { return prevs[a].cost < prevs[b].cost })
+		// state id breaks exact-cost ties: the old map-iteration order fed
+		// an unstable sort, which is run-to-run random exactly when a tie
+		// could matter
+		sort.Slice(prevs, func(a, b int) bool {
+			if prevs[a].cost != prevs[b].cost {
+				return prevs[a].cost < prevs[b].cost
+			}
+			return prevs[a].state < prevs[b].state
+		})
 
 		relax := func(state int, emit float64) {
 			best := math.Inf(1)
@@ -350,10 +387,11 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		relax(gapState, gapEmit[i])
 	}
 
-	// backtrack
+	// backtrack (smallest state id wins exact-cost ties — the map
+	// iteration here was run-to-run random exactly when a tie could matter)
 	last, best := gapState, math.Inf(1)
 	for s, c := range dp[n-1] {
-		if c.cost < best {
+		if c.cost < best || (c.cost == best && s < last) {
 			best, last = c.cost, s
 		}
 	}
