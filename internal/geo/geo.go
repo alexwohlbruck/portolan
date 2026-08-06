@@ -2,7 +2,11 @@
 // local metric frame. Every rule here is load-bearing — see docs/LESSONS.md.
 package geo
 
-import "math"
+import (
+	"math"
+	"runtime"
+	"sync"
+)
 
 // Pt is a point in the local metric frame (meters).
 type Pt struct{ X, Y float64 }
@@ -37,10 +41,14 @@ func (f Frame) ToLL(p Pt) LL {
 	return LL{f.lon0 + p.X/(mPerDegLat*f.coslat), f.lat0 + p.Y/mPerDegLat}
 }
 
-// Line is a polyline in the metric frame with a cached cumulative-arc table.
+// Line is a polyline in the metric frame with a cached cumulative-arc table
+// and a lazy segment index for capped distance queries (lineindex.go).
+// Lines are immutable after NewLine — nothing may assign Pts or arc later.
 type Line struct {
-	Pts []Pt
-	arc []float64 // cumulative arc length; arc[0]=0
+	Pts     []Pt
+	arc     []float64 // cumulative arc length; arc[0]=0
+	idx     *lineIndex
+	idxOnce sync.Once
 }
 
 func NewLine(pts []Pt) *Line {
@@ -55,6 +63,11 @@ func (l *Line) rebuildArc() {
 		l.arc[i] = l.arc[i-1] + l.Pts[i].Dist(l.Pts[i-1])
 	}
 }
+
+// ArcTable exposes the cached cumulative-arc table (read-only; arc[0]=0,
+// arc[i] = arc[i-1] + Pts[i].Dist(Pts[i-1]) — the exact accumulation every
+// caller would otherwise rebuild).
+func (l *Line) ArcTable() []float64 { return l.arc }
 
 func (l *Line) Len() float64 {
 	if len(l.arc) == 0 {
@@ -137,15 +150,22 @@ func (l *Line) Densify(step float64) []Pt {
 }
 
 // DistTo returns the minimum distance from p to the polyline.
+// The scan compares squared distances (segDist's clamped projection without
+// the final Hypot) and computes the true distance once, on the winner —
+// the same rounded value segDist would return for that segment.
 func (l *Line) DistTo(p Pt) float64 {
-	best := math.Inf(1)
+	best2 := math.Inf(1)
+	var bdx, bdy float64
 	for i := 1; i < len(l.Pts); i++ {
-		d := segDist(p, l.Pts[i-1], l.Pts[i])
-		if d < best {
-			best = d
+		d2, dx, dy := segDist2(p, l.Pts[i-1], l.Pts[i])
+		if d2 < best2 {
+			best2, bdx, bdy = d2, dx, dy
 		}
 	}
-	return best
+	if math.IsInf(best2, 1) {
+		return best2
+	}
+	return math.Hypot(bdx, bdy)
 }
 
 func segDist(p, a, b Pt) float64 {
@@ -156,6 +176,23 @@ func segDist(p, a, b Pt) float64 {
 	}
 	t := math.Max(0, math.Min(1, p.Sub(a).Dot(ab)/n2))
 	return p.Dist(a.Add(ab.Scale(t)))
+}
+
+// segDist2 is segDist without the final square root: identical clamped
+// projection (same t, same q, same dx/dy operands), returning the squared
+// distance and the components. math.Hypot(dx, dy) on the returned pair is
+// bit-identical to segDist's result for the same segment.
+func segDist2(p, a, b Pt) (d2, dx, dy float64) {
+	ab := b.Sub(a)
+	n2 := ab.Dot(ab)
+	if n2 < 1e-18 {
+		dx, dy = p.X-a.X, p.Y-a.Y
+		return dx*dx + dy*dy, dx, dy
+	}
+	t := math.Max(0, math.Min(1, p.Sub(a).Dot(ab)/n2))
+	q := a.Add(ab.Scale(t))
+	dx, dy = p.X-q.X, p.Y-q.Y
+	return dx*dx + dy*dy, dx, dy
 }
 
 // SegIntersect returns the intersection of segments a1-a2 and b1-b2 and true
@@ -186,7 +223,6 @@ func (l *Line) CrossSection(p, tangent Pt, reach float64) []Crossing {
 	r1 := p.Sub(nrm.Scale(reach))
 	r2 := p.Add(nrm.Scale(reach))
 	var out []Crossing
-	arc := 0.0
 	for i := 1; i < len(l.Pts); i++ {
 		q, ok := SegIntersect(r1, r2, l.Pts[i-1], l.Pts[i])
 		if ok {
@@ -195,10 +231,11 @@ func (l *Line) CrossSection(p, tangent Pt, reach float64) []Crossing {
 				Offset:   q.Sub(p).Dot(nrm),
 				Parallel: math.Abs(dir.Dot(tangent)),
 				At:       q,
-				Arc:      arc + l.Pts[i-1].Dist(q),
+				// l.arc holds the identical cumulative sum this loop used
+				// to re-accumulate (one Hypot per segment per call)
+				Arc: l.arc[i-1] + l.Pts[i-1].Dist(q),
 			})
 		}
-		arc += l.Pts[i].Dist(l.Pts[i-1])
 	}
 	return out
 }
@@ -239,6 +276,8 @@ func TurnDeg(a, b, c Pt) float64 {
 // GaussianArc low-passes a polyline along its arc (endpoints pinned). Light
 // finishing only — heavy blur smears real geometry (LESSONS: σ22 hid defects
 // AND detail; the refined centerline needs only σ≈8).
+// Each output point is a pure function of (pts, arc, i) written by index,
+// so long lines fan the loop out across workers with identical results.
 func GaussianArc(pts []Pt, sigma float64) []Pt {
 	n := len(pts)
 	if n < 5 || sigma <= 0 {
@@ -251,7 +290,7 @@ func GaussianArc(pts []Pt, sigma float64) []Pt {
 	win := 3 * sigma
 	out := make([]Pt, n)
 	out[0], out[n-1] = pts[0], pts[n-1]
-	for i := 1; i < n-1; i++ {
+	one := func(i int) {
 		var sx, sy, sw float64
 		for j := i; j >= 0 && arc[i]-arc[j] <= win; j-- {
 			w := math.Exp(-sq(arc[i]-arc[j]) / (2 * sigma * sigma))
@@ -267,7 +306,36 @@ func GaussianArc(pts []Pt, sigma float64) []Pt {
 		}
 		out[i] = Pt{sx / sw, sy / sw}
 	}
+	ParFor(1, n-1, one)
 	return out
+}
+
+// ParFor runs fn(i) for i in [lo, hi) — serially below a spawn threshold,
+// otherwise strided across NumCPU workers. fn must write only per-i state;
+// results are then identical to the serial loop.
+func ParFor(lo, hi int, fn func(i int)) {
+	n := hi - lo
+	if n < 256 {
+		for i := lo; i < hi; i++ {
+			fn(i)
+		}
+		return
+	}
+	nw := runtime.NumCPU()
+	if nw > n {
+		nw = n
+	}
+	var wg sync.WaitGroup
+	for wk := 0; wk < nw; wk++ {
+		wg.Add(1)
+		go func(wk int) {
+			defer wg.Done()
+			for i := lo + wk; i < hi; i += nw {
+				fn(i)
+			}
+		}(wk)
+	}
+	wg.Wait()
 }
 
 func sq(x float64) float64 { return x * x }
@@ -276,8 +344,10 @@ func sq(x float64) float64 { return x * x }
 // (and the distance). Used for lateral correspondence between parallel
 // strands — never for centerline geometry (LESSONS #2).
 func (l *Line) ProjectArc(p Pt) (float64, float64) {
-	bestD := math.Inf(1)
-	bestArc := 0.0
+	best2 := math.Inf(1)
+	bestI := -1
+	var bestQ Pt
+	var bdx, bdy float64
 	for i := 1; i < len(l.Pts); i++ {
 		a, b := l.Pts[i-1], l.Pts[i]
 		ab := b.Sub(a)
@@ -287,11 +357,14 @@ func (l *Line) ProjectArc(p Pt) (float64, float64) {
 			t = math.Max(0, math.Min(1, p.Sub(a).Dot(ab)/n2))
 		}
 		q := a.Add(ab.Scale(t))
-		d := p.Dist(q)
-		if d < bestD {
-			bestD = d
-			bestArc = l.arc[i-1] + a.Dist(q)
+		dx, dy := p.X-q.X, p.Y-q.Y
+		if d2 := dx*dx + dy*dy; d2 < best2 {
+			best2, bestI, bestQ = d2, i, q
+			bdx, bdy = dx, dy
 		}
 	}
-	return bestArc, bestD
+	if bestI < 0 {
+		return 0, math.Inf(1)
+	}
+	return l.arc[bestI-1] + l.Pts[bestI-1].Dist(bestQ), math.Hypot(bdx, bdy)
 }

@@ -3,7 +3,9 @@ package stages
 import (
 	"container/heap"
 	"math"
+	"runtime"
 	"sort"
+	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -130,7 +132,7 @@ const levelJumpPen = 300.0
 // (short ways connecting longer ways: switches, median turns) penalized;
 // mainlines only — spurs and yards ignored except at station terminals.
 func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Path, error) {
-	g := buildTrackGraph(ways)
+	g := buildTrackGraphCached(ways)
 	p := defaultMatchParams()
 
 	// canonical patterns first: heaviest service defines the shared paths
@@ -169,6 +171,24 @@ type matcher struct {
 	usedBy    map[int]map[string]bool // piece → route ids that ride it
 	usedColor map[int]map[string]bool // piece → colors that ride it
 	walks     map[[2]int]walkRes
+	ws        walkScratch // walk() is serial (Viterbi + assemble): safe to reuse
+}
+
+// walkScratch replaces walk()'s per-call map and slice allocations with
+// epoch-stamped arrays — same membership answers, same values, no churn.
+type walkScratch struct {
+	cost, wlen []float64
+	stamp      []uint32
+	epoch      uint32
+	arena      []wlabel
+	pq         walkPQ
+}
+
+type wlabel struct {
+	edge    int
+	prevIdx int
+	cost    float64
+	walkLen float64
 }
 
 type walkRes struct {
@@ -180,6 +200,81 @@ type walkRes struct {
 type candidate struct {
 	edge int     // directed edge id
 	emit float64 // emission cost at this sample
+}
+
+// emitSample computes one sample's candidate list and gap emission — the
+// body of the old per-sample loop, verbatim. It reads only immutable state
+// (graph, grid, params, usedBy/usedColor between assembles) and writes
+// only its own index, so samples run concurrently with identical results.
+func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
+	shapeArc func(int) float64, sampleConf func(float64) (float64, float64),
+	cands [][]candidate, gapEmit []float64) {
+
+	tan := shape.TangentAtArc(shapeArc(i), 15)
+	w, spread := sampleConf(shapeArc(i))
+	reach, maxCand := m.p.Reach, m.p.MaxCand
+	if spread > 0 {
+		reach += spread
+		maxCand += 8
+	}
+	type pc struct {
+		piece int
+		d     float64
+		arc   float64
+	}
+	var near []pc
+	m.g.grid.Near(q, reach, func(piece int) {
+		arc, d := m.g.pieces[piece].ProjectArc(q)
+		near = append(near, pc{piece, d, arc})
+	})
+	sort.Slice(near, func(a, b int) bool { return near[a].d < near[b].d })
+	if len(near) > maxCand {
+		near = near[:maxCand]
+	}
+	hasCompat := false
+	if wayRailClass != nil {
+		for _, c := range near {
+			if classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way]) {
+				hasCompat = true
+				break
+			}
+		}
+	}
+	usable := false
+	for _, c := range near {
+		compat := !hasCompat ||
+			classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way])
+		ptan := m.g.pieces[c.piece].TangentAtArc(c.arc, 10)
+		dot := ptan.Dot(tan)
+		if compat && c.d < m.p.GapFree && math.Abs(dot) >= 0.5 {
+			usable = true
+		}
+		bonus := 0.0
+		switch {
+		case m.usedBy[c.piece][pat.Route.ID]:
+			bonus = m.p.BonusRoute
+		case m.usedColor[c.piece][pat.Route.Color]:
+			bonus = m.p.BonusColor
+		case len(m.usedBy[c.piece]) > 0:
+			bonus = m.p.BonusOther
+		}
+		for dir := 0; dir <= 1; dir++ {
+			dd := dot
+			if dir == 1 {
+				dd = -dd
+			}
+			e := 2*c.piece + dir
+			pen := 0.0
+			if !compat {
+				pen = classPen
+			}
+			cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)+pen) - bonus})
+		}
+	}
+	gapEmit[i] = barredGap
+	if !usable {
+		gapEmit[i] = m.p.GapCost
+	}
 }
 
 func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
@@ -227,81 +322,33 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		if seg <= denseSpacing {
 			return 1, 0
 		}
-		return math.Max(0.05, denseSpacing / seg), math.Min(400, seg/2)
+		return math.Max(0.05, denseSpacing/seg), math.Min(400, seg/2)
 	}
 
 	// candidates + emissions per sample; the gap gate closes wherever a
 	// usable (near, heading-aligned) track exists — GAP is for missing
 	// track, never a way to jump between parallel paths
+	// Per-sample work is independent and side-effect-free: usedBy/usedColor
+	// are only written by assemble AFTER the whole pattern resolves, the
+	// graph and grid are immutable here, and every result lands by index —
+	// so the samples fan out across workers with bit-identical results.
 	cands := make([][]candidate, n)
 	gapEmit := make([]float64, n)
-	for i, q := range samples {
-		tan := shape.TangentAtArc(shapeArc(i), 15)
-		w, spread := sampleConf(shapeArc(i))
-		reach, maxCand := m.p.Reach, m.p.MaxCand
-		if spread > 0 {
-			reach += spread
-			maxCand += 8
-		}
-		type pc struct {
-			piece int
-			d     float64
-			arc   float64
-		}
-		var near []pc
-		m.g.grid.Near(q, reach, func(piece int) {
-			arc, d := m.g.pieces[piece].ProjectArc(q)
-			near = append(near, pc{piece, d, arc})
-		})
-		sort.Slice(near, func(a, b int) bool { return near[a].d < near[b].d })
-		if len(near) > maxCand {
-			near = near[:maxCand]
-		}
-		hasCompat := false
-		if wayRailClass != nil {
-			for _, c := range near {
-				if classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way]) {
-					hasCompat = true
-					break
-				}
-			}
-		}
-		usable := false
-		for _, c := range near {
-			compat := !hasCompat ||
-				classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way])
-			ptan := m.g.pieces[c.piece].TangentAtArc(c.arc, 10)
-			dot := ptan.Dot(tan)
-			if compat && c.d < m.p.GapFree && math.Abs(dot) >= 0.5 {
-				usable = true
-			}
-			bonus := 0.0
-			switch {
-			case m.usedBy[c.piece][pat.Route.ID]:
-				bonus = m.p.BonusRoute
-			case m.usedColor[c.piece][pat.Route.Color]:
-				bonus = m.p.BonusColor
-			case len(m.usedBy[c.piece]) > 0:
-				bonus = m.p.BonusOther
-			}
-			for dir := 0; dir <= 1; dir++ {
-				dd := dot
-				if dir == 1 {
-					dd = -dd
-				}
-				e := 2*c.piece + dir
-				pen := 0.0
-				if !compat {
-					pen = classPen
-				}
-				cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)+pen) - bonus})
-			}
-		}
-		gapEmit[i] = barredGap
-		if !usable {
-			gapEmit[i] = m.p.GapCost
-		}
+	var wg sync.WaitGroup
+	nw := runtime.NumCPU()
+	if nw > n {
+		nw = n
 	}
+	for wk := 0; wk < nw; wk++ {
+		wg.Add(1)
+		go func(wk int) {
+			defer wg.Done()
+			for i := wk; i < n; i += nw {
+				m.emitSample(pat, samples[i], i, shape, shapeArc, sampleConf, cands, gapEmit)
+			}
+		}(wk)
+	}
+	wg.Wait()
 
 	// Viterbi
 	type cell struct {
@@ -325,7 +372,15 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		for s, c := range dp[i-1] {
 			prevs = append(prevs, pv{s, c.cost})
 		}
-		sort.Slice(prevs, func(a, b int) bool { return prevs[a].cost < prevs[b].cost })
+		// state id breaks exact-cost ties: the old map-iteration order fed
+		// an unstable sort, which is run-to-run random exactly when a tie
+		// could matter
+		sort.Slice(prevs, func(a, b int) bool {
+			if prevs[a].cost != prevs[b].cost {
+				return prevs[a].cost < prevs[b].cost
+			}
+			return prevs[a].state < prevs[b].state
+		})
 
 		relax := func(state int, emit float64) {
 			best := math.Inf(1)
@@ -350,10 +405,11 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		relax(gapState, gapEmit[i])
 	}
 
-	// backtrack
+	// backtrack (smallest state id wins exact-cost ties — the map
+	// iteration here was run-to-run random exactly when a tie could matter)
 	last, best := gapState, math.Inf(1)
 	for s, c := range dp[n-1] {
-		if c.cost < best {
+		if c.cost < best || (c.cost == best && s < last) {
 			best, last = c.cost, s
 		}
 	}
@@ -399,16 +455,23 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 	// pairs whenever the cheap path was the long way round. Each label
 	// carries its own parent chain — a shared prev map would splice
 	// fragments of different paths into broken geometry.
-	type label struct {
-		edge    int
-		prevIdx int
-		cost    float64
-		walkLen float64
+	ws := &m.ws
+	if len(ws.stamp) < len(g.edges) {
+		ws.cost = make([]float64, len(g.edges))
+		ws.wlen = make([]float64, len(g.edges))
+		ws.stamp = make([]uint32, len(g.edges))
 	}
-	arena := []label{{edge: u, prevIdx: -1}}
-	type bestPair struct{ cost, walkLen float64 }
-	best := map[int]bestPair{u: {}}
-	pq := &walkPQ{{edge: u}}
+	ws.epoch++
+	if ws.epoch == 0 { // wrapped: stale stamps could alias the new epoch
+		clear(ws.stamp)
+		ws.epoch = 1
+	}
+	epoch := ws.epoch
+	ws.arena = append(ws.arena[:0], wlabel{edge: u, prevIdx: -1})
+	arena := ws.arena
+	ws.pq = append(ws.pq[:0], walkItem{edge: u})
+	pq := &ws.pq
+	ws.stamp[u], ws.cost[u], ws.wlen[u] = epoch, 0, 0
 	for pq.Len() > 0 {
 		cur := heap.Pop(pq).(walkItem)
 		lab := arena[cur.labelIdx]
@@ -420,13 +483,15 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 			for i, j := 0, len(via)-1; i < j; i, j = i+1, j-1 {
 				via[i], via[j] = via[j], via[i]
 			}
+			ws.arena = arena
 			return walkRes{cost: lab.cost, via: via, ok: true}
 		}
-		if b, seen := best[lab.edge]; seen && lab.cost > b.cost && lab.walkLen > b.walkLen {
+		if ws.stamp[lab.edge] == epoch &&
+			lab.cost > ws.cost[lab.edge] && lab.walkLen > ws.wlen[lab.edge] {
 			continue
 		}
-		for _, nx := range g.nodes[g.edges[lab.edge].To].Out {
-			c := lab.cost + g.turnDeg(lab.edge, nx)*p.WTurn
+		for oi, nx := range g.nodes[g.edges[lab.edge].To].Out {
+			c := lab.cost + g.turn[lab.edge][oi]*p.WTurn
 			wl := lab.walkLen
 			if nx == g.rev(lab.edge) {
 				c += p.UTurnPen
@@ -434,10 +499,10 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 			if nx != v {
 				el := g.edges[nx].Line.Len()
 				c += el*p.WWalk + p.WHop
-				if crossoverWays[g.edges[nx].Way] {
+				if g.isXover[nx] {
 					c += crossoverPen
 				}
-				if wayLevels[g.edges[lab.edge].Way]*wayLevels[g.edges[nx].Way] < 0 {
+				if g.lvl[lab.edge]*g.lvl[nx] < 0 {
 					c += levelJumpPen
 				}
 				wl += el
@@ -445,19 +510,20 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 					continue
 				}
 			}
-			b, seen := best[nx]
-			if seen && c >= b.cost && wl >= b.walkLen {
-				continue // dominated
-			}
-			if !seen {
-				best[nx] = bestPair{c, wl}
+			if ws.stamp[nx] == epoch {
+				if c >= ws.cost[nx] && wl >= ws.wlen[nx] {
+					continue // dominated
+				}
+				ws.cost[nx] = math.Min(c, ws.cost[nx])
+				ws.wlen[nx] = math.Min(wl, ws.wlen[nx])
 			} else {
-				best[nx] = bestPair{math.Min(c, b.cost), math.Min(wl, b.walkLen)}
+				ws.stamp[nx], ws.cost[nx], ws.wlen[nx] = epoch, c, wl
 			}
-			arena = append(arena, label{edge: nx, prevIdx: cur.labelIdx, cost: c, walkLen: wl})
+			arena = append(arena, wlabel{edge: nx, prevIdx: cur.labelIdx, cost: c, walkLen: wl})
 			heap.Push(pq, walkItem{edge: nx, cost: c, walkLen: wl, labelIdx: len(arena) - 1})
 		}
 	}
+	ws.arena = arena
 	return walkRes{ok: false}
 }
 

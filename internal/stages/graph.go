@@ -3,6 +3,7 @@ package stages
 import (
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -14,10 +15,13 @@ import (
 // split there. Edges are way pieces between nodes; every piece appears as two
 // directed edges.
 type trackGraph struct {
-	nodes  []tgNode
-	edges  []tgEdge // directed; edges[2p] and edges[2p+1] are piece p
-	pieces []*geo.Line
-	grid   *geo.Grid // indexes pieces (line index == piece id)
+	nodes   []tgNode
+	edges   []tgEdge // directed; edges[2p] and edges[2p+1] are piece p
+	pieces  []*geo.Line
+	grid    *geo.Grid   // indexes pieces (line index == piece id)
+	turn    [][]float64 // turnDeg per directed edge, aligned with To-node's Out
+	isXover []bool      // crossoverWays[edge.Way], snapshotted at build
+	lvl     []int       // wayLevels[edge.Way], snapshotted at build
 }
 
 type tgNode struct {
@@ -36,6 +40,27 @@ type tgEdge struct {
 func (g *trackGraph) rev(e int) int { return e ^ 1 }
 
 const weldEps = 0.6 // m; OSM shared nodes survive GeoJSON at cm precision
+
+// Match and Split build the graph from the same tracks slice and already
+// rely on the two builds being identical (shared piece ids) — build once.
+// Keyed on slice identity: any other slice rebuilds.
+var (
+	graphCacheMu sync.Mutex
+	cachedTracks []bundle.Track
+	cachedGraph  *trackGraph
+)
+
+func buildTrackGraphCached(tracks []bundle.Track) *trackGraph {
+	graphCacheMu.Lock()
+	defer graphCacheMu.Unlock()
+	if cachedGraph != nil && len(tracks) > 0 && len(tracks) == len(cachedTracks) &&
+		&tracks[0] == &cachedTracks[0] {
+		return cachedGraph
+	}
+	g := buildTrackGraph(tracks)
+	cachedTracks, cachedGraph = tracks, g
+	return g
+}
 
 // buildTrackGraph welds ways into a routable graph. Deterministic for a given
 // track slice — MATCH and SPLIT rebuild the same graph and share piece ids.
@@ -136,6 +161,22 @@ func buildTrackGraph(tracks []bundle.Track) *trackGraph {
 	}
 	g.healBreaks()
 	g.grid = geo.NewGrid(g.pieces, 64)
+	// walk() tables: per-expansion turn angles and way-class lookups are
+	// pure functions of immutable graph geometry and the (already set)
+	// crossover/level registries — computed once, identical values
+	g.turn = make([][]float64, len(g.edges))
+	g.isXover = make([]bool, len(g.edges))
+	g.lvl = make([]int, len(g.edges))
+	for e := range g.edges {
+		g.isXover[e] = crossoverWays[g.edges[e].Way]
+		g.lvl[e] = wayLevels[g.edges[e].Way]
+		outs := g.nodes[g.edges[e].To].Out
+		t := make([]float64, len(outs))
+		for i, b := range outs {
+			t[i] = g.turnDeg(e, b)
+		}
+		g.turn[e] = t
+	}
 	return g
 }
 

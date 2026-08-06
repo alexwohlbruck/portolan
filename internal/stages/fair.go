@@ -388,7 +388,15 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		}
 		var cands []cand
 		for ni := range n.Nodes {
-			for color, prs := range throughs[ni] {
+			// sorted color order: map iteration here decides segment emission
+			// order, which must not vary run to run
+			colors := make([]string, 0, len(throughs[ni]))
+			for color := range throughs[ni] {
+				colors = append(colors, color)
+			}
+			sort.Strings(colors)
+			for _, color := range colors {
+				prs := throughs[ni][color]
 				for _, pr := range prs {
 					a, b := pr.a, pr.b
 					aAtTo := n.Edges[a].To == ni
@@ -670,7 +678,13 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		// the end of geometry)
 		for ei, e := range n.Edges {
 			l := lines[ei]
+			// sorted color order: emission order must not vary run to run
+			colors := make([]string, 0, len(colorRoutes[ei]))
 			for color := range colorRoutes[ei] {
+				colors = append(colors, color)
+			}
+			sort.Strings(colors)
+			for _, color := range colors {
 				ci := colorIdx(ei, color)
 				if absorbed[[2]int{ei, ci}] {
 					continue // fully covered by a chained transition
@@ -958,6 +972,17 @@ func straightenCone(pts []geo.Pt, tol, coneDot float64) []geo.Pt {
 	if len(pts) < 3 {
 		return pts
 	}
+	// per-segment norm/unit depend only on k, not the chord: compute once
+	// (identical operands and guard order as the inline computation)
+	segN := make([]float64, len(pts)-1)
+	segU := make([]geo.Pt, len(pts)-1)
+	for k := range segN {
+		seg := pts[k+1].Sub(pts[k])
+		segN[k] = seg.Norm()
+		if segN[k] > 1e-9 {
+			segU[k] = seg.Unit()
+		}
+	}
 	out := []geo.Pt{pts[0]}
 	i := 0
 	for i < len(pts)-1 {
@@ -976,8 +1001,7 @@ func straightenCone(pts []geo.Pt, tol, coneDot float64) []geo.Pt {
 				}
 			}
 			for k := i; k < j && ok; k++ {
-				seg := pts[k+1].Sub(pts[k])
-				if seg.Norm() > 1e-9 && seg.Unit().Dot(u) < coneDot {
+				if segN[k] > 1e-9 && segU[k].Dot(u) < coneDot {
 					ok = false
 				}
 			}
