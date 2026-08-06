@@ -206,8 +206,22 @@ func Load(path string, coverFrac float64) (*Feed, error) {
 			Route: r, ShapeID: k.shape, Trips: n, Shape: pts,
 		})
 	}
-	for _, pats := range byRoute {
-		sort.Slice(pats, func(i, j int) bool { return pats[i].Trips > pats[j].Trips })
+	// deterministic route order and trip-count tie-break: map iteration and
+	// an unstable sort let equal-trip patterns swap runs, flipping which
+	// shapes make the coverage cut (and every downstream emission order)
+	routeIDs := make([]string, 0, len(byRoute))
+	for rid := range byRoute {
+		routeIDs = append(routeIDs, rid)
+	}
+	sort.Strings(routeIDs)
+	for _, rid := range routeIDs {
+		pats := byRoute[rid]
+		sort.Slice(pats, func(i, j int) bool {
+			if pats[i].Trips != pats[j].Trips {
+				return pats[i].Trips > pats[j].Trips
+			}
+			return pats[i].ShapeID < pats[j].ShapeID
+		})
 		total := 0
 		for _, p := range pats {
 			total += p.Trips
