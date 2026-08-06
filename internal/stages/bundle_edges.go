@@ -2,6 +2,7 @@ package stages
 
 import (
 	"math"
+	"sort"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -40,6 +41,7 @@ var (
 const (
 	mergeSnap   = 30.0 // interval ends this close to an edge end snap to it
 	mergeRounds = 600  // safety bound (each round applies ONE merge)
+	mergeDS     = 8.0  // a-sample spacing for all pair evaluations
 )
 
 // looseTwins gates the short-fragment twin merge to a second phase: it is
@@ -53,16 +55,17 @@ func bundleParallelEdges(net *Network) int {
 	mergeRun = dial("split_merge_run", 60)
 	coMergeDist = dial("split_co_merge_dist", 4)
 	merges := 0
+	st := newBundleState(net)
 	looseTwins = false
 	for round := 0; round < mergeRounds; round++ {
-		if !mergeOnePair(net) {
+		if !mergeOnePair(net, st) {
 			break
 		}
 		merges++
 	}
 	looseTwins = true
 	for round := 0; round < mergeRounds; round++ {
-		if !mergeOnePair(net) {
+		if !mergeOnePair(net, st) {
 			break
 		}
 		merges++
@@ -83,8 +86,6 @@ func rebuildAdj(net *Network) {
 	}
 }
 
-// mergeOnePair finds one sustained-parallel edge pair and applies the cut +
-// merge. Returns false when the network has no more mergeable pairs.
 // level index: vertical class lookup for merge rules. A stacked pair (el
 // over subway) flattens to one trench in plan view but is NOT one
 // corridor — Apple keeps the Astoria el separate from Queens Blvd.
@@ -174,13 +175,147 @@ func sameLevel(net *Network, a, b int, lb *geo.Line, samples []geo.Pt, i, j int)
 	return differ <= agree
 }
 
-func mergeOnePair(net *Network) bool {
-	lines := make([]*geo.Line, len(net.Edges))
-	for i, e := range net.Edges {
-		lines[i] = geo.NewLine(e.Pts)
+// bundleState carries exact bookkeeping across mergeOnePair rounds. Each
+// round used to rebuild every line, resample every edge and re-evaluate
+// every candidate pair from scratch, apply ONE merge and start over — the
+// pipeline's single most expensive loop. Three invariants make the caching
+// exact:
+//
+//   - a NEGATIVE pair evaluation mutates nothing and depends only on the
+//     two edges' frozen content (Pts/Routes/Gap, keyed by id — content
+//     changes mint fresh ids), their CURRENT From/To node ids (welds
+//     change them, so they are part of the memo key) and the looseTwins
+//     phase — skip it for good once seen;
+//   - an edge's candidate list (nearby edges + per-sample counts) depends
+//     only on pair geometries, so it survives every round whose merge
+//     stayed out of the edge's 25 m sample neighborhood;
+//   - the level index and dials are constant per invocation.
+type bundleState struct {
+	nextID  int64
+	ids     []int64 // parallel to net.Edges
+	lines   map[int64]*geo.Line
+	samples map[int64][]geo.Pt // Resample(mergeDS)
+	cand    map[int64][]candEntry
+	neg     map[pairKey]struct{}
+	fresh   []int64      // ids minted by the last merge
+	dirty   [][]geo.Pt   // removed/new sample sets: neighborhoods to re-enumerate
+	arr     []*geo.Line  // per round: lines in current edge order
+	grid    *geo.Grid    // per round: spatial hash over arr
+	idIdx   map[int64]int
+}
+
+type candEntry struct {
+	id    int64
+	count int
+}
+
+type pairKey struct {
+	ida, idb int64
+	fa, ta   int
+	fb, tb   int
+	loose    bool
+}
+
+func newBundleState(net *Network) *bundleState {
+	st := &bundleState{
+		lines:   map[int64]*geo.Line{},
+		samples: map[int64][]geo.Pt{},
+		cand:    map[int64][]candEntry{},
+		neg:     map[pairKey]struct{}{},
+		idIdx:   map[int64]int{},
 	}
-	grid := geo.NewGrid(lines, 64)
-	const ds = 8.0
+	st.ids = make([]int64, len(net.Edges))
+	for i := range st.ids {
+		st.ids[i] = st.mint()
+	}
+	return st
+}
+
+func (st *bundleState) mint() int64 { st.nextID++; return st.nextID }
+
+func (st *bundleState) beginRound(net *Network) {
+	for i, id := range st.ids {
+		if st.lines[id] == nil {
+			l := geo.NewLine(net.Edges[i].Pts)
+			st.lines[id] = l
+			st.samples[id] = l.Resample(mergeDS)
+		}
+	}
+	st.arr = st.arr[:0]
+	for _, id := range st.ids {
+		st.arr = append(st.arr, st.lines[id])
+	}
+	st.grid = geo.NewGrid(st.arr, 64)
+	clear(st.idIdx)
+	for i, id := range st.ids {
+		st.idIdx[id] = i
+	}
+	// new geometry invalidates neighborhoods exactly like removed geometry
+	for _, id := range st.fresh {
+		st.dirty = append(st.dirty, st.samples[id])
+	}
+	st.fresh = st.fresh[:0]
+	// An edge's cached candidate list changes only if geometry appeared or
+	// vanished within 25 m of one of its samples. Any such sample lies on
+	// the edge's polyline within 25+4 m of some mergeDS=8 m sample of the
+	// changed geometry (Resample keeps endpoints, so every point of a line
+	// is ≤4 m of arc from a sample) — reach 30 marks a superset of the
+	// affected edges, and over-invalidation merely recomputes identical
+	// lists.
+	if len(st.dirty) > 0 {
+		aff := map[int]bool{}
+		for _, pts := range st.dirty {
+			for _, q := range pts {
+				st.grid.Near(q, 30, func(li int) { aff[li] = true })
+			}
+		}
+		for li := range aff {
+			delete(st.cand, st.ids[li])
+		}
+		st.dirty = st.dirty[:0]
+	}
+}
+
+// candFor returns edge a's candidate list — every edge with ≥1 a-sample
+// within 25 m, with the sample count — computing it (identically to the
+// old per-round enumeration) only when no valid cached list exists.
+func (st *bundleState) candFor(a int) []candEntry {
+	id := st.ids[a]
+	if c, ok := st.cand[id]; ok {
+		return c
+	}
+	counts := map[int]int{}
+	for _, q := range st.samples[id] {
+		// gap bridges DO merge into a real corridor they shadow — a
+		// bridged service running alongside ridden track is the same
+		// visual corridor (the FX express bridge on Culver); genuine
+		// gaps have no parallel corridor and are untouched
+		// candidate reach covers the banded-corridor width, not just
+		// the kiss range — the DeKalb bypass rides 10–25 m out
+		st.grid.Near(q, 25, func(b int) {
+			if b != a {
+				counts[b]++
+			}
+		})
+	}
+	list := make([]candEntry, 0, len(counts))
+	for b, n := range counts {
+		list = append(list, candEntry{st.ids[b], n})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].id < list[j].id })
+	st.cand[id] = list
+	return list
+}
+
+// mergeOnePair finds one sustained-parallel edge pair and applies the cut +
+// merge. Returns false when the network has no more mergeable pairs. The
+// scan runs in ascending edge order with candidates in ascending edge
+// order — identical to the original full re-evaluation — with negative
+// pair decisions memoized (see bundleState).
+func mergeOnePair(net *Network, st *bundleState) bool {
+	st.beginRound(net)
+	lineOf := func(e int) *geo.Line { return st.lines[st.ids[e]] }
+	const ds = mergeDS
 	// sharedEnds: which of a's ends (From-side, To-side) coincide with an
 	// end of b — by node id or position. A shared junction is STRUCTURAL
 	// proof two edges belong to one corridor there, which licenses merges
@@ -189,10 +324,11 @@ func mergeOnePair(net *Network) bool {
 	sharedMatrix := func(a, b int) [2][2]bool {
 		const tol = 8.0
 		ea, eb := net.Edges[a], net.Edges[b]
+		la, lb := lineOf(a), lineOf(b)
 		aN := [2]int{ea.From, ea.To}
-		aP := [2]geo.Pt{lines[a].Pts[0], lines[a].Pts[len(lines[a].Pts)-1]}
+		aP := [2]geo.Pt{la.Pts[0], la.Pts[len(la.Pts)-1]}
 		bN := [2]int{eb.From, eb.To}
-		bP := [2]geo.Pt{lines[b].Pts[0], lines[b].Pts[len(lines[b].Pts)-1]}
+		bP := [2]geo.Pt{lb.Pts[0], lb.Pts[len(lb.Pts)-1]}
 		var out [2][2]bool
 		for i := 0; i < 2; i++ {
 			for j := 0; j < 2; j++ {
@@ -204,10 +340,11 @@ func mergeOnePair(net *Network) bool {
 		return out
 	}
 	endPt := func(e, end int) geo.Pt {
+		l := lineOf(e)
 		if end == 0 {
-			return lines[e].Pts[0]
+			return l.Pts[0]
 		}
-		return lines[e].Pts[len(lines[e].Pts)-1]
+		return l.Pts[len(l.Pts)-1]
 	}
 	// banded: topology-anchored corridor test — some shared end (i,j) with
 	// the OPPOSITE ends in the same junction cluster, comparable lengths,
@@ -217,7 +354,7 @@ func mergeOnePair(net *Network) bool {
 		if net.Edges[a].Gap || net.Edges[b].Gap {
 			return false
 		}
-		la, lb := lines[a].Len(), lines[b].Len()
+		la, lb := lineOf(a).Len(), lineOf(b).Len()
 		if la < mergeRun || lb < mergeRun ||
 			math.Abs(la-lb) > math.Max(40, 0.25*math.Max(la, lb)) {
 			return false
@@ -234,35 +371,36 @@ func mergeOnePair(net *Network) bool {
 			return false
 		}
 		in := 0
-		samples := lines[a].Resample(12)
+		samples := lineOf(a).Resample(12)
 		for _, q := range samples {
-			if lines[b].DistTo(q) <= bandMax {
+			if lineOf(b).WithinLE(q, bandMax) {
 				in++
 			}
 		}
 		return float64(in) >= 0.85*float64(len(samples))
 	}
 	for a := range net.Edges {
-		if net.Edges[a].Gap || lines[a].Len() < 20 {
+		if net.Edges[a].Gap || lineOf(a).Len() < 20 {
 			continue
 		}
-		samples := lines[a].Resample(ds)
-		nearCounts := map[int]int{}
-		for _, q := range samples {
-			// gap bridges DO merge into a real corridor they shadow — a
-			// bridged service running alongside ridden track is the same
-			// visual corridor (the FX express bridge on Culver); genuine
-			// gaps have no parallel corridor and are untouched
-			// candidate reach covers the banded-corridor width, not just
-			// the kiss range — the DeKalb bypass rides 10–25 m out
-			grid.Near(q, 25, func(b int) {
-				if b != a {
-					nearCounts[b]++
-				}
-			})
+		samples := st.samples[st.ids[a]]
+		type bc struct{ idx, count int }
+		var bs []bc
+		for _, ce := range st.candFor(a) {
+			if bi, ok := st.idIdx[ce.id]; ok {
+				bs = append(bs, bc{bi, ce.count})
+			}
 		}
-		bs := sortedKeys(nearCounts)
-		for _, b := range bs {
+		sort.Slice(bs, func(i, j int) bool { return bs[i].idx < bs[j].idx })
+		for _, cb := range bs {
+			b := cb.idx
+			key := pairKey{st.ids[a], st.ids[b],
+				net.Edges[a].From, net.Edges[a].To,
+				net.Edges[b].From, net.Edges[b].To, looseTwins}
+			if _, seen := st.neg[key]; seen {
+				continue
+			}
+			la, lb := lineOf(a), lineOf(b)
 			mat := sharedMatrix(a, b)
 			shared := [2]bool{mat[0][0] || mat[0][1], mat[1][0] || mat[1][1]}
 
@@ -277,7 +415,7 @@ func mergeOnePair(net *Network) bool {
 			// corridor merges these slivers are the last braid source.
 			twin := shared[0] && shared[1]
 			farMax := mergeDist
-			la2, lb2 := lines[a].Len(), lines[b].Len()
+			la2, lb2 := la.Len(), lb.Len()
 			if la2 < 80 && lb2 < 80 {
 				// short twins carry longitudinal end slack (their refined
 				// endpoints drift meters from the shared nodes) — that
@@ -286,22 +424,24 @@ func mergeOnePair(net *Network) bool {
 				farMax = math.Max(mergeDist, math.Min(20, 0.4*math.Min(la2, lb2)))
 				if !twin && looseTwins && !net.Edges[b].Gap {
 					tol := math.Min(20, 0.4*math.Min(la2, lb2))
-					aP0, aP1 := lines[a].Pts[0], lines[a].Pts[len(lines[a].Pts)-1]
-					bP0, bP1 := lines[b].Pts[0], lines[b].Pts[len(lines[b].Pts)-1]
+					aP0, aP1 := la.Pts[0], la.Pts[len(la.Pts)-1]
+					bP0, bP1 := lb.Pts[0], lb.Pts[len(lb.Pts)-1]
 					twin = (aP0.Dist(bP0) <= tol && aP1.Dist(bP1) <= tol) ||
 						(aP0.Dist(bP1) <= tol && aP1.Dist(bP0) <= tol)
 				}
 			}
 			if twin && !net.Edges[b].Gap {
-				far := 0.0
+				// far <= farMax  ⟺  every sample within farMax of b
+				within := true
 				for _, q := range samples {
-					if d := lines[b].DistTo(q); d > far {
-						far = d
+					if !lb.WithinLE(q, farMax) {
+						within = false
+						break
 					}
 				}
-				if far <= farMax &&
-					lvlOK(net, a, b, lines[a], lines[b], samples, 0, len(samples)-1) &&
-					applyMerge(net, a, b, 0, lines[a].Len(), 10) {
+				if within &&
+					lvlOK(net, a, b, la, lb, samples, 0, len(samples)-1) &&
+					applyMerge(net, st, a, b, 0, la.Len(), 10) {
 					return true
 				}
 			}
@@ -317,8 +457,8 @@ func mergeOnePair(net *Network) bool {
 			// Distinct corridors that merely kiss (Rector) or nest
 			// (South Ferry loops) never share junctions.
 			if banded(a, b, mat) &&
-				lvlOK(net, a, b, lines[a], lines[b], samples, 0, len(samples)-1) {
-				if applyMerge(net, a, b, 0, lines[a].Len(), 10) {
+				lvlOK(net, a, b, la, lb, samples, 0, len(samples)-1) {
+				if applyMerge(net, st, a, b, 0, la.Len(), 10) {
 					return true
 				}
 			}
@@ -333,25 +473,46 @@ func mergeOnePair(net *Network) bool {
 			// headings must agree throughout, and the tail's far quarter
 			// must hold a STABLE separation (a crossing's profile is a V,
 			// never a plateau).
-			if !net.Edges[a].Gap && !net.Edges[b].Gap &&
+			// A qualifying run needs ≥ corrRun/ds samples within
+			// corrBand — and corrBand equals the candidate reach, so the
+			// cached count is a provably-necessary cheap gate.
+			if float64(cb.count)*ds >= corrRun &&
+				!net.Edges[a].Gap && !net.Edges[b].Gap &&
 				!edgeRoutesIntersect(net.Edges[a].Routes, net.Edges[b].Routes) &&
-				lines[a].Len() >= corrRun {
+				la.Len() >= corrRun {
 				dists := make([]float64, len(samples))
-				headok := make([]bool, len(samples))
+				arcs := make([]float64, len(samples))
 				for i, q := range samples {
-					arcB, d := lines[b].ProjectArc(q)
-					dists[i] = d
-					ta := lines[a].TangentAtArc(float64(i)*ds, 15)
-					tb := lines[b].TangentAtArc(arcB, 15)
-					headok[i] = math.Abs(ta.Dot(tb)) >= corrHead
+					// exact whenever the value can be ≤ corrBand; +Inf
+					// stands in when the true distance exceeds the cap
+					// (the comparisons below agree either way)
+					arcB, d, ok := lb.ProjectArcCapped(q, corrBand+1)
+					if !ok {
+						dists[i] = math.Inf(1)
+						continue
+					}
+					dists[i], arcs[i] = d, arcB
+				}
+				// heading agreement, computed only where it is read
+				// (dists ≤ corrBand — the arc is exact there)
+				headok := make([]bool, len(samples))
+				headSet := make([]bool, len(samples))
+				headAt := func(i int) bool {
+					if !headSet[i] {
+						ta := la.TangentAtArc(float64(i)*ds, 15)
+						tb := lb.TangentAtArc(arcs[i], 15)
+						headok[i] = math.Abs(ta.Dot(tb)) >= corrHead
+						headSet[i] = true
+					}
+					return headok[i]
 				}
 				for i := 0; i < len(samples); {
-					if dists[i] > corrBand || !headok[i] {
+					if dists[i] > corrBand || !headAt(i) {
 						i++
 						continue
 					}
 					j, anchor := i, -1
-					for j < len(samples) && dists[j] <= corrBand && headok[j] {
+					for j < len(samples) && dists[j] <= corrBand && headAt(j) {
 						if dists[j] <= corrAnchor &&
 							(anchor < 0 || dists[j] < dists[anchor]) {
 							anchor = j
@@ -372,8 +533,8 @@ func mergeOnePair(net *Network) bool {
 							mx = math.Max(mx, dists[k])
 						}
 						if mx-mn <= 6 &&
-							lvlOK(net, a, b, lines[a], lines[b], samples, i, j) &&
-							applyMerge(net, a, b, float64(i)*ds, float64(j-1)*ds) {
+							lvlOK(net, a, b, la, lb, samples, i, j) &&
+							applyMerge(net, st, a, b, float64(i)*ds, float64(j-1)*ds) {
 							return true
 						}
 					}
@@ -381,9 +542,9 @@ func mergeOnePair(net *Network) bool {
 				}
 			}
 
-
-			cnt := nearCounts[b]
+			cnt := cb.count
 			if float64(cnt)*ds < mergeRun {
+				st.neg[key] = struct{}{}
 				continue
 			}
 			// SAME-SERVICE doubling (directional splits, terminal V-legs)
@@ -404,12 +565,12 @@ func mergeOnePair(net *Network) bool {
 			// (that late start is what braided G with A/C on Fulton and
 			// blue/orange below W 4 St). From the shared end, take the
 			// run within the full kiss range.
-			if disjoint && (shared[0] || shared[1]) && lines[a].Len() >= mergeRun {
+			if disjoint && (shared[0] || shared[1]) && la.Len() >= mergeRun {
 				try := func(fromStart bool) bool {
 					run := 0
 					if fromStart {
 						for _, q := range samples {
-							if lines[b].DistTo(q) > mergeDist {
+							if !lb.WithinLE(q, mergeDist) {
 								break
 							}
 							run++
@@ -417,13 +578,13 @@ func mergeOnePair(net *Network) bool {
 						if float64(run)*ds < mergeRun {
 							return false
 						}
-						if !lvlOK(net, a, b, lines[a], lines[b], samples, 0, run-1) {
+						if !lvlOK(net, a, b, la, lb, samples, 0, run-1) {
 							return false
 						}
-						return applyMerge(net, a, b, 0, float64(run-1)*ds)
+						return applyMerge(net, st, a, b, 0, float64(run-1)*ds)
 					}
 					for i := len(samples) - 1; i >= 0; i-- {
-						if lines[b].DistTo(samples[i]) > mergeDist {
+						if !lb.WithinLE(samples[i], mergeDist) {
 							break
 						}
 						run++
@@ -431,11 +592,11 @@ func mergeOnePair(net *Network) bool {
 					if float64(run)*ds < mergeRun {
 						return false
 					}
-					if !lvlOK(net, a, b, lines[a], lines[b], samples, len(samples)-run, len(samples)-1) {
+					if !lvlOK(net, a, b, la, lb, samples, len(samples)-run, len(samples)-1) {
 						return false
 					}
-					return applyMerge(net, a, b,
-						float64(len(samples)-run)*ds, lines[a].Len())
+					return applyMerge(net, st, a, b,
+						float64(len(samples)-run)*ds, la.Len())
 				}
 				if shared[0] && try(true) {
 					return true
@@ -448,7 +609,7 @@ func mergeOnePair(net *Network) bool {
 			// longest sustained run of a-samples within reach of b
 			best, cur, curStart, bestStart := 0, 0, 0, 0
 			for i, q := range samples {
-				if lines[b].DistTo(q) <= reach {
+				if lb.WithinLE(q, reach) {
 					if cur == 0 {
 						curStart = i
 					}
@@ -461,16 +622,19 @@ func mergeOnePair(net *Network) bool {
 				}
 			}
 			if float64(best)*ds < mergeRun {
+				st.neg[key] = struct{}{}
 				continue
 			}
 			a1 := float64(bestStart) * ds
 			a2 := float64(bestStart+best-1) * ds
-			if !lvlOK(net, a, b, lines[a], lines[b], samples, bestStart, bestStart+best-1) {
+			if !lvlOK(net, a, b, la, lb, samples, bestStart, bestStart+best-1) {
+				st.neg[key] = struct{}{}
 				continue
 			}
-			if applyMerge(net, a, b, a1, a2) {
+			if applyMerge(net, st, a, b, a1, a2) {
 				return true
 			}
+			st.neg[key] = struct{}{}
 		}
 	}
 	return false
@@ -483,13 +647,13 @@ var mergeLog func(format string, args ...any)
 // overlapping middles with one union edge on the midpoint geometry.
 // minSpan overrides the default minimum merged length (node-pair twins
 // merge however short they are).
-func applyMerge(net *Network, a, b int, a1, a2 float64, minSpan ...float64) bool {
+func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan ...float64) bool {
 	minLen := mergeRun * 0.8
 	if len(minSpan) > 0 {
 		minLen = minSpan[0]
 	}
-	la := geo.NewLine(net.Edges[a].Pts)
-	lb := geo.NewLine(net.Edges[b].Pts)
+	la := st.lines[st.ids[a]]
+	lb := st.lines[st.ids[b]]
 	// snap interval ends onto edge ends
 	if a1 < mergeSnap {
 		a1 = 0
@@ -542,8 +706,8 @@ func applyMerge(net *Network, a, b int, a1, a2 float64, minSpan ...float64) bool
 	mid := bundle.SubLine(la, a1, a2)
 	var mpts []geo.Pt
 	for _, q := range mid.Resample(6) {
-		arc, d := lb.ProjectArc(q)
-		if d > mergeDist*1.5 {
+		arc, d, ok := lb.ProjectArcCapped(q, mergeDist*1.5+1)
+		if !ok || d > mergeDist*1.5 {
 			mpts = append(mpts, q)
 			continue
 		}
@@ -656,16 +820,37 @@ func applyMerge(net *Network, a, b int, a1, a2 float64, minSpan ...float64) bool
 			net.Edges[b].Routes, lb.Len(), tb1, tb2, rev,
 			len(newEdges), geo.NewLine(mpts).Len(), mpts[0].X, mpts[0].Y)
 	}
-	// splice: drop a and b, add the parts + merged corridor
+	// splice: drop a and b, add the parts + merged corridor — and mirror
+	// the id bookkeeping (survivors keep ids; parts + merged mint fresh
+	// ones; the removed and added sample sets drive cand invalidation)
+	oldA, oldB := st.ids[a], st.ids[b]
+	st.dirty = append(st.dirty, st.samples[oldA], st.samples[oldB])
 	var out []Edge
+	newIDs := make([]int64, 0, len(net.Edges)+len(newEdges)-1)
 	for ei, e := range net.Edges {
 		if ei != a && ei != b {
 			out = append(out, e)
+			newIDs = append(newIDs, st.ids[ei])
 		}
 	}
 	out = append(out, newEdges...)
+	for range newEdges {
+		id := st.mint()
+		newIDs = append(newIDs, id)
+		st.fresh = append(st.fresh, id)
+	}
 	out = append(out, merged)
+	mid2 := st.mint()
+	newIDs = append(newIDs, mid2)
+	st.fresh = append(st.fresh, mid2)
 	net.Edges = out
+	st.ids = newIDs
+	delete(st.lines, oldA)
+	delete(st.lines, oldB)
+	delete(st.samples, oldA)
+	delete(st.samples, oldB)
+	delete(st.cand, oldA)
+	delete(st.cand, oldB)
 	return true
 }
 
@@ -714,19 +899,4 @@ func sortStrings(v []string) {
 			v[j], v[j-1] = v[j-1], v[j]
 		}
 	}
-}
-
-var _ = math.Abs
-
-func sortedKeys(m map[int]int) []int {
-	var out []int
-	for k := range m {
-		out = append(out, k)
-	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
 }

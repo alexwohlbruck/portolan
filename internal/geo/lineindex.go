@@ -97,6 +97,21 @@ func (l *Line) Within(p Pt, reach float64) bool {
 	return false
 }
 
+// WithinLE is Within for the non-strict comparison DistTo(p) <= reach.
+func (l *Line) WithinLE(p Pt, reach float64) bool {
+	if len(l.Pts) < 2 {
+		return false
+	}
+	bp := l.index().candidates(p, reach)
+	defer putCand(bp)
+	for _, seg := range *bp {
+		if segWithin(p, l.Pts[seg-1], l.Pts[seg], reach) {
+			return true
+		}
+	}
+	return false
+}
+
 // DistToCapped returns (DistTo(p), true) when DistTo(p) < cap, else
 // (+Inf, false). When it reports true the value is bit-identical to
 // DistTo's: the global argmin segment is within cap of p, hence among the
