@@ -19,19 +19,48 @@ bundle is the whole map).
 | `la` | LA Metro | Transitland `734` | ✅ 112 seg | rail-only feed; 6 lines |
 | `london` | London (TfL) | Transitland `9788` | ✅ 1428 seg | Interline's conversion; 11 Tube lines + DLR + Tram |
 | `paris` | Paris (RATP) | Transitland `762` | ⚠️ 4690 seg | Metro/tram correct; RER + Transilien + TER stray outside the window (below) |
-| `berlin` | Berlin | Transitland `1268` | ❌ | feed has no `shapes.txt` |
-| `tokyo` | Tokyo Metro | Transitland `8923` | ❌ | feed has no `shapes.txt` |
+| `berlin` | Berlin (BVG) | Transitland `1268`, subset + pfaedle | ✅ 1358 seg | U1–U9 + 89 tram labels; no S-Bahn (below) |
+| `tokyo` | Tokyo Metro | Transitland `8923` + pfaedle | ✅ 132 seg | all 9 lines, official colours |
 
-**`shapes.txt` is required.** `chart` map-matches route shapes onto the
-bundle graph; a feed without them cannot be charted at all. This is what
-blocks Berlin and Tokyo:
+## Feeds without shapes
 
-- **Tokyo** — GTFS-JP commonly omits shapes. Neither Tokyo Metro (`8923`)
-  nor Toei (`8922`) carries them; both were checked. A feed with shapes has
-  to come from elsewhere (ODPT per-operator, or JR East).
-- **Berlin** — the only Berlin-covering feed in Transitland is
-  `1268 f-germany~urban~transport`, a 240 MB nationwide file (21k routes)
-  with no shapes. VBB's own GTFS from `vbb.de` is the one to get.
+`chart` map-matches route shapes onto the bundle graph, so a feed with no
+`shapes.txt` cannot be charted at all. Both Berlin and Tokyo shipped that
+way, and both are fixed the same way: **[pfaedle](https://github.com/ad-freiburg/pfaedle)
+map-matches the feed against OSM and writes the shapes** (same research
+group as LOOM). Docker is the least painful install:
+
+    # 1. an OSM window for the city, as XML with the referenced nodes
+    #    [out:xml][timeout:900];
+    #    way["railway"](s,w,n,e); (._;>;); out;
+    # 2. match — -m takes tram,bus,coach,rail,subway,ferry,funicular,gondola
+    docker run -i --rm -v $PWD/osm:/osm -v $PWD/gtfs:/gtfs -v $PWD/out:/gtfs-out \
+      ghcr.io/ad-freiburg/pfaedle:latest -x /osm/tokyo.osm -i /gtfs/tokyo.zip -m subway
+    # 3. zip the output back over data/gtfs/<city>.zip
+
+Tokyo: 9539 trips matched in about a second against a 12 MB window. This is
+the general answer for GTFS-JP, which routinely omits shapes — neither
+Tokyo Metro (`8923`) nor Toei (`8922`) has them.
+
+**National feeds must be subset first.** `1268 f-germany~urban~transport` is
+240 MB and 21k routes covering all of Germany; pfaedle bills per trip, and
+`chart` would try to match every German bus against a Berlin-only rail
+extract. `tools/gtfssubset.py` cuts one operator out, cascading agencies →
+routes → trips → stop_times → stops → calendars → shapes:
+
+    tools/gtfssubset.py --agency 353 data/gtfs/berlin.zip berlin-bvg.zip
+
+Agency `353` is Berliner Verkehrsbetriebe: 250 routes, 139k trips, U-Bahn +
+tram + 6 ferries. It streams `stop_times.txt` rather than loading it —
+the national copy is multiple GB uncompressed, and the dict-per-row version
+of this script did not finish in ten minutes.
+
+**Berlin has no S-Bahn.** Feed `1268` carries none as rail: every `S1`/`S41`
+in it is a `route_type` 3 replacement bus. The S-Bahn lives in
+`1267 f-germany~regional~rail`, and merging two feeds into one city is not
+something `portolan.json` can express today — one `gtfs` path per city.
+Transitland has no VBB or BVG-named feed at all (searched; the search
+endpoint works, `marta` → `17`).
 
 **Paris strays.** Feed `762` bundles RER (A–E), Transilien (H/J/L/N/P) and
 TER in with the Metro and trams. Those run hundreds of km past any
@@ -45,7 +74,8 @@ Tokyo below); a Metro-only feed would be the fix.
 `139.55,35.5,139.92,35.83` window 504'd on every endpoint and every retry —
 too much rail. It is narrowed to the core (`139.65,35.6,139.85,35.78`),
 which covers all nine Tokyo Metro lines and returns in one request. Expect
-to do the same for any dense metro.
+to do the same for any dense metro. The cost is small strays of its own:
+the Tozai Line runs east to 139.96, past the window's edge.
 
 "local mirror" is `~/Documents/code/barrelman/data/gtfs/<id>.zip`. Atlanta
 and Charlotte are already there (MARTA's 4 heavy-rail routes + the
