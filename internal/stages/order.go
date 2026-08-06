@@ -401,7 +401,19 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		}
 		return t
 	}
+	// sorted pair order: each accepted flip changes what later pairs see,
+	// so map iteration here made the whole pass run-to-run random
+	pairList := make([][2]string, 0, len(colorPairs))
 	for k := range colorPairs {
+		pairList = append(pairList, k)
+	}
+	sort.Slice(pairList, func(i, j int) bool {
+		if pairList[i][0] != pairList[j][0] {
+			return pairList[i][0] < pairList[j][0]
+		}
+		return pairList[i][1] < pairList[j][1]
+	})
+	for _, k := range pairList {
 		c1, c2 := k[0], k[1]
 		// union-find over edges carrying both colors, joined where the
 		// pair continues intact across a node
@@ -438,10 +450,23 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 			}
 		}
 		comps := map[int][]int{}
+		compEdges := make([]int, 0, len(parent))
 		for ei := range parent {
+			compEdges = append(compEdges, ei)
+		}
+		sort.Ints(compEdges)
+		for _, ei := range compEdges {
 			comps[find(ei)] = append(comps[find(ei)], ei)
 		}
-		for _, edges := range comps {
+		// sorted component order: flips at shared nodes change what later
+		// components measure
+		roots := make([]int, 0, len(comps))
+		for r := range comps {
+			roots = append(roots, r)
+		}
+		sort.Ints(roots)
+		for _, r := range roots {
+			edges := comps[r]
 			nodes := map[int]bool{}
 			for _, ei := range edges {
 				nodes[n.Edges[ei].From] = true
@@ -484,7 +509,13 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		}
 		return out
 	}
+	// sorted color order: each accepted slide changes what later colors see
+	colorList := make([]string, 0, len(colorSet))
 	for c := range colorSet {
+		colorList = append(colorList, c)
+	}
+	sort.Strings(colorList)
+	for _, c := range colorList {
 		// component over edges carrying c, with relative storage
 		// orientation propagated across shared nodes (To→From aligned,
 		// To→To / From→From flipped) so "front" means one consistent
@@ -496,7 +527,14 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 			}
 		}
 		visited := map[int]bool{}
+		// sorted seeds: the BFS tree (orientation propagation on cyclic
+		// components) and the component processing order both depend on it
+		seeds := make([]int, 0, len(inComp))
 		for seed := range inComp {
+			seeds = append(seeds, seed)
+		}
+		sort.Ints(seeds)
+		for _, seed := range seeds {
 			if visited[seed] {
 				continue
 			}
