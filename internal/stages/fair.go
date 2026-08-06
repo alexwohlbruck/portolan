@@ -439,10 +439,33 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		for _, c := range cands {
 			endA, endB := boolIdx(c.aAtTo), boolIdx(!c.bAtFrom)
 			cA, cB := cut[c.a][endA], cut[c.cur][endB]
+			short := 1.5 * p.MinShortCut * band.scale
 			if c.bend < straightBend {
-				short := 1.5 * p.MinShortCut * band.scale
 				cA = math.Min(cA, short)
 				cB = math.Min(cB, short)
+			} else if c.bend > 40 {
+				// a steel-traced turn needs only the span its connector
+				// occupies — the full turning cut exists for SYNTHETIC
+				// curves. Probing here (before cuts freeze) lets the turn
+				// depart at the junction neck, and — because effCut takes
+				// the per-color max — stops the turn's long cut from
+				// dragging the same color's through-movement seam out with
+				// it: the whole bundle then transitions in the same window.
+				tailP := endPiece(lines[c.a], c.aAtTo, cA)
+				headP := startPiece(lines[c.cur], c.bAtFrom, cB)
+				if len(tailP) > 1 && len(headP) > 1 {
+					p0, p3 := tailP[0], headP[len(headP)-1]
+					near := tailP[len(tailP)-1]
+					tlP, hlP := geo.NewLine(tailP), geo.NewLine(headP)
+					if tc, needA, needB := trackCurveBetween(p0, p3, near, tlP, hlP); tc != nil {
+						cand := append(append([]geo.Pt{p0}, tc...), p3)
+						allow := 25 + 20*math.Min(1, c.bend/90)
+						if maxTurn12(smoothPolyline(geo.NewLine(cand))) <= allow {
+							cA = math.Min(cA, needA+short)
+							cB = math.Min(cB, needB+short)
+						}
+					}
+				}
 			}
 			kA := [3]int{c.a, endA, colorIdx(c.a, c.color)}
 			kB := [3]int{c.cur, endB, colorIdx(c.cur, c.color)}
@@ -531,7 +554,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				p0 := tail[0]
 				p3 := head[len(head)-1]
 				near := tail[len(tail)-1]
-				tc := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head))
+				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head))
 				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 && near.Dist(dbg3Pt) < 150 {
 					mt := -1.0
 					if tc != nil {
@@ -672,10 +695,14 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 // returns its curve, laterally offset with a linear ramp so the ends
 // meet the cut points. Through-tracks fail the span/offset tests; the
 // connector is the way that projects both ends onto distinct arcs with
-// small lateral offsets. Nil when no such way exists.
-func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
+// small lateral offsets. Nil when no such way exists. The two floats
+// are how much of each corridor piece the steel actually occupies —
+// arc from the tail's node-side tip back to the curve's start, and
+// from the head's tip forward to the curve's end — valid only when the
+// curve is non-nil; the cut pass uses them to shrink turning cuts.
+func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) ([]geo.Pt, float64, float64) {
 	if lvlGrid == nil {
-		return nil
+		return nil, 0, 0
 	}
 	type fit struct {
 		ti     int
@@ -719,7 +746,7 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 		}
 	})
 	if bestFit == nil {
-		return nil
+		return nil, 0, 0
 	}
 	t := lvlLines[bestFit.ti]
 	sub := bundle.SubLine(t, math.Min(bestFit.sa, bestFit.sb), math.Max(bestFit.sa, bestFit.sb))
@@ -778,7 +805,7 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 		pa, _ := tl.ProjectArc(es)
 		o0 = dir.Cross(tl.AtArc(pa).Sub(es))
 		if math.Abs(o0) > 15 {
-			return nil
+			return nil, 0, 0
 		}
 	}
 	var out []geo.Pt
@@ -800,7 +827,7 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 		i++
 	}
 	if len(out) == 0 {
-		return out
+		return nil, 0, 0
 	}
 	// the connector rarely spans the whole gap between the cut points — the
 	// caller bridges the rest with straight chords to p0/p3. When the
@@ -823,7 +850,7 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 		fmt.Printf("TCB len=%.0f total=%.3f startArc=%.0f o0=%.1f o1=%.1f qa=%.0f/%.0f qb=%.0f/%.0f\n",
 			l.Len(), total, startArc, o0, o1, qa, tl.Len(), qb, hl.Len())
 	}
-	return append(pre, out...)
+	return append(pre, out...), math.Max(0, tl.Len()-qa), math.Max(0, qb)
 }
 
 // trackParallelCorner finds a track (from the level index — every loaded
