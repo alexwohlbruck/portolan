@@ -499,7 +499,38 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		}
 	}
 	contractChains(net)
+	compactNodes(net)
 	return net, nil
+}
+
+// compactNodes drops degree-0 nodes — weld and sweep leftovers that no
+// edge references (edges get compacted after every sweep; nodes never
+// were, so orphans accumulated at every junction weld). Pure cleanup:
+// they are invisible to drawing but clutter the network and the debug
+// node layer (Tower 18 showed four "junctions" — one real, three
+// orphans).
+func compactNodes(net *Network) {
+	used := make([]bool, len(net.Nodes))
+	for _, e := range net.Edges {
+		used[e.From] = true
+		used[e.To] = true
+	}
+	remap := make([]int, len(net.Nodes))
+	var kept []Node
+	for i, nd := range net.Nodes {
+		if used[i] {
+			remap[i] = len(kept)
+			kept = append(kept, nd)
+		} else {
+			remap[i] = -1
+		}
+	}
+	for ei := range net.Edges {
+		net.Edges[ei].From = remap[net.Edges[ei].From]
+		net.Edges[ei].To = remap[net.Edges[ei].To]
+	}
+	net.Nodes = kept
+	rebuildAdj(net)
 }
 
 
