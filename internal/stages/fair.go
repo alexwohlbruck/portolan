@@ -747,12 +747,37 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) []geo.Pt {
 		total += math.Max(0, math.Acos(d)-0.009)
 		turnAt = append(turnAt, total)
 	}
+	// skip the connector's pre-bend LEAD-IN entirely: it runs alongside
+	// the corridor but not ON it, so emitting it (even offset-ramped)
+	// walks the drawn line off the bundle long before the turn — pink's
+	// Tower 18 dive visibly split 87 m out. Emitting from the bend start
+	// leaves the chain's first segment as a straight run from the cut
+	// point to the curve: the line hugs the bundle until the steel bends.
+	startArc := 0.0
+	if total > 0.1 {
+		for i, tv := range turnAt {
+			if tv > 0.03 {
+				startArc = math.Max(0, float64(i-1)*4)
+				break
+			}
+		}
+	}
+	base := 0.0
+	if total > 0.1 {
+		base = turnAt[int(startArc/4)]
+	}
 	var out []geo.Pt
 	i := 0
 	for arc := 0.0; arc <= l.Len(); arc += 4 {
-		f := arc / l.Len()
-		if total > 0.1 && i < len(turnAt) {
-			f = turnAt[i] / total
+		if arc < startArc {
+			i++
+			continue
+		}
+		f := 1.0
+		if total-base > 1e-9 {
+			f = (turnAt[min(i, len(turnAt)-1)] - base) / (total - base)
+		} else if l.Len()-startArc > 1e-9 {
+			f = (arc - startArc) / (l.Len() - startArc)
 		}
 		o := o0*(1-f) + o1*f
 		nrm := l.TangentAtArc(arc, 8).Perp()
