@@ -75,6 +75,10 @@ func segWithinStrict(p, a, b Pt, reach float64) bool {
 // Near visits every distinct line with at least one segment within reach of
 // p, passing the line index. Visits are deduplicated.
 func (g *Grid) Near(p Pt, reach float64, fn func(line int)) {
+	// NOTE: the visit ORDER (cell scan order, first-witness per line) is
+	// load-bearing — callers break score ties by first visit (e.g. FAIR's
+	// trackCurveBetween). Changing the scan radius changes that order even
+	// though the visited SET is identical; keep +1.
 	r := int(math.Ceil(reach/g.cell)) + 1
 	k := g.key(p)
 	seen := map[int]bool{}

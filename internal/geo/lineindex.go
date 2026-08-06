@@ -2,21 +2,24 @@ package geo
 
 import (
 	"math"
-	"sync"
 )
 
-// lineIndex is a lazy uniform spatial hash over one Line's segments. Lines
-// are immutable after NewLine (nothing in the pipeline assigns Pts or arc
+// lineIndex is a lazy spatial hash over one Line's segments. Lines are
+// immutable after NewLine (nothing in the pipeline assigns Pts or arc
 // afterwards), so the index is built once, on first capped query, and
 // shared by every goroutine touching the line.
 //
 // Capped queries answer distance questions EXACTLY as the full-scan
-// primitives do, provided the consumed answer is within the cap: every
-// segment with a point within reach of p is registered in the cell range
-// of its endpoints' bbox, which the scan radius ceil(reach/cell)+1 covers.
+// primitives do, provided the consumed answer is within the cap: a segment
+// with a point within reach of p is registered in the cell holding that
+// point (bbox rasterization covers every cell the segment enters), and
+// that cell is within ceil(reach/cell) of p's cell per axis. Every cap the
+// pipeline uses is ≤ the cell size, so the scan is the 3×3 neighborhood —
+// which is precomputed per cell as one sorted, deduplicated segment list:
+// a query is a single map lookup.
 type lineIndex struct {
-	cell  float64
-	cells map[[2]int][]int32 // cell → segment indices i (segment Pts[i-1]..Pts[i])
+	cell float64
+	hood map[[2]int][]int32 // cell → ascending segment indices of its 3×3 block
 }
 
 const lineIndexCell = 32.0
@@ -24,9 +27,9 @@ const lineIndexCell = 32.0
 // index returns the line's segment index, building it on first use.
 func (l *Line) index() *lineIndex {
 	l.idxOnce.Do(func() {
-		ix := &lineIndex{cell: lineIndexCell, cells: map[[2]int][]int32{}}
+		cells := map[[2]int][]int32{}
 		key := func(p Pt) [2]int {
-			return [2]int{int(math.Floor(p.X / ix.cell)), int(math.Floor(p.Y / ix.cell))}
+			return [2]int{int(math.Floor(p.X / lineIndexCell)), int(math.Floor(p.Y / lineIndexCell))}
 		}
 		for i := 1; i < len(l.Pts); i++ {
 			ka, kb := key(l.Pts[i-1]), key(l.Pts[i])
@@ -34,8 +37,43 @@ func (l *Line) index() *lineIndex {
 			y0, y1 := min(ka[1], kb[1]), max(ka[1], kb[1])
 			for x := x0; x <= x1; x++ {
 				for y := y0; y <= y1; y++ {
-					ix.cells[[2]int{x, y}] = append(ix.cells[[2]int{x, y}], int32(i))
+					cells[[2]int{x, y}] = append(cells[[2]int{x, y}], int32(i))
 				}
+			}
+		}
+		// hood covers the DILATED cell set: a query may sit in a cell the
+		// line never enters while segments occupy a neighbor
+		keys := map[[2]int]struct{}{}
+		for c := range cells {
+			for dx := -1; dx <= 1; dx++ {
+				for dy := -1; dy <= 1; dy++ {
+					keys[[2]int{c[0] + dx, c[1] + dy}] = struct{}{}
+				}
+			}
+		}
+		ix := &lineIndex{cell: lineIndexCell, hood: make(map[[2]int][]int32, len(keys))}
+		var buf []int32
+		for c := range keys {
+			buf = buf[:0]
+			for dx := -1; dx <= 1; dx++ {
+				for dy := -1; dy <= 1; dy++ {
+					buf = append(buf, cells[[2]int{c[0] + dx, c[1] + dy}]...)
+				}
+			}
+			// sort + dedup once at build; queries reuse the list as-is
+			for i := 1; i < len(buf); i++ {
+				for j := i; j > 0 && buf[j] < buf[j-1]; j-- {
+					buf[j], buf[j-1] = buf[j-1], buf[j]
+				}
+			}
+			out := make([]int32, 0, len(buf))
+			for i, s := range buf {
+				if i == 0 || s != buf[i-1] {
+					out = append(out, s)
+				}
+			}
+			if len(out) > 0 {
+				ix.hood[c] = out
 			}
 		}
 		l.idx = ix
@@ -43,53 +81,40 @@ func (l *Line) index() *lineIndex {
 	return l.idx
 }
 
-var candBufPool = sync.Pool{New: func() any { s := make([]int32, 0, 64); return &s }}
-
-// candidates collects the deduplicated segment indices registered in cells
-// within reach of p, in ascending order — the full scan's segment order, so
-// min/tie selection over candidates resolves identically. The returned
-// slice must go back via putCand.
-func (ix *lineIndex) candidates(p Pt, reach float64) *[]int32 {
-	r := int(math.Ceil(reach/ix.cell)) + 1
-	kx := int(math.Floor(p.X / ix.cell))
-	ky := int(math.Floor(p.Y / ix.cell))
-	bp := candBufPool.Get().(*[]int32)
-	buf := (*bp)[:0]
-	for dx := -r; dx <= r; dx++ {
-		for dy := -r; dy <= r; dy++ {
-			buf = append(buf, ix.cells[[2]int{kx + dx, ky + dy}]...)
-		}
+// allSegs lists every segment index, ascending — the exact full-scan
+// order, used when a reach exceeds the cell size (dial overrides only;
+// no built-in cap does).
+func (l *Line) allSegs() []int32 {
+	out := make([]int32, len(l.Pts)-1)
+	for i := range out {
+		out[i] = int32(i + 1)
 	}
-	// insertion sort: candidate sets are small and mostly presorted
-	for i := 1; i < len(buf); i++ {
-		for j := i; j > 0 && buf[j] < buf[j-1]; j-- {
-			buf[j], buf[j-1] = buf[j-1], buf[j]
-		}
-	}
-	// dedup in place (bbox cell ranges register a segment in several cells)
-	out := buf[:0]
-	for i, s := range buf {
-		if i == 0 || s != buf[i-1] {
-			out = append(out, s)
-		}
-	}
-	*bp = out
-	return bp
+	return out
 }
 
-func putCand(bp *[]int32) { candBufPool.Put(bp) }
+// candidates returns deduplicated, ascending segment indices — a superset
+// of every segment within reach of p when reach ≤ the cell size (every
+// built-in cap is; a dial pushing one beyond falls back to the full list).
+// Ascending order matches the full scan's segment order, so min/tie
+// selection resolves identically. The returned slice is shared and must
+// not be modified.
+func (l *Line) candidates(p Pt, reach float64) []int32 {
+	ix := l.index()
+	if reach > ix.cell {
+		return l.allSegs()
+	}
+	return ix.hood[[2]int{int(math.Floor(p.X / ix.cell)), int(math.Floor(p.Y / ix.cell))}]
+}
 
 // Within reports DistTo(p) < reach, bit-identically, touching only local
-// segments: DistTo(p) < reach iff some segment has segDist < reach, and any
-// such segment is among the candidates. Each candidate is tested with the
-// banded squared comparison (exact compare on the knife edge only).
+// segments: DistTo(p) < reach iff some segment has segDist < reach, and
+// any such segment is among the candidates. Each candidate is tested with
+// the banded squared comparison (exact compare on the knife edge only).
 func (l *Line) Within(p Pt, reach float64) bool {
 	if len(l.Pts) < 2 {
 		return false
 	}
-	bp := l.index().candidates(p, reach)
-	defer putCand(bp)
-	for _, seg := range *bp {
+	for _, seg := range l.candidates(p, reach) {
 		if segWithinStrict(p, l.Pts[seg-1], l.Pts[seg], reach) {
 			return true
 		}
@@ -102,9 +127,7 @@ func (l *Line) WithinLE(p Pt, reach float64) bool {
 	if len(l.Pts) < 2 {
 		return false
 	}
-	bp := l.index().candidates(p, reach)
-	defer putCand(bp)
-	for _, seg := range *bp {
+	for _, seg := range l.candidates(p, reach) {
 		if segWithin(p, l.Pts[seg-1], l.Pts[seg], reach) {
 			return true
 		}
@@ -121,11 +144,9 @@ func (l *Line) DistToCapped(p Pt, cap float64) (float64, bool) {
 	if len(l.Pts) < 2 {
 		return math.Inf(1), false
 	}
-	bp := l.index().candidates(p, cap)
-	defer putCand(bp)
 	best2 := math.Inf(1)
 	var bdx, bdy float64
-	for _, seg := range *bp {
+	for _, seg := range l.candidates(p, cap) {
 		d2, dx, dy := segDist2(p, l.Pts[seg-1], l.Pts[seg])
 		if d2 < best2 {
 			best2, bdx, bdy = d2, dx, dy
@@ -148,13 +169,11 @@ func (l *Line) ProjectArcCapped(p Pt, cap float64) (arc, d float64, ok bool) {
 	if len(l.Pts) < 2 {
 		return 0, math.Inf(1), false
 	}
-	bp := l.index().candidates(p, cap)
-	defer putCand(bp)
 	best2 := math.Inf(1)
 	bestI := -1
 	var bestQ Pt
 	var bdx, bdy float64
-	for _, s := range *bp {
+	for _, s := range l.candidates(p, cap) {
 		i := int(s)
 		a, b := l.Pts[i-1], l.Pts[i]
 		ab := b.Sub(a)
@@ -193,10 +212,8 @@ func (l *Line) CrossSectionNear(p, tangent Pt, reach float64) []Crossing {
 	nrm := tangent.Perp()
 	r1 := p.Sub(nrm.Scale(reach))
 	r2 := p.Add(nrm.Scale(reach))
-	bp := l.index().candidates(p, reach+1e-6)
-	defer putCand(bp)
 	var out []Crossing
-	for _, s := range *bp {
+	for _, s := range l.candidates(p, reach+1e-6) {
 		i := int(s)
 		q, ok := SegIntersect(r1, r2, l.Pts[i-1], l.Pts[i])
 		if ok {
