@@ -197,11 +197,14 @@ type bundleState struct {
 	samples map[int64][]geo.Pt // Resample(mergeDS)
 	cand    map[int64][]candEntry
 	neg     map[pairKey]struct{}
-	fresh   []int64      // ids minted by the last merge
-	dirty   [][]geo.Pt   // removed/new sample sets: neighborhoods to re-enumerate
-	arr     []*geo.Line  // per round: lines in current edge order
-	grid    *geo.Grid    // per round: spatial hash over arr
-	idIdx   map[int64]int
+	fresh   []int64    // ids minted by the last merge
+	gone    []int64    // ids retired by the last merge
+	dirty   [][]geo.Pt // removed/new sample sets: neighborhoods to re-enumerate
+	// grid indexes every current edge by content id. A merge touches two
+	// edges and mints a handful, so it is patched, not rebuilt — rebuilding
+	// cost Θ(rounds × E), and rounds grow with E.
+	grid  *geo.MutGrid
+	idIdx map[int64]int
 }
 
 type candEntry struct {
@@ -241,11 +244,22 @@ func (st *bundleState) beginRound(net *Network) {
 			st.samples[id] = l.Resample(mergeDS)
 		}
 	}
-	st.arr = st.arr[:0]
-	for _, id := range st.ids {
-		st.arr = append(st.arr, st.lines[id])
+	if st.grid == nil {
+		st.grid = geo.NewMutGrid(64)
+		for _, id := range st.ids {
+			st.grid.Add(id, st.lines[id])
+		}
+	} else {
+		// patch to the post-merge edge set — the same index a rebuild
+		// would produce, since surviving edges' geometry never changes
+		for _, id := range st.gone {
+			st.grid.Remove(id)
+		}
+		for _, id := range st.fresh {
+			st.grid.Add(id, st.lines[id])
+		}
+		st.gone = st.gone[:0]
 	}
-	st.grid = geo.NewGrid(st.arr, 64)
 	clear(st.idIdx)
 	for i, id := range st.ids {
 		st.idIdx[id] = i
@@ -263,14 +277,14 @@ func (st *bundleState) beginRound(net *Network) {
 	// reach 31 marks a superset of the affected edges, and
 	// over-invalidation merely recomputes identical lists.
 	if len(st.dirty) > 0 {
-		aff := map[int]bool{}
+		aff := map[int64]bool{}
 		for _, pts := range st.dirty {
 			for _, q := range pts {
-				st.grid.Near(q, 31, func(li int) { aff[li] = true })
+				st.grid.Near(q, 31, func(id int64) { aff[id] = true })
 			}
 		}
-		for li := range aff {
-			delete(st.cand, st.ids[li])
+		for id := range aff {
+			delete(st.cand, id)
 		}
 		st.dirty = st.dirty[:0]
 	}
@@ -284,7 +298,7 @@ func (st *bundleState) candFor(a int) []candEntry {
 	if c, ok := st.cand[id]; ok {
 		return c
 	}
-	counts := map[int]int{}
+	counts := map[int64]int{}
 	for _, q := range st.samples[id] {
 		// gap bridges DO merge into a real corridor they shadow — a
 		// bridged service running alongside ridden track is the same
@@ -292,15 +306,15 @@ func (st *bundleState) candFor(a int) []candEntry {
 		// gaps have no parallel corridor and are untouched
 		// candidate reach covers the banded-corridor width, not just
 		// the kiss range — the DeKalb bypass rides 10–25 m out
-		st.grid.Near(q, 25, func(b int) {
-			if b != a {
+		st.grid.Near(q, 25, func(b int64) {
+			if b != id {
 				counts[b]++
 			}
 		})
 	}
 	list := make([]candEntry, 0, len(counts))
 	for b, n := range counts {
-		list = append(list, candEntry{st.ids[b], n})
+		list = append(list, candEntry{b, n})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].id < list[j].id })
 	st.cand[id] = list
@@ -825,6 +839,7 @@ func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan
 	// ones; the removed and added sample sets drive cand invalidation)
 	oldA, oldB := st.ids[a], st.ids[b]
 	st.dirty = append(st.dirty, st.samples[oldA], st.samples[oldB])
+	st.gone = append(st.gone, oldA, oldB)
 	var out []Edge
 	newIDs := make([]int64, 0, len(net.Edges)+len(newEdges)-1)
 	for ei, e := range net.Edges {
