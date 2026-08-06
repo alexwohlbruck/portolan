@@ -482,11 +482,36 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		net.Edges = kept
 	}
 	rebuildAdj(net)
-	// welds move nodes but leave edge geometry pointing at the OLD
-	// endpoints — every edge tail then overshoots past its junction (the
-	// SE Loop corner drew its turn as a dive-and-reverse V through two
-	// overshoots). Trim each end back to its closest approach to the
-	// node.
+	trimEdgeEnds(net)
+	contractChains(net)
+	// final refinement: edges created or reshaped by late merge/weld/
+	// contraction rounds otherwise keep their seed geometry verbatim —
+	// the Lake corridor east of Garvey rode its seed's own track (the
+	// north rail, 6-decimal identical) instead of the pair's center.
+	// Refine moves interior vertices only, so the trimmed ends hold.
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
+	// the junction-leg collapse re-welded nodes to LEG MIDPOINTS,
+	// overwriting the earlier least-squares meets — Tower 18's node sat
+	// 15 m north of the Lake axis and every corridor tail kinked up to
+	// reach it. Re-meet on the final refined centerlines, then re-trim:
+	// with the node back on the axes' crossing, each tail's closest
+	// approach lands before its weld bend and the bend is cut away —
+	// straight centerline endings.
+	rebuildAdj(net)
+	for ni := range net.Nodes {
+		placeNodeAtMeet(net, ni, p)
+	}
+	trimEdgeEnds(net)
+	compactNodes(net)
+	return net, nil
+}
+
+// trimEdgeEnds cuts each edge end back to its closest approach to its
+// node: welds and meets move nodes but leave edge geometry pointing at
+// the OLD endpoints, so tails overshoot or bend toward stale positions
+// (the SE Loop corner drew its turn as a dive-and-reverse V through two
+// overshoots).
+func trimEdgeEnds(net *Network) {
 	for ei := range net.Edges {
 		e := &net.Edges[ei]
 		if len(e.Pts) < 2 {
@@ -532,15 +557,6 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			l = geo.NewLine(e.Pts)
 		}
 	}
-	contractChains(net)
-	// final refinement: edges created or reshaped by late merge/weld/
-	// contraction rounds otherwise keep their seed geometry verbatim —
-	// the Lake corridor east of Garvey rode its seed's own track (the
-	// north rail, 6-decimal identical) instead of the pair's center.
-	// Refine moves interior vertices only, so the trimmed ends hold.
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
-	compactNodes(net)
-	return net, nil
 }
 
 // compactNodes drops degree-0 nodes — weld and sweep leftovers that no
