@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
@@ -481,6 +482,17 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		}
 		net.Edges = kept
 	}
+	// direction lenses: a route's two one-way alignments drawn as separate
+	// strands read as a phantom second service. Whether the split deserves
+	// ink is a SIZE question (owner's rule): twin tube bores hug within
+	// ~25-50 m of each other and must merge into one line; structurally
+	// separated one-way alignments (the Kennington and White City loops,
+	// Croydon's town loop, Heathrow's T4 loop — 120 m to kilometres apart)
+	// are real map features and stay. Node-identity pairing keeps branch
+	// deltas (Westferry's triangle legs join DIFFERENT node pairs) out of
+	// reach. Runs before the closing sequence: the merge leaves deg-2
+	// joints for contractChains and seed geometry for the final refine.
+	mergeDirectionLenses(net)
 	rebuildAdj(net)
 	trimEdgeEnds(net)
 	contractChains(net)
@@ -511,6 +523,86 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 // the OLD endpoints, so tails overshoot or bend toward stale positions
 // (the SE Loop corner drew its turn as a dive-and-reverse V through two
 // overshoots).
+// mergeDirectionLenses collapses same-route edge pairs that connect the
+// same two nodes and run within lens gauge of each other into one midline
+// edge. The significance bar (mean separation, dial split_lens_merge,
+// default 80 m) separates twin bores from real one-way alignments in the
+// measured data with a wide margin: London's mergeable pairs sit at
+// 23-74 m mean, its structural loops at 120 m+.
+func mergeDirectionLenses(net *Network) {
+	bar := dial("split_lens_merge", 80)
+	routesKey := func(rs []string) string {
+		s := append([]string(nil), rs...)
+		sort.Strings(s)
+		return strings.Join(s, "\x00")
+	}
+	for {
+		rebuildAdj(net)
+		merged := false
+		for i := 0; i < len(net.Edges) && !merged; i++ {
+			a := &net.Edges[i]
+			if a.Gap || len(a.Pts) < 2 || a.From == a.To {
+				continue
+			}
+			for j := i + 1; j < len(net.Edges); j++ {
+				b := &net.Edges[j]
+				if b.Gap || len(b.Pts) < 2 || b.From == b.To {
+					continue
+				}
+				sameWay := a.From == b.From && a.To == b.To
+				crossed := a.From == b.To && a.To == b.From
+				if !sameWay && !crossed {
+					continue
+				}
+				if routesKey(a.Routes) != routesKey(b.Routes) {
+					continue
+				}
+				la, lb := geo.NewLine(a.Pts), geo.NewLine(b.Pts)
+				// lens sides are comparable rides; a loop tail twice its
+				// partner is topology, not a direction pair
+				if r := la.Len() / math.Max(1, lb.Len()); r < 0.5 || r > 2 {
+					continue
+				}
+				// symmetric mean separation at ~25 m sampling
+				sep := func(from, onto *geo.Line) (sum float64, n int) {
+					for arc := 0.0; arc <= from.Len(); arc += 25 {
+						sum += onto.DistTo(from.AtArc(arc))
+						n++
+					}
+					return
+				}
+				sab, nab := sep(la, lb)
+				sba, nba := sep(lb, la)
+				if (sab+sba)/float64(nab+nba) > bar {
+					continue
+				}
+				// midline: average the sides point-for-point by arc fraction
+				bp := b.Pts
+				if crossed {
+					bp = reversedPts(bp)
+				}
+				lbo := geo.NewLine(bp)
+				nPts := int(math.Max(la.Len(), lbo.Len())/10) + 2
+				mid := make([]geo.Pt, 0, nPts)
+				for k := 0; k < nPts; k++ {
+					f := float64(k) / float64(nPts-1)
+					pa := la.AtArc(f * la.Len())
+					pb := lbo.AtArc(f * lbo.Len())
+					mid = append(mid, geo.Lerp(pa, pb, 0.5))
+				}
+				a.Pts = mid
+				a.Tracks += b.Tracks
+				net.Edges = append(net.Edges[:j], net.Edges[j+1:]...)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			return
+		}
+	}
+}
+
 func trimEdgeEnds(net *Network) {
 	for ei := range net.Edges {
 		e := &net.Edges[ei]
