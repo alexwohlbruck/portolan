@@ -153,6 +153,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// index; strand counts land by index too and are consumed as a
 		// sorted multiset (medianInt), so the fan-out is bit-identical
 		countAt := make([]int, n)
+		widthAt := make([]float64, n)
 		var offsPool sync.Pool
 		lo, hi := 1, n-1
 		if p.FreeStart {
@@ -281,6 +282,14 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			st := Strands(offs, p.StrandGap)
 			countAt[i] = len(st)
+			if len(st) > 1 {
+				lo2, hi2 := st[0], st[0]
+				for _, v := range st {
+					lo2 = math.Min(lo2, v)
+					hi2 = math.Max(hi2, v)
+				}
+				widthAt[i] = hi2 - lo2
+			}
 			o := MedianStrand(st)
 			offStar[i] = math.Max(-p.Reach, math.Min(p.Reach, o))
 			has[i] = true
@@ -334,6 +343,53 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				}
 				if len(nb) >= 4 && countAt[i] < medianInt(nb) {
 					has[i] = false
+				}
+			}
+		}
+		// PINCH BRIDGING, by group width: a street couplet narrows to
+		// cross every intersection interlaced — approach ramp, crossing,
+		// recede can span 150-250 m, longer than any fixed neighborhood
+		// window, and the tracked pair-center faithfully bends around
+		// the whole thing. The corridor's TRUE width is an edge-global
+		// statistic (p75); runs where the group narrows below 60% of it
+		// are switch furniture — blank them (extended to 85%-width
+		// shoulders) and let fillGaps run the stable regimes' straight
+		// line through. Runs past 400 m are a real convergence and keep.
+		if p.SwitchTolerant {
+			var ws []float64
+			for i := range has {
+				if has[i] && widthAt[i] > 0 {
+					ws = append(ws, widthAt[i])
+				}
+			}
+			if len(ws) >= 8 {
+				sort.Float64s(ws)
+				wide := ws[len(ws)*3/4]
+				if wide > 4 {
+					thresh := 0.6 * wide
+					for i := 0; i < n; {
+						if !has[i] || widthAt[i] >= thresh {
+							i++
+							continue
+						}
+						j := i
+						for j < n && (!has[j] || widthAt[j] < thresh) {
+							j++
+						}
+						a, b := i, j
+						for a > 0 && has[a-1] && widthAt[a-1] < 0.85*wide {
+							a--
+						}
+						for b < n-1 && has[b] && widthAt[b] < 0.85*wide {
+							b++
+						}
+						if arcOf[min(b, n-1)]-arcOf[a] < 400 {
+							for k := a; k < b; k++ {
+								has[k] = false
+							}
+						}
+						i = j + 1
+					}
 				}
 			}
 		}

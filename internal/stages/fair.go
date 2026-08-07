@@ -311,14 +311,36 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	straightPts := make([][]geo.Pt, len(n.Edges))
 	for ei, e := range n.Edges {
 		tol := dial("fair_straight_tol", 2.2)
+		cone1, cone2 := 0.995, 0.99939
+		// street-running edges straighten HARDER, not softer: the steel
+		// under them genuinely wanders — a couplet pinches to ~4 m to
+		// cross every intersection interlaced, and the tracked pair
+		// center faithfully bends 3-5 m around each pinch (Charlotte's
+		// Trade St S). The street is straight; the pinch is switch
+		// furniture; the drawn line follows the street. Real corners
+		// (Elizabeth & Hawthorne, 45°+) fail any cone instantly and are
+		// untouched. Metro keeps the tuned 2.2 m — its steel IS the
+		// corridor.
+		street := len(e.Routes) > 0
+		for _, r := range e.Routes {
+			c := mode.Of(routes[r].Type)
+			if c != mode.Tram && c != mode.Cable {
+				street = false
+				break
+			}
+		}
+		if street {
+			tol *= 2
+			cone1, cone2 = 0.99, 0.9985
+		}
 		// pass 1 cone ~5.7°: wide enough to flatten corridor micro-waves,
 		// tight enough that a real gradual curve keeps vertices every
 		// ~11° of bend (a wider cone concentrated the Union Square elbow
 		// into one sharp vertex). pass 2 merges ≤2° drift joints with
 		// every dropped vertex re-checked against the final chord.
 		straightPts[ei] = straightenCone(
-			straightenCone(e.Pts, tol, 0.995),
-			tol*1.6, 0.99939)
+			straightenCone(e.Pts, tol, cone1),
+			tol*1.6, cone2)
 	}
 
 	var segs []Segment
