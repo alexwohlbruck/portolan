@@ -382,15 +382,31 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// the freight pair drifting in and out of the vote set the median
 	// sawtoothed (13.8 km of ink over a 1.8 km stretch). Class is the
 	// signal parallelism can't provide.
+	// street steel must also be AT STREET LEVEL: Berlin's Stadtbahn is
+	// tagged light_rail, and its viaduct voted the Georgenstraße trams'
+	// median from one storey up — class alone cannot tell an S-Bahn on a
+	// viaduct from a light-rail street couplet, the level tags can. The
+	// test is by elevated LENGTH fraction so a tram strand that crosses
+	// one river bridge keeps its whole-corridor vote.
+	wayLen := map[string]float64{}
+	for _, t := range tracks {
+		wayLen[t.ID] = t.Line.Len()
+	}
 	tramFamily := func(ways []string) bool {
+		var tot, elev float64
 		for _, w := range ways {
 			switch wayRailClass[w] {
 			case "tram", "light_rail":
 			default:
 				return false
 			}
+			l := wayLen[w]
+			tot += l
+			if wayLevels[w] != 0 {
+				elev += l
+			}
 		}
-		return true
+		return tot == 0 || elev/tot < 0.5
 	}
 	strandTram := make([]bool, len(strands))
 	for i, st := range strands {

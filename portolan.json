@@ -7,7 +7,7 @@
       "rail": "testdata/nyc-rail.geojson",
       "out": "build/nyc.geojson",
       "network": "sketches/network-5.json",
-      "bbox": [-74.06, 40.55, -73.7, 40.92]
+      "bbox": [-74.26, 40.49, -73.7, 40.92]
     },
     "29": {
       "name": "Chicago",
