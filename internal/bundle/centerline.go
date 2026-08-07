@@ -131,7 +131,9 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		return cl
 	}
 	preThrough := len(members)
-	members = throughMembers(cl, members, p)
+	if !p.SwitchTolerant {
+		members = throughMembers(cl, members, p)
+	}
 	if dbgCPt != nil && cl.DistTo(*dbgCPt) < 60 {
 		fmt.Printf("REFCALL len=%.0f members pre=%d post=%d lens=", cl.Len(), preThrough, len(members))
 		for _, m := range members {
@@ -234,6 +236,15 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 					// both its crossovers). A corridor track holds its
 					// offset; measure the drift over +-30 m of the member's
 					// own arc and drop movers.
+					// a member too short to measure drift across is switch
+					// furniture, not a corridor rail — its clamped probe
+					// ends land ON the two rails and read as zero drift
+					if p.SwitchTolerant && (c.Arc < 30 || m.Len()-c.Arc < 30) {
+						if dbgHere {
+							fmt.Printf("REFC3 i=%d member %d SKIP short-arc\n", i, mi)
+						}
+						continue
+					}
 					qd1 := m.AtArc(c.Arc - 30)
 					qd2 := m.AtArc(c.Arc + 30)
 					var dd1, dd2 float64
@@ -275,6 +286,23 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// stable regimes on both sides rather than follow the one rail
 		// that remains — on straight track the bridge IS the straight
 		// centerline.
+		// a terminus throat is switch furniture end to end — crossovers,
+		// funnels, stub ends. Inside the last 60 m of a FREE end the
+		// remaining votes are whichever rail's strand happens to survive
+		// the X, and a whole tail regime of count-1 defeats the
+		// neighborhood test below. Blank it; the hold-forward fill then
+		// runs the corridor's stable centered offset straight to the tip.
+		if p.SwitchTolerant {
+			total := arcOf[n-1]
+			for i := range has {
+				if p.FreeStart && arcOf[i] < 60 {
+					has[i] = false
+				}
+				if p.FreeEnd && total-arcOf[i] < 60 {
+					has[i] = false
+				}
+			}
+		}
 		if p.SwitchTolerant {
 			win := 10
 			was := append([]bool(nil), has...)

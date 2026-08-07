@@ -1062,11 +1062,25 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 			cl := geo.NewLine(e.Pts)
 			var members []*geo.Line
 			for round := 0; round < 2; round++ {
-				members = edgeMates(cl, strandLines, sgrid, p)
+				if street {
+					// street edges vote the whole LOCAL track group: every
+					// strand near the corridor, ridden or not. Which rail a
+					// pattern happened to ride is bookkeeping, not geometry
+					// — edge-level membership gave the median regime
+					// boundaries at every crossover swap, and each boundary
+					// drew an S on straight track. Refine's per-crossing
+					// guards (parallelism, persistence, switch-drift) vet
+					// every vote locally instead.
+					members = edgeGroup(cl, strandLines, sgrid, twinLines, tgrid)
+				} else {
+					members = edgeMates(cl, strandLines, sgrid, p)
+				}
 				if len(members) == 0 {
 					break
 				}
-				members = append(members, edgeTwins(cl, twinLines, tgrid, street)...)
+				if !street {
+					members = append(members, edgeTwins(cl, twinLines, tgrid, street)...)
+				}
 				cl = bundle.Refine(cl, members, erp)
 			}
 			if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
@@ -1095,6 +1109,34 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 // the paired rail is unridden steel — but the drawn line must sit on
 // the pair's center. Turnaround arcs and yard ladders parallel an edge
 // only briefly and never qualify (the South Ferry law holds).
+// edgeGroup collects every strand — ridden or unridden — that touches the
+// corridor (≥36 m of it within roadway gauge). Deliberately permissive:
+// vetting is LOCAL, per cross-section, inside Refine.
+func edgeGroup(cl *geo.Line, strandLines []*geo.Line, sgrid *geo.Grid,
+	twinLines []*geo.Line, tgrid *geo.Grid) []*geo.Line {
+	const ds = 12.0
+	gauge := dial("split_twin_max", 18)
+	samples := cl.Resample(ds)
+	pick := func(lines []*geo.Line, grid *geo.Grid) []*geo.Line {
+		counts := map[int]int{}
+		for _, q := range samples {
+			grid.Near(q, gauge, func(si int) {
+				if lines[si].Within(q, gauge) {
+					counts[si]++
+				}
+			})
+		}
+		var out []*geo.Line
+		for si, c := range counts {
+			if c >= 3 {
+				out = append(out, lines[si])
+			}
+		}
+		return out
+	}
+	return append(pick(strandLines, sgrid), pick(twinLines, tgrid)...)
+}
+
 func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool) []*geo.Line {
 	const ds = 12.0
 	// gauge admits the whole TRACK GROUP, not just the adjacent bore: a
