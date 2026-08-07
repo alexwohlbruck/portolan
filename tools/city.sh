@@ -35,8 +35,13 @@ list() {
   printf '%-10s %-14s %-8s %-8s %-8s %s\n' feed name gtfs rail build sketch
   for f in $(feeds); do
     mark() { [ -s "$1" ] && echo yes || echo MISSING; }
+    markList() { # gtfs may be a comma list — every part must exist
+      local p; IFS=',' read -ra parts <<<"$1"
+      for p in "${parts[@]}"; do [ -s "$p" ] || { echo MISSING; return; }; done
+      echo yes
+    }
     printf '%-10s %-14s %-8s %-8s %-8s %s\n' "$f" "$(get "$f" name)" \
-      "$(mark "$(get "$f" gtfs)")" "$(mark "$(get "$f" rail)")" \
+      "$(markList "$(get "$f" gtfs)")" "$(mark "$(get "$f" rail)")" \
       "$(mark "$(get "$f" out)")" "$(mark "$(get "$f" network)")"
   done
 }
