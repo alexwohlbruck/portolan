@@ -253,7 +253,16 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						dd1, ok1 = line.DistToCapped(qd1, p.Reach)
 						dd2, ok2 = line.DistToCapped(qd2, p.Reach)
 					}
-					if p.SwitchTolerant && ok1 && ok2 && math.Abs(dd1-dd2) > 3 {
+					// a mover is a SWITCH only if it converges onto the
+					// ridden line: a crossover diagonal ends ON a rail, so
+					// one probe reads ~0. A street couplet whose separation
+					// BREATHES (Charlotte's Gold swings 4→10→5 m through
+					// downtown corners) drifts >3 m without ever
+					// approaching — dropping it flapped the vote set
+					// {pair}→{own}→{pair} block after block and sawtoothed
+					// the median at ±5 m (clt_squiggle_2).
+					if p.SwitchTolerant && ok1 && ok2 && math.Abs(dd1-dd2) > 3 &&
+						math.Min(dd1, dd2) < 2.5 {
 						if dbgHere {
 							fmt.Printf("REFC3 i=%d member %d SKIP switch-drift %.1f->%.1f\n", i, mi, dd1, dd2)
 						}
