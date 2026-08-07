@@ -375,8 +375,33 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		strandLines[i] = st.Line
 	}
 	sgrid := geo.NewGrid(strandLines, 64)
+	// tram-family masks for the street-running vote pools: the LOCAL track
+	// group a street edge votes must be street-running steel. The Blue
+	// Line's North Tryon run sits 10-15 m from a freight mainline for
+	// kilometres — inside the street rule's 18 m roadway gauge — and with
+	// the freight pair drifting in and out of the vote set the median
+	// sawtoothed (13.8 km of ink over a 1.8 km stretch). Class is the
+	// signal parallelism can't provide.
+	tramFamily := func(ways []string) bool {
+		for _, w := range ways {
+			switch wayRailClass[w] {
+			case "tram", "light_rail":
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	strandTram := make([]bool, len(strands))
+	for i, st := range strands {
+		strandTram[i] = tramFamily(st.Ways)
+	}
+	twinTram := make([]bool, len(twinStrands))
+	for i, st := range twinStrands {
+		twinTram[i] = tramFamily(st.Ways)
+	}
 	rp := bundle.DefaultParams()
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
+	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 
 	// ---- law 3: edges sustained-parallel within mate range are ONE visual
 	// corridor — cut at the membership bounds and merge (lollipop sticks,
@@ -390,7 +415,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		if bundleParallelEdges(net) == 0 {
 			break
 		}
-		refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
+		refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	}
 
 	// ---- law 16: fold rings into lollipop sticks. An edge that runs a
@@ -400,7 +425,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// halves, with the tip as a new terminal node. Apple draws exactly
 	// the folded line (the 4/5 around the Battery is a single curve).
 	foldRings(net)
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
+	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	dropShadowStubs(net)
 	// a gap edge whose ENDPOINTS nearly coincide is not missing track —
 	// it is a deviating shape's bulge pinched between two matched anchors
@@ -450,7 +475,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// fragments were median-refined separately, so their joints survive
 	// contraction as kinks mid-edge — refine the merged edges as whole
 	// strands once more.
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
+	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	// ---- junction nodes at the meet of their corridors' centerlines
 	for ni := range net.Nodes {
 		placeNodeAtMeet(net, ni, p)
@@ -532,7 +557,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// the Lake corridor east of Garvey rode its seed's own track (the
 	// north rail, 6-decimal identical) instead of the pair's center.
 	// Refine moves interior vertices only, so the trimmed ends hold.
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
+	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	// the junction-leg collapse re-welded nodes to LEG MIDPOINTS,
 	// overwriting the earlier least-squares meets — Tower 18's node sat
 	// 15 m north of the Lake axis and every corridor tail kinked up to
@@ -1028,7 +1053,7 @@ func foldRings(net *Network) {
 }
 
 func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
-	twinLines []*geo.Line, tgrid *geo.Grid,
+	strandTram []bool, twinLines []*geo.Line, tgrid *geo.Grid, twinTram []bool,
 	p splitParams, rp bundle.Params, streetRoute map[string]bool) {
 	if os.Getenv("PORTOLAN_NOREFINE") != "" {
 		return
@@ -1097,7 +1122,8 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 					// drew an S on straight track. Refine's per-crossing
 					// guards (parallelism, persistence, switch-drift) vet
 					// every vote locally instead.
-					members = edgeGroup(cl, strandLines, sgrid, twinLines, tgrid)
+					members = edgeGroup(cl, strandLines, sgrid, strandTram,
+						twinLines, tgrid, twinTram)
 				} else {
 					members = edgeMates(cl, strandLines, sgrid, p)
 				}
@@ -1139,15 +1165,16 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 // corridor (≥36 m of it within roadway gauge). Deliberately permissive:
 // vetting is LOCAL, per cross-section, inside Refine.
 func edgeGroup(cl *geo.Line, strandLines []*geo.Line, sgrid *geo.Grid,
-	twinLines []*geo.Line, tgrid *geo.Grid) []*geo.Line {
+	strandTram []bool, twinLines []*geo.Line, tgrid *geo.Grid,
+	twinTram []bool) []*geo.Line {
 	const ds = 12.0
 	gauge := dial("split_twin_max", 18)
 	samples := cl.Resample(ds)
-	pick := func(lines []*geo.Line, grid *geo.Grid) []*geo.Line {
+	pick := func(lines []*geo.Line, grid *geo.Grid, tram []bool) []*geo.Line {
 		counts := map[int]int{}
 		for _, q := range samples {
 			grid.Near(q, gauge, func(si int) {
-				if lines[si].Within(q, gauge) {
+				if tram[si] && lines[si].Within(q, gauge) {
 					counts[si]++
 				}
 			})
@@ -1160,7 +1187,7 @@ func edgeGroup(cl *geo.Line, strandLines []*geo.Line, sgrid *geo.Grid,
 		}
 		return out
 	}
-	return append(pick(strandLines, sgrid), pick(twinLines, tgrid)...)
+	return append(pick(strandLines, sgrid, strandTram), pick(twinLines, tgrid, twinTram)...)
 }
 
 func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool) []*geo.Line {
