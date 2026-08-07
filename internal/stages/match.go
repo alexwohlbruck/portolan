@@ -3,6 +3,7 @@ package stages
 import (
 	"container/heap"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -74,6 +75,9 @@ func defaultMatchParams() matchParams {
 
 const gapState = -1
 
+// dbgMatch gates match-stage diagnostics (PORTOLAN_DBGM=1).
+var dbgMatch = os.Getenv("PORTOLAN_DBGM") != ""
+
 // crossoverWays: ways tagged service=crossover. Crossovers are kept in the
 // graph for CONNECTIVITY (dropping them severed the bridge→Broadway link),
 // but riding one is an exceptional movement, not service routing — without
@@ -115,7 +119,12 @@ func classCompat(routeType int, cls string) bool {
 	case 0, 900: // tram / light rail
 		return cls == "light_rail" || cls == "tram"
 	case 2, 100: // rail
-		return cls == "rail" || cls == "narrow_gauge"
+		// light_rail is admissible for rail-typed routes: light metros get
+		// GTFS-typed 2 in the wild (the DLR), and its viaducts share
+		// corridors with real rail — with light_rail excluded, the class
+		// penalty pushed the DLR onto the c2c mainline beside it and the
+		// drawn line jumped back at every station
+		return cls == "rail" || cls == "narrow_gauge" || cls == "light_rail"
 	}
 	return true
 }
@@ -207,11 +216,26 @@ type candidate struct {
 // (graph, grid, params, usedBy/usedColor between assembles) and writes
 // only its own index, so samples run concurrently with identical results.
 func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
-	shapeArc func(int) float64, sampleConf func(float64) (float64, float64),
+	shapeArc func(int) float64, sampleConf func(float64) (float64, float64, float64),
 	cands [][]candidate, gapEmit []float64) {
 
 	tan := shape.TangentAtArc(shapeArc(i), 15)
-	w, spread := sampleConf(shapeArc(i))
+	w, spread, seg := sampleConf(shapeArc(i))
+	// a sample on a chord this long is barely an observation — the shape
+	// writer had NOTHING here (pfaedle leaves km-scale holes where its own
+	// match fails: the Met's fast section wrote a 7 km chord from Wembley
+	// Park to West Hampstead). On such a chord only COMPATIBLE-class track
+	// may guide the match: the Met chord crossed the Dudden Hill freight
+	// line, and with no subway within reach the wrong-class track rode
+	// penalty-free, closed the gap gate, and FORCED the DP onto a triangle
+	// no train runs. A length-only bar is wrong the other way — the A's
+	// 5.3 km chord over Jamaica Bay has its own subway trestle directly
+	// beneath it, and barring candidates there broke the Rockaways.
+	// Incompatible pieces are dropped, and where nothing compatible is
+	// near, GAP opens and the flanked-gap walk in assemble rides the real
+	// graph between the committed anchors.
+	const chordBar = 1000.0
+	longChord := seg > chordBar
 	reach, maxCand := m.p.Reach, m.p.MaxCand
 	if spread > 0 {
 		reach += spread
@@ -242,6 +266,13 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 	}
 	usable := false
 	for _, c := range near {
+		// on a long chord the usual leniency (no compatible track near →
+		// everything rides at uniform cost) inverts into a trap: strict
+		// class only, or nothing — GAP + the flanked walk beat guessing
+		if longChord && wayRailClass != nil &&
+			!classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way]) {
+			continue
+		}
 		compat := !hasCompat ||
 			classCompat(pat.Route.Type, wayRailClass[m.g.edges[2*c.piece].Way])
 		ptan := m.g.pieces[c.piece].TangentAtArc(c.arc, 10)
@@ -268,7 +299,13 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 			if !compat {
 				pen = classPen
 			}
-			cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)+pen) - bonus})
+			// the class penalty stays OUTSIDE the confidence weight: an
+			// incompatible rail class is a hard fact about the steel, not a
+			// positional observation. Scaled by w, a sparse-shape chord
+			// (w=0.05) made riding a freight line nearly free while the true
+			// corridor 300 m away still paid distance — the Met triangled
+			// over the Dudden Hill loop wherever its shape had a hole.
+			cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)) + pen - bonus})
 		}
 	}
 	gapEmit[i] = barredGap
@@ -308,7 +345,7 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 	// can be a whole block away from a chord (the R's sparse vertices sat
 	// on the Lexington's street; Broadway was outside a fixed 90 m reach,
 	// leaving the wrong line as the only representable choice).
-	sampleConf := func(arc float64) (weight, spread float64) {
+	sampleConf := func(arc float64) (weight, spread, seg float64) {
 		lo, hi := 0, len(vertArc)-1
 		for lo+1 < hi {
 			mid := (lo + hi) / 2
@@ -318,11 +355,11 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 				hi = mid
 			}
 		}
-		seg := vertArc[hi] - vertArc[lo]
+		seg = vertArc[hi] - vertArc[lo]
 		if seg <= denseSpacing {
-			return 1, 0
+			return 1, 0, seg
 		}
-		return math.Max(0.05, denseSpacing/seg), math.Min(400, seg/2)
+		return math.Max(0.05, denseSpacing/seg), math.Min(400, seg/2), seg
 	}
 
 	// candidates + emissions per sample; the gap gate closes wherever a
@@ -610,6 +647,13 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 					Dist(g.nodes[g.edges[events[i+1].edge].From].At)
 				w := m.walk(events[i-1].edge, events[i+1].edge,
 					math.Max(m.p.MaxWalk, 4*math.Max(gapArc, anchorDist)+400))
+				if !w.ok && dbgMatch {
+					a := g.nodes[g.edges[events[i-1].edge].To].At
+					b := g.nodes[g.edges[events[i+1].edge].From].At
+					println("MWALK fail", pat.Route.ID, pat.ShapeID,
+						int(anchorDist), "m anchors",
+						int(a.X), int(a.Y), "->", int(b.X), int(b.Y))
+				}
 				if w.ok {
 					for _, e := range w.via {
 						piece := g.edges[e].Piece
