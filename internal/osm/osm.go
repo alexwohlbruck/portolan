@@ -20,10 +20,20 @@ type Way struct {
 
 var railValues = map[string]bool{
 	"rail": true, "subway": true, "light_rail": true, "tram": true,
+	"monorail": true, "funicular": true, "narrow_gauge": true,
+}
+
+// aerialValues: cable-supported passenger modes. They carry no railway tag
+// at all, so they get a synthetic railway class "aerial" — one string the
+// whole pipeline (wayRailClass, classCompat) already knows how to key on.
+// Drag/tow lifts are excluded: nobody rides a T-bar to work.
+var aerialValues = map[string]bool{
+	"cable_car": true, "gondola": true, "mixed_lift": true,
 }
 
 // Load reads a GeoJSON FeatureCollection and keeps regular-service rail
-// LineStrings: railway ∈ {rail,subway,light_rail,tram}, no service tag
+// LineStrings: railway ∈ {rail,subway,light_rail,tram,monorail,funicular,
+// narrow_gauge} plus aerialway cable modes, no service tag
 // (yards/sidings/spurs excluded at the door — LESSONS: >4 strands are yards)
 // — EXCEPT service=crossover: crossovers are the short links BETWEEN running
 // tracks. They add no corridor geometry (no new strands), but without them
@@ -60,7 +70,10 @@ func Load(path string) ([]Way, error) {
 			}
 		}
 		if !railValues[tags["railway"]] {
-			continue
+			if !aerialValues[tags["aerialway"]] {
+				continue
+			}
+			tags["railway"] = "aerial"
 		}
 		if s := tags["service"]; s != "" && s != "crossover" {
 			continue

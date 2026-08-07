@@ -66,6 +66,7 @@ type Segment struct {
 	Routes    []string
 	Label     string
 	RouteType int
+	Mode      string // mode class name (internal/mode) — style hierarchy key
 	Slot      int
 	NSlots    int
 	OffsetPx  float64

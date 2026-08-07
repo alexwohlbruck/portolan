@@ -113,13 +113,16 @@ the bring-up steps are in [docs/CITIES.md](docs/CITIES.md).
 
 ## Modes
 
-Today the pipeline draws metros: `chart` keeps `route_type` 0/1/2 and the
-100-series, and the OSM loader keeps rails. Widening that to trams,
-commuter and intercity rail, ferries, gondolas, funiculars and buses is
-designed in [docs/MODES.md](docs/MODES.md) — mode classes, the mode-aware
-trunk key (colour for rail, corridor for bus, so a street's ribbon count
-stops depending on how many routes ride it), per-mode zoom floors, and the
-observation pass needed to ground them. Not implemented yet.
+The pipeline draws every rail mode plus ferries and aerial cable modes:
+`internal/mode` collapses each GTFS route_type into a class that decides
+whether it draws, which OSM layer it matches, and how routes trunk into
+ribbons (colour for rail — law 5 untouched — agency fallback for
+colourless commuter, one ribbon per ferry/gondola/funicular). Ferries need
+no infrastructure at all: the GTFS shape is the geometry, riding the gap
+machinery as `kind:bridge`. Berlin's F-lines, Montmartre's funicular and
+Paris's Câble C1 gondola all draw; NYC and Chicago are byte-identical
+before and after. Buses (corridor trunking, the street graph) are designed
+in [docs/MODES.md](docs/MODES.md) but deliberately not started.
 
 ## Ground truth
 

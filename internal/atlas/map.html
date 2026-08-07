@@ -214,7 +214,16 @@ const TRANSITION_OFFSET = zoomScaledOffset(
   ['interpolate',['cubic-bezier',.4,0,.6,1],['line-progress'],
     0, ['get','off_from_px'], 1, ['get','off_to_px']]);
 const COLOR = ['concat','#',['get','route_color']];
-const WIDTH = ['interpolate',['linear'],['zoom'],10,1.0,13,2.0,15,3.0,16,3.6];
+// mode hierarchy (docs/MODES.md): metro/regional full width; street-running
+// and singleton modes step down. Dash treatment is off the table for
+// ribbons — dasharray routes through lineSDF and bypasses the fork's
+// variable line-offset — so ferries read by weight and opacity instead.
+// Old builds without a mode prop fall through to the default 1.
+const MODEW = ['match',['coalesce',['get','mode'],''],
+  'tram',0.75,'cable',0.75,'monorail',0.85,'ferry',0.7,'aerial',0.6,'funicular',0.7,1];
+const MODEOP = ['match',['coalesce',['get','mode'],''],'ferry',0.65,'aerial',0.75,1];
+const WIDTH = ['interpolate',['linear'],['zoom'],
+  10,['*',1.0,MODEW],13,['*',2.0,MODEW],15,['*',3.0,MODEW],16,['*',3.6,MODEW]];
 const CASING_W = ['interpolate',['linear'],['zoom'],10,1.9,13,3.2,15,4.4,16,5.2];
 const BANDS = [{min:15,max:24,key:15},{min:14,max:15,key:14},{min:13,max:14,key:13},{min:0,max:13,key:0}];
 
@@ -305,7 +314,8 @@ map.on('load', async () => {
         // distinction is pipeline bookkeeping, not something riders see.
         // (Also: any dasharray routes a layer through lineSDF, which
         // bypasses the fork's variable line-offset.)
-        paint:{'line-color':COLOR,'line-width':WIDTH,'line-offset':off}});
+        paint:{'line-color':COLOR,'line-width':WIDTH,'line-opacity':MODEOP,
+               'line-offset':off}});
       ribbonIds.push(id);
       inspectIds.push(id);
     }

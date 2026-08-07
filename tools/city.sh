@@ -103,8 +103,14 @@ rail() { # $1 = feed key
   [ -n "$out" ] || { echo "$feed: no 'rail' path in $CFG"; exit 2; }
   bbox "$feed"
 
+  # every drawable infrastructure class (docs/MODES.md): the rail family
+  # plus cable-supported aerialways. Buses stay out — highways would grow
+  # the extract 10-100x, and bus matching is not implemented yet.
   query="[out:json][timeout:600];
-way[\"railway\"~\"^(rail|subway|light_rail|tram)\$\"]($s,$w,$n,$e);
+(
+way[\"railway\"~\"^(rail|subway|light_rail|tram|monorail|funicular|narrow_gauge)\$\"]($s,$w,$n,$e);
+way[\"aerialway\"~\"^(cable_car|gondola|mixed_lift)\$\"]($s,$w,$n,$e);
+);
 out geom;"
 
   mkdir -p "$(dirname "$out")"
@@ -173,7 +179,7 @@ shapes() { # $1 = feed key
 
   modes=$(unzip -p "$gtfs" routes.txt | python3 -c '
 import csv,sys
-m={"0":"tram","1":"subway","2":"rail","5":"funicular","6":"gondola","7":"funicular"}
+m={"0":"tram","1":"subway","2":"rail","4":"ferry","5":"funicular","6":"gondola","7":"funicular"}
 t={m[r["route_type"]] for r in csv.DictReader(sys.stdin) if r.get("route_type") in m}
 print(",".join(sorted(t)))')
   [ -n "$modes" ] || { echo "$feed: no pfaedle-matchable route types"; exit 2; }
@@ -183,7 +189,11 @@ print(",".join(sorted(t)))')
   if [ ! -s "$xml" ]; then
     echo "$feed: Overpass XML window $w,$s,$e,$n → $xml (minutes for a big window)"
     local query="[out:xml][timeout:900];
+(
 way[\"railway\"]($s,$w,$n,$e);
+way[\"route\"=\"ferry\"]($s,$w,$n,$e);
+way[\"aerialway\"]($s,$w,$n,$e);
+);
 (._;>;);
 out;"
     local try ok=0

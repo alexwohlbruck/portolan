@@ -9,6 +9,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 )
 
 // FAIR — owner's step 5, the node-front model. Per zoom band each edge is
@@ -64,12 +65,13 @@ func SetDbg3(p geo.Pt) { dbg3Pt = p }
 func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, paths []Path) ([]Segment, error) {
 	p := defaultFairParams()
 
+	// the group key is the TRUNK KEY (docs/MODES.md): the color string
+	// itself for color-trunked rail — identical to the old colorOf — but
+	// an opaque token for agency-trunked regional and the singleton modes.
+	// Anywhere a segment needs a DISPLAY color, resolve through hexOf,
+	// never the key.
 	colorOf := func(rid string) string {
-		c := routes[rid].Color
-		if c == "" {
-			c = "888888"
-		}
-		return c
+		return mode.TrunkKey(routes[rid])
 	}
 	// per edge: color → routes of that color (sorted, stable)
 	colorRoutes := make([]map[string][]string, len(n.Edges))
@@ -128,6 +130,23 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			return 1
 		}
 		return routes[rs[0]].Type
+	}
+	// display color for a group: the first member's route_color. For a
+	// color-trunked group this IS the key (unchanged behaviour); for
+	// agency- and route-trunked groups the key is opaque and the members
+	// supply the hex.
+	hexOf := func(ei int, color string) string {
+		rs := colorRoutes[ei][color]
+		if len(rs) == 0 || routes[rs[0]].Color == "" {
+			return "888888"
+		}
+		return routes[rs[0]].Color
+	}
+	// band floor per group: a mode invisible below its floor emits no
+	// copy into those bands at all (docs/MODES.md, inferred pending the
+	// Apple observation pass).
+	belowFloor := func(ei int, color string, bandMin int) bool {
+		return bandMin < mode.Of(routeType(ei, color)).BandFloor()
 	}
 
 	// matched walks per route id — the authority on which junction movements
@@ -491,6 +510,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		})
 		for _, c := range cands {
 			a, cur := c.a, c.cur
+			if belowFloor(a, c.color, band.min) {
+				continue // mode hidden in this band; its steady bodies skip too
+			}
 			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
 				for _, e := range []int{a, cur} {
 					pts2 := n.Edges[e].Pts
@@ -655,10 +677,11 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			}
 			segs = append(segs, Segment{
 				Kind:      "transition",
-				Color:     c.color,
+				Color:     hexOf(a, c.color),
 				Routes:    colorRoutes[a][c.color],
 				Label:     label(a, c.color),
 				RouteType: routeType(a, c.color),
+				Mode:      mode.Of(routeType(a, c.color)).String(),
 				OffFromPx: travelOffsetPx(a, c.color, c.aAtTo),
 				OffToPx:   travelOffsetPx(cur, c.color, c.bAtFrom),
 				BandMin:   band.min,
@@ -689,6 +712,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				if absorbed[[2]int{ei, ci}] {
 					continue // fully covered by a chained transition
 				}
+				if belowFloor(ei, color, band.min) {
+					continue
+				}
 				from := cutFor(ei, 0, ci)
 				if !served[[3]int{ei, 0, ci}] {
 					from = 0
@@ -708,10 +734,11 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				s, ns := slotOf(ei, color)
 				segs = append(segs, Segment{
 					Kind:      kind,
-					Color:     color,
+					Color:     hexOf(ei, color),
 					Routes:    colorRoutes[ei][color],
 					Label:     label(ei, color),
 					RouteType: routeType(ei, color),
+					Mode:      mode.Of(routeType(ei, color)).String(),
 					Slot:      s,
 					NSlots:    ns,
 					OffsetPx:  offsetPx(ei, color),
@@ -733,7 +760,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// modes keep tight corners; grade-separated modes keep the wide kit.
 	for i := range segs {
 		s := 1.0
-		if rt := segs[i].RouteType; rt == 0 || rt == 900 {
+		switch mode.Of(segs[i].RouteType) {
+		case mode.Tram, mode.Cable: // street-running: real corners survive
 			s = 0.4
 		}
 		segs[i].Line = smoothPolylineScaled(segs[i].Line, s)

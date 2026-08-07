@@ -7,10 +7,14 @@ colour ("law 5: same-colour routes share one ribbon",
 [order.go:13](../internal/stages/order.go)). That set of assumptions holds
 for NYC and Chicago and breaks for everything else.
 
-This document is the design for every other mode. **No pipeline code has
-been written against it yet** — it is the plan, and the parts marked
-*inferred* need the observation pass in the last section before they get
-built.
+This document is the design for every other mode. **Steps 1–4 are
+implemented** (`internal/mode`, wired through chart/match/order/fair):
+ferries, the rail family, agency-fallback trunking and aerials all draw —
+proven on Berlin's F-lines, Montmartre's funicular and the Câble C1
+gondola, with NYC and Chicago byte-identical before and after. Step 5
+(bus) is not started. The zoom floors marked *inferred* still need the
+observation pass in the last section — one of them has already been
+refuted by evidence (see the floors table).
 
 ## Why this is not a filter change
 
@@ -94,14 +98,18 @@ mode's segments below its band rather than adding new machinery:
 | class | floor | rationale |
 |---|---|---|
 | `metro`, `regional` | band 0 | the skeleton of the city; visible at every zoom |
-| `tram`, `monorail` | band 13 | too dense to read at metro scale |
+| `tram`, `monorail` | band 0 | **revised — the 13 inference was refuted** (below) |
 | `ferry` | band 13 | few routes, long geometry, reads fine when zoomed out |
 | `bus` corridor | band 15 | top band only — this is the density valve |
 | `aerial`, `funicular`, `cable` | band 15 | short, local, invisible at range |
 
-Every row is an inference from general cartographic practice plus the one
-documented Apple behaviour (BRT gets rail-like prominence). None of it is
-measured yet.
+The tram floor of 13 shipped and was rolled back the same hour: GTFS type
+0 covers streetcars AND light-rail backbones, so the floor erased
+Charlotte's Lynx and LA's A·C·E·K below the default zoom — in those
+cities the "tram" IS the skeleton. Streetcar demotion needs a signal the
+feed doesn't carry (frequency, or the observation pass). The remaining
+rows are still inferences from general cartographic practice plus the one
+documented Apple behaviour (BRT gets rail-like prominence).
 
 ## Render treatment
 
@@ -113,6 +121,14 @@ from `route_type`:
 - `ferry` — dashed, no casing (the existing `Gap` dash pattern generalises)
 - `aerial`/`funicular`/`cable` — thin, dotted
 - `bus` corridor — thinnest, neutral colour, no per-route colouring
+
+**Known limit — micro-ferries.** SPLIT heals gap edges whose endpoints
+nearly coincide (~100 m): for rail that pattern means "not missing track",
+but a ferry crossing SHORTER than the weld tolerance is real service and
+gets eaten — Berlin's F24 rowboat (~50 m across the Müggelspree) is the
+one known casualty; the other five F-lines draw. Teaching the heal to
+spare ferry-carrying edges means passing route types into SPLIT; not worth
+it until a second casualty shows up.
 
 ## Where the code changes
 

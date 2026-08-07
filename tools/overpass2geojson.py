@@ -9,7 +9,7 @@ loader and the bundler look at. Ways are passed through untouched otherwise
 import json
 import sys
 
-TAGS = ("railway", "service", "bridge", "tunnel", "layer")
+TAGS = ("railway", "aerialway", "service", "bridge", "tunnel", "layer")
 
 data = json.load(sys.stdin)
 feats = []

@@ -16,6 +16,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 	"github.com/alexwohlbruck/portolan/internal/osm"
 	"github.com/alexwohlbruck/portolan/internal/sketch"
 	"github.com/alexwohlbruck/portolan/internal/stages"
@@ -169,21 +170,20 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	// ~95% bus) skips foreign trips with one map miss, and bus shapes never
 	// parse. The kept patterns are identical — the same predicate re-runs
 	// below on what used to be the full set.
-	isRail := func(r gtfs.Route) bool {
-		t := r.Type
-		return t == 0 || t == 1 || t == 2 || (t >= 100 && t < 200)
+	drawable := func(r gtfs.Route) bool {
+		return mode.Of(r.Type).Drawable()
 	}
-	feed, err := gtfs.LoadFiltered(o.GTFS, loadCover, isRail)
+	feed, err := gtfs.LoadFiltered(o.GTFS, loadCover, drawable)
 	if err != nil {
 		return err
 	}
 	var rail []gtfs.Pattern
 	for _, pat := range feed.Patterns {
-		if isRail(pat.Route) {
+		if drawable(pat.Route) {
 			rail = append(rail, pat)
 		}
 	}
-	logf("chart: %d rail patterns of %d total", len(rail), len(feed.Patterns))
+	logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
 	if o.Scenario != "" {
 		si, err := gtfs.LoadService(o.GTFS)
 		if err != nil {
@@ -391,7 +391,7 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 			"seg": si, "kind": s.Kind,
 			"color": s.Color, "route_color": s.Color,
 			"routes": strings.Join(s.Routes, ","), "label": s.Label,
-			"route_type": s.RouteType,
+			"route_type": s.RouteType, "mode": s.Mode,
 			"slot":       s.Slot, "nslots": s.NSlots,
 			"offset_px":   s.OffsetPx,
 			"off_from_px": s.OffFromPx,

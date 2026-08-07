@@ -11,6 +11,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 )
 
 // MATCH — owner's step 1. Each GTFS pattern becomes a continuous walk over
@@ -113,18 +114,24 @@ func classCompat(routeType int, cls string) bool {
 	if cls == "" {
 		return true
 	}
-	switch routeType {
-	case 1, 401: // metro
+	switch mode.Of(routeType) {
+	case mode.Metro:
 		return cls == "subway"
-	case 0, 900: // tram / light rail
+	case mode.Tram, mode.Cable: // SF cable cars ride tram-class street track
 		return cls == "light_rail" || cls == "tram"
-	case 2, 100: // rail
+	case mode.Regional:
 		// light_rail is admissible for rail-typed routes: light metros get
 		// GTFS-typed 2 in the wild (the DLR), and its viaducts share
 		// corridors with real rail — with light_rail excluded, the class
 		// penalty pushed the DLR onto the c2c mainline beside it and the
 		// drawn line jumped back at every station
 		return cls == "rail" || cls == "narrow_gauge" || cls == "light_rail"
+	case mode.Monorail:
+		return cls == "monorail"
+	case mode.Funicular:
+		return cls == "funicular"
+	case mode.Aerial:
+		return cls == "aerial"
 	}
 	return true
 }
@@ -167,11 +174,35 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 		walks:     map[[2]int]walkRes{}}
 	var out []Path
 	for _, oi := range order {
+		// ferries have no infrastructure layer: there is no steel to match,
+		// so the GTFS shape IS the geometry. One all-gap step rides SPLIT's
+		// existing gap machinery — synthetic end nodes, Gap edges, dedup —
+		// and the segment comes out kind:bridge, which is already the
+		// "no track under this" rendering.
+		if mode.Of(patterns[oi].Route.Type) == mode.Ferry {
+			if path, ok := ferryPath(patterns[oi], frame); ok {
+				out = append(out, path)
+			}
+			continue
+		}
 		if path, ok := m.matchOne(patterns[oi], frame); ok {
 			out = append(out, path)
 		}
 	}
 	return out, nil
+}
+
+func ferryPath(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
+	pts := make([]geo.Pt, len(pat.Shape))
+	for i, ll := range pat.Shape {
+		pts[i] = frame.ToXY(ll)
+	}
+	line := geo.NewLine(pts)
+	if line.Len() < 50 {
+		return Path{}, false
+	}
+	return Path{Pattern: pat, Line: line, WayIDs: []string{"gap"},
+		Steps: []PathStep{{Piece: -1, Gap: line}}}, true
 }
 
 type matcher struct {

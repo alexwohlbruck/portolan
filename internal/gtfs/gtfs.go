@@ -22,6 +22,7 @@ type Route struct {
 	LongName  string
 	Color     string // hex without '#', GTFS convention
 	Type      int    // GTFS route_type
+	Agency    string // agency_id — trunk-key fallback for colorless regional
 }
 
 // Pattern is one distinct (route, shape) service pattern.
@@ -83,12 +84,12 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	go func() {
 		defer wg.Done()
 		routesErr = eachRowCols(rf, []string{"route_id", "route_type",
-			"route_short_name", "route_long_name", "route_color"},
+			"route_short_name", "route_long_name", "route_color", "agency_id"},
 			func(v []string) {
 				t, _ := strconv.Atoi(v[1])
 				feed.Routes[v[0]] = Route{
 					ID: v[0], ShortName: v[2], LongName: v[3],
-					Color: v[4], Type: t,
+					Color: v[4], Type: t, Agency: v[5],
 				}
 			})
 	}()
