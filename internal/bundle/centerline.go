@@ -40,6 +40,8 @@ type Params struct {
 	FinishSigma float64 // final light low-pass over geometry (m)
 	MinParallel float64 // |cos| heading agreement for a crossing to count
 	SlopeMax    float64 // max lateral-offset slope (m per m of arc)
+	FreeStart   bool    // unpin the start (terminus: end rides the group center)
+	FreeEnd     bool    // unpin the end
 }
 
 func DefaultParams() Params {
@@ -144,11 +146,41 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// sorted multiset (medianInt), so the fan-out is bit-identical
 		countAt := make([]int, n)
 		var offsPool sync.Pool
-		geo.ParFor(1, n-1, func(i int) {
-			tan := pts[i+1].Sub(pts[i-1]).Unit()
-			// curve-following persistence probes (LESSONS #3)
-			pa := line.AtArc(arcOf[i] - p.SpanProbe)
-			pb := line.AtArc(arcOf[i] + p.SpanProbe)
+		lo, hi := 1, n-1
+		if p.FreeStart {
+			lo = 0
+		}
+		if p.FreeEnd {
+			hi = n
+		}
+		geo.ParFor(lo, hi, func(i int) {
+			a, b := i-1, i+1
+			if a < 0 {
+				a = 0
+			}
+			if b > n-1 {
+				b = n - 1
+			}
+			tan := pts[b].Sub(pts[a]).Unit()
+			// curve-following persistence probes (LESSONS #3). Probe spans
+			// shrink to the arc actually available toward each end — the
+			// old fixed span compared a clamped centerline probe against an
+			// UNCLAMPED member point, so a rail running dead parallel past
+			// a terminus failed the guard by construction and every line
+			// end snapped onto its one ridden rail. Directionality is
+			// preserved: the span only shrinks on the side where the line
+			// itself ends, so a turnaround arc (South Ferry) still has to
+			// hold the full corridor span on the inbound side.
+			total := arcOf[n-1]
+			da, db := p.SpanProbe, p.SpanProbe
+			if p.FreeStart {
+				da = math.Min(p.SpanProbe, arcOf[i])
+			}
+			if p.FreeEnd {
+				db = math.Min(p.SpanProbe, total-arcOf[i])
+			}
+			pa := line.AtArc(arcOf[i] - da)
+			pb := line.AtArc(arcOf[i] + db)
 			var offs []float64
 			if v := offsPool.Get(); v != nil {
 				offs = (*v.(*[]float64))[:0]
@@ -182,8 +214,8 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						}
 						continue
 					}
-					qa := m.AtArc(c.Arc - p.SpanProbe)
-					qb := m.AtArc(c.Arc + p.SpanProbe)
+					qa := m.AtArc(c.Arc - da)
+					qb := m.AtArc(c.Arc + db)
 					near := func(q geo.Pt) bool {
 						return q.Dist(pa) < p.Reach*1.5 ||
 							q.Dist(pb) < p.Reach*1.5
@@ -241,8 +273,15 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		out := make([]geo.Pt, n)
 		copy(out, pts)
 		moved := 0.0
-		for i := 1; i < n-1; i++ {
-			nrm := pts[i+1].Sub(pts[i-1]).Unit().Perp()
+		for i := lo; i < hi; i++ {
+			a, b := i-1, i+1
+			if a < 0 {
+				a = 0
+			}
+			if b > n-1 {
+				b = n - 1
+			}
+			nrm := pts[b].Sub(pts[a]).Unit().Perp()
 			o := filt[i] * p.Damp
 			if math.Abs(o) > moved {
 				moved = math.Abs(o)

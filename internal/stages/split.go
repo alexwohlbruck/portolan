@@ -1015,6 +1015,17 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 	// took 6 m off the Atlanta streetcar's Park Place corner
 	rpStreet := rp
 	rpStreet.FinishSigma = 2.5
+	// node degree straight from the edge list — Adj can be stale between
+	// the rebuildAdj calls that bracket the refine rounds
+	deg := map[int]int{}
+	for _, e := range net.Edges {
+		if e.From == e.To {
+			deg[e.From] += 2
+			continue
+		}
+		deg[e.From]++
+		deg[e.To]++
+	}
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runtime.NumCPU())
@@ -1041,6 +1052,12 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 			if street {
 				erp = rpStreet
 			}
+			// a TERMINUS end is not a junction commitment — pinned, it
+			// dragged the group-centered line back onto the one ridden
+			// rail over its final blocks (the Gold at Sunnyside). Freed,
+			// the correction extends to the tip and the node follows.
+			erp.FreeStart = deg[e.From] == 1
+			erp.FreeEnd = deg[e.To] == 1
 			cl := geo.NewLine(e.Pts)
 			var members []*geo.Line
 			for round := 0; round < 2; round++ {
@@ -1060,6 +1077,12 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 			}
 			e.Pts = cl.Pts
 			e.Tracks = trackCount(cl, members, erp)
+			if erp.FreeStart {
+				net.Nodes[e.From].At = cl.Pts[0]
+			}
+			if erp.FreeEnd {
+				net.Nodes[e.To].At = cl.Pts[len(cl.Pts)-1]
+			}
 		}()
 	}
 	wg.Wait()
