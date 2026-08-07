@@ -65,6 +65,15 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	g := buildTrackGraphCached(tracks)
 	p := defaultSplitParams()
 
+	// street-running routes get a gentler finishing sigma in refinement:
+	// the metro-tuned Gaussian erodes street corners (mode-scaled kit,
+	// same rule as FAIR's smoothing)
+	streetRoute := map[string]bool{}
+	for _, pa := range paths {
+		t := pa.Pattern.Route.Type
+		streetRoute[pa.Pattern.Route.ID] = t == 0 || t == 900
+	}
+
 	// ---- usage: route set per used piece
 	pieceRoutes := make([]map[string]bool, len(g.pieces))
 	for _, pa := range paths {
@@ -345,7 +354,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	}
 	sgrid := geo.NewGrid(strandLines, 64)
 	rp := bundle.DefaultParams()
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
 
 	// ---- law 3: edges sustained-parallel within mate range are ONE visual
 	// corridor — cut at the membership bounds and merge (lollipop sticks,
@@ -359,7 +368,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		if bundleParallelEdges(net) == 0 {
 			break
 		}
-		refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
+		refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
 	}
 
 	// ---- law 16: fold rings into lollipop sticks. An edge that runs a
@@ -369,7 +378,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// halves, with the tip as a new terminal node. Apple draws exactly
 	// the folded line (the 4/5 around the Battery is a single curve).
 	foldRings(net)
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
 	dropShadowStubs(net)
 	// a gap edge whose ENDPOINTS nearly coincide is not missing track —
 	// it is a deviating shape's bulge pinched between two matched anchors
@@ -419,7 +428,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// fragments were median-refined separately, so their joints survive
 	// contraction as kinks mid-edge — refine the merged edges as whole
 	// strands once more.
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
 	// ---- junction nodes at the meet of their corridors' centerlines
 	for ni := range net.Nodes {
 		placeNodeAtMeet(net, ni, p)
@@ -501,7 +510,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// the Lake corridor east of Garvey rode its seed's own track (the
 	// north rail, 6-decimal identical) instead of the pair's center.
 	// Refine moves interior vertices only, so the trimmed ends hold.
-	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp)
+	refineEdges(net, strandLines, sgrid, twinLines, tgrid, p, rp, streetRoute)
 	// the junction-leg collapse re-welded nodes to LEG MIDPOINTS,
 	// overwriting the earlier least-squares meets — Tower 18's node sat
 	// 15 m north of the Lake axis and every corridor tail kinked up to
@@ -692,6 +701,7 @@ func compactNodes(net *Network) {
 // pts[:seam] and pts[seam:] by iterated neighbor averaging; vertices
 // outside the window are pinned.
 func blendSeam(pts []geo.Pt, seam int, radius float64) {
+	if os.Getenv("PORTOLAN_NOBLEND") != "" { return }
 	if seam <= 0 || seam >= len(pts) {
 		return
 	}
@@ -996,7 +1006,15 @@ func foldRings(net *Network) {
 
 func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 	twinLines []*geo.Line, tgrid *geo.Grid,
-	p splitParams, rp bundle.Params) {
+	p splitParams, rp bundle.Params, streetRoute map[string]bool) {
+	if os.Getenv("PORTOLAN_NOREFINE") != "" {
+		return
+	}
+	// a street-running edge keeps its corners: FinishSigma erosion scales
+	// with sigma^2, so 2.5 m is ~0.1 m of apex pull where the metro sigma
+	// took 6 m off the Atlanta streetcar's Park Place corner
+	rpStreet := rp
+	rpStreet.FinishSigma = 2.5
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runtime.NumCPU())
@@ -1012,6 +1030,19 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
+			erp := rp
+			if len(e.Routes) > 0 {
+				street := true
+				for _, r := range e.Routes {
+					if !streetRoute[r] {
+						street = false
+						break
+					}
+				}
+				if street {
+					erp = rpStreet
+				}
+			}
 			cl := geo.NewLine(e.Pts)
 			var members []*geo.Line
 			for round := 0; round < 2; round++ {
@@ -1020,7 +1051,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 					break
 				}
 				members = append(members, edgeTwins(cl, twinLines, tgrid)...)
-				cl = bundle.Refine(cl, members, rp)
+				cl = bundle.Refine(cl, members, erp)
 			}
 			if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
 				mid := cl.AtArc(cl.Len() / 2)
@@ -1030,7 +1061,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 				}
 			}
 			e.Pts = cl.Pts
-			e.Tracks = trackCount(cl, members, rp)
+			e.Tracks = trackCount(cl, members, erp)
 		}()
 	}
 	wg.Wait()

@@ -213,6 +213,16 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			out[i] = pts[i].Add(nrm.Scale(o))
 		}
+		// NOTE: this Gaussian is curvature-biased — it erodes a tight apex
+		// by ~sigma²/2R per pass. At the metro-tuned sigma that is
+		// invisible on metro radii but erased the Atlanta streetcar's
+		// street corners; street-running edges pass a small FinishSigma
+		// instead (erosion scales with sigma², so 2.5 m is ~0.1 m of pull).
+		// A delta-smoothing variant (subtracting the base line's own
+		// erosion) fixed corners AND cut the D82233 dup 34.8→21.7, but
+		// reintroduced junction weld kinks the full Gaussian had been
+		// erasing — a curvature-aware split of the two jobs is a tuning
+		// session of its own, not a drive-by.
 		cur = geo.NewLine(geo.GaussianArc(out, p.FinishSigma))
 		if moved < 0.3 {
 			break
