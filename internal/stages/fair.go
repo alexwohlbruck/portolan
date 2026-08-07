@@ -727,8 +727,16 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// matches the steel. Simplify straight runs, then corner-cut the
 	// remainder — endpoints pinned exactly, so segment-to-segment drawn
 	// continuity is untouched.
+	// The kit is MODE-SCALED: a tram's identity is hugging street
+	// geometry — a metro-scale 25 m fillet erased the Atlanta streetcar's
+	// Park Place dogleg into one sweep 20 m off the rails. Street-running
+	// modes keep tight corners; grade-separated modes keep the wide kit.
 	for i := range segs {
-		segs[i].Line = smoothPolyline(segs[i].Line)
+		s := 1.0
+		if rt := segs[i].RouteType; rt == 0 || rt == 900 {
+			s = 0.4
+		}
+		segs[i].Line = smoothPolylineScaled(segs[i].Line, s)
 	}
 	return segs, nil
 }
@@ -1024,19 +1032,26 @@ func maxTurn12(l *geo.Line) float64 {
 }
 
 func smoothPolyline(l *geo.Line) *geo.Line {
-	out := smoothPolylineOnce(l, true)
+	return smoothPolylineScaled(l, 1)
+}
+
+// smoothPolylineScaled runs the smoothing kit with its fillet radius and
+// Chaikin corner-cut cap scaled by s — street-running modes pass s < 1 so
+// real street corners survive.
+func smoothPolylineScaled(l *geo.Line, s float64) *geo.Line {
+	out := smoothPolylineOnce(l, true, s)
 	// insurance: fillet windows that overlap spatially can stitch a FOLD
 	// into the line (a reversal sharper than anything in the input) —
 	// fall back to plain corner cutting when that happens.
 	if geo.MaxTurnDeg(out.Pts) > 100 {
-		if alt := smoothPolylineOnce(l, false); geo.MaxTurnDeg(alt.Pts) < geo.MaxTurnDeg(out.Pts) {
+		if alt := smoothPolylineOnce(l, false, s); geo.MaxTurnDeg(alt.Pts) < geo.MaxTurnDeg(out.Pts) {
 			out = alt
 		}
 	}
 	return out
 }
 
-func smoothPolylineOnce(l *geo.Line, fillets bool) *geo.Line {
+func smoothPolylineOnce(l *geo.Line, fillets bool, s float64) *geo.Line {
 	pts := l.Pts
 	if len(pts) < 3 {
 		return l
@@ -1066,7 +1081,7 @@ func smoothPolylineOnce(l *geo.Line, fillets bool) *geo.Line {
 		// capped Chaikin can't round long chords, so corners drew faceted
 		// (the SW Loop chamfer). Cluster total ≥30° still gates: real
 		// corners fillet, isolated drift joints don't.
-		simp = filletCorners(simp, 25, 9, 30)
+		simp = filletCorners(simp, 25*s, 9, 30)
 	}
 	for round := 0; round < 3; round++ {
 		if len(simp) < 3 {
@@ -1084,9 +1099,9 @@ func smoothPolylineOnce(l *geo.Line, fillets bool) *geo.Line {
 			// rounds sparse corners tightly, like a hand would.
 			d := a.Dist(b)
 			qf, rf := 0.25, 0.75
-			if d > 32 {
-				qf = 8 / d
-				rf = 1 - 8/d
+			if d > 32*s {
+				qf = 8 * s / d
+				rf = 1 - 8*s/d
 			}
 			q := geo.Lerp(a, b, qf)
 			r := geo.Lerp(a, b, rf)
