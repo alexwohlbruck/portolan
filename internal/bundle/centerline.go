@@ -6,12 +6,25 @@
 package bundle
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"sort"
 	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 )
+
+// dbgCPt: PORTOLAN_DBGC="x,y" — Refine prints cross-section votes near it.
+var dbgCPt *geo.Pt
+
+func init() {
+	if v := os.Getenv("PORTOLAN_DBGC"); v != "" {
+		var x, y float64
+		fmt.Sscanf(v, "%f,%f", &x, &y)
+		dbgCPt = &geo.Pt{X: x, Y: y}
+	}
+}
 
 // Params are the centerline dials. Defaults are the values that survived
 // production tuning in attempt two (see docs/LESSONS.md).
@@ -109,7 +122,15 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 	if len(cl.Pts) < 3 || len(members) == 0 {
 		return cl
 	}
+	preThrough := len(members)
 	members = throughMembers(cl, members, p)
+	if dbgCPt != nil && cl.DistTo(*dbgCPt) < 60 {
+		fmt.Printf("REFCALL len=%.0f members pre=%d post=%d lens=", cl.Len(), preThrough, len(members))
+		for _, m := range members {
+			fmt.Printf("%.0f ", m.Len())
+		}
+		fmt.Println()
+	}
 	cur := cl
 	for it := 0; it < p.Iters; it++ {
 		line := geo.NewLine(cur.Densify(p.Step))
@@ -132,11 +153,18 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			if v := offsPool.Get(); v != nil {
 				offs = (*v.(*[]float64))[:0]
 			}
-			for _, m := range members {
+			dbgHere := dbgCPt != nil && pts[i].Dist(*dbgCPt) < 40 && it == 0
+			for mi, m := range members {
 				if !m.Within(pts[i], p.Reach) {
+					if dbgHere {
+						fmt.Printf("REFC3 i=%d member %d len=%.0f SKIP not-within\n", i, mi, m.Len())
+					}
 					continue
 				}
 				if !m.Within(pa, p.Reach) || !m.Within(pb, p.Reach) {
+					if dbgHere {
+						fmt.Printf("REFC3 i=%d member %d len=%.0f SKIP kiss-guard pa=%v pb=%v\n", i, mi, m.Len(), m.Within(pa, p.Reach), m.Within(pb, p.Reach))
+					}
 					continue // kiss guard: not persistent alongside
 				}
 				// kiss rule PER PASS: a chained strand can cross the
@@ -149,6 +177,9 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				// away and are dropped exactly where they diverge.
 				for _, c := range m.CrossSectionNear(pts[i], tan, p.Reach) {
 					if c.Parallel < p.MinParallel {
+						if dbgHere {
+							fmt.Printf("REFC3 i=%d member %d SKIP parallel=%.2f\n", i, mi, c.Parallel)
+						}
 						continue
 					}
 					qa := m.AtArc(c.Arc - p.SpanProbe)
@@ -159,6 +190,8 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 					}
 					if near(qa) && near(qb) {
 						offs = append(offs, c.Offset)
+					} else if dbgHere {
+						fmt.Printf("REFC3 i=%d member %d SKIP per-pass qa=%v qb=%v off=%.1f\n", i, mi, near(qa), near(qb), c.Offset)
 					}
 				}
 			}
@@ -171,6 +204,9 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			o := MedianStrand(st)
 			offStar[i] = math.Max(-p.Reach, math.Min(p.Reach, o))
 			has[i] = true
+			if dbgCPt != nil && pts[i].Dist(*dbgCPt) < 40 {
+				fmt.Printf("REFC3 it=%d i=%d offs=%v strands=%v o=%.1f\n", it, i, offs, st, o)
+			}
 			offsPool.Put(&offs)
 		})
 		var strandCounts []int
@@ -256,6 +292,25 @@ func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
 		}
 		if float64(near) >= need {
 			through = append(through, m)
+			continue
+		}
+		// a member that stays alongside for essentially ITS OWN whole
+		// length is corridor steel however short it is relative to the
+		// edge: the Charlotte Gold's opposite rail is a 945 m strand
+		// beside a 6.2 km edge — a fork ramp DIVERGES, this never leaves.
+		// The length floor keeps crossover diagonals (which also lie
+		// wholly within reach, but are furniture) out of the vote.
+		if m.Len() >= 150 {
+			ms := m.Resample(12.0)
+			on := 0
+			for _, q := range ms {
+				if cl.Within(q, p.Reach) {
+					on++
+				}
+			}
+			if float64(on) >= 0.9*float64(len(ms)) {
+				through = append(through, m)
+			}
 		}
 	}
 	if len(through) == 0 {

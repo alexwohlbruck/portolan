@@ -1116,6 +1116,12 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool
 			}
 		}
 	}
+	if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
+		fmt.Printf("TWIN3 street=%v gauge=%.0f samples=%d cands=%d\n", street, twinMax, len(samples), len(bests))
+		for si, b := range bests {
+			fmt.Printf("  twin cand len=%.0f bestRun=%d count=%d\n", twinLines[si].Len(), b, counts[si])
+		}
+	}
 	var out []*geo.Line
 	if !street {
 		need := int(0.8 * float64(len(samples)))
