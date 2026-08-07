@@ -1015,6 +1015,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 	// took 6 m off the Atlanta streetcar's Park Place corner
 	rpStreet := rp
 	rpStreet.FinishSigma = 2.5
+	rpStreet.SwitchTolerant = true
 	// node degree straight from the edge list — Adj can be stale between
 	// the rebuildAdj calls that bracket the refine rounds
 	deg := map[int]int{}

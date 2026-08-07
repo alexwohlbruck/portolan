@@ -42,6 +42,12 @@ type Params struct {
 	SlopeMax    float64 // max lateral-offset slope (m per m of arc)
 	FreeStart   bool    // unpin the start (terminus: end rides the group center)
 	FreeEnd     bool    // unpin the end
+	// SwitchTolerant enables the street-running vote rules: crossover
+	// diagonals (laterally migrating passes) are barred from the median,
+	// sections with less strand structure than their neighborhood bridge
+	// straight, and free ends hold the last stable correction. Metro keeps
+	// the production-tuned behavior until the all-modes centering session.
+	SwitchTolerant bool
 }
 
 func DefaultParams() Params {
@@ -220,6 +226,28 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						return q.Dist(pa) < p.Reach*1.5 ||
 							q.Dist(pb) < p.Reach*1.5
 					}
+					// switch tolerance: a crossover diagonal passes the
+					// parallel test (a switch is only ~10-15 deg off the
+					// corridor) but is LATERALLY MIGRATING — its votes sweep
+					// from one rail to the other and drag the median into an
+					// S on dead-straight track (the Gold at Sunnyside, at
+					// both its crossovers). A corridor track holds its
+					// offset; measure the drift over +-30 m of the member's
+					// own arc and drop movers.
+					qd1 := m.AtArc(c.Arc - 30)
+					qd2 := m.AtArc(c.Arc + 30)
+					var dd1, dd2 float64
+					var ok1, ok2 bool
+					if p.SwitchTolerant {
+						dd1, ok1 = line.DistToCapped(qd1, p.Reach)
+						dd2, ok2 = line.DistToCapped(qd2, p.Reach)
+					}
+					if p.SwitchTolerant && ok1 && ok2 && math.Abs(dd1-dd2) > 3 {
+						if dbgHere {
+							fmt.Printf("REFC3 i=%d member %d SKIP switch-drift %.1f->%.1f\n", i, mi, dd1, dd2)
+						}
+						continue
+					}
 					if near(qa) && near(qb) {
 						offs = append(offs, c.Offset)
 					} else if dbgHere {
@@ -241,6 +269,37 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			offsPool.Put(&offs)
 		})
+		// a section left with LESS strand structure than its neighborhood
+		// is inside a switch window (a mover's votes were dropped, or the
+		// swap hides a rail from the perpendicular): bridge it from the
+		// stable regimes on both sides rather than follow the one rail
+		// that remains — on straight track the bridge IS the straight
+		// centerline.
+		if p.SwitchTolerant {
+			win := 10
+			was := append([]bool(nil), has...)
+			for i := 1; i < n-1; i++ {
+				if !was[i] {
+					continue
+				}
+				lo, hi := i-win, i+win
+				if lo < 1 {
+					lo = 1
+				}
+				if hi > n-2 {
+					hi = n - 2
+				}
+				var nb []int
+				for k := lo; k <= hi; k++ {
+					if k != i && was[k] {
+						nb = append(nb, countAt[k])
+					}
+				}
+				if len(nb) >= 4 && countAt[i] < medianInt(nb) {
+					has[i] = false
+				}
+			}
+		}
 		var strandCounts []int
 		for i := 1; i < n-1; i++ {
 			if has[i] {
@@ -268,7 +327,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// pinned one. Fill coverage gaps by interpolation (uncovered ends
 		// ramp to zero) and slope-limit the WHOLE series so every lateral
 		// correction eases in at a bounded grade.
-		filt = fillGaps(filt, has)
+		filt = fillGaps(filt, has, p.FreeStart && p.SwitchTolerant, p.FreeEnd && p.SwitchTolerant)
 		filt = slopeLimit(filt, nil, p.SlopeMax*p.Step)
 		out := make([]geo.Pt, n)
 		copy(out, pts)
@@ -395,17 +454,20 @@ func medianFilter(v []float64, has []bool, w int) []float64 {
 // coverage are linearly interpolated between their covered neighbors, and
 // uncovered leading/trailing runs are zero (no correction far from any
 // evidence — the slope limit then eases the boundary).
-func fillGaps(v []float64, has []bool) []float64 {
+func fillGaps(v []float64, has []bool, holdStart, holdEnd bool) []float64 {
 	n := len(v)
 	out := make([]float64, n)
 	last := -1
+	first := -1
 	for i := 0; i < n; i++ {
 		if !has[i] {
 			continue
 		}
 		out[i] = v[i]
 		if last < 0 {
-			// leading uncovered run stays zero
+			first = i
+			// leading uncovered run stays zero (pinned end: the endpoint
+			// cannot move, so the correction must ramp away from it)
 		} else if last < i-1 {
 			for j := last + 1; j < i; j++ {
 				t := float64(j-last) / float64(i-last)
@@ -413,6 +475,19 @@ func fillGaps(v []float64, has []bool) []float64 {
 			}
 		}
 		last = i
+	}
+	// a FREE end holds the last stable correction instead of decaying to
+	// zero: ramping to zero walks the tip back onto the seed rail — the
+	// terminus finishes straight on the corridor's centered offset.
+	if holdStart && first > 0 {
+		for j := 0; j < first; j++ {
+			out[j] = v[first]
+		}
+	}
+	if holdEnd && last >= 0 && last < n-1 {
+		for j := last + 1; j < n; j++ {
+			out[j] = v[last]
+		}
 	}
 	return out
 }
