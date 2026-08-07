@@ -150,11 +150,76 @@ build() { # $1 = feed key
   fi
 }
 
+# shapes: regenerate the feed's shapes.txt with pfaedle (docs/CITIES.md).
+# Two feeds need this: ones with NO shapes.txt (Berlin, Tokyo, GTFS-JP in
+# general) and ones whose shapes are SKELETAL — a couple of points per
+# route, station-to-station chords. London ships two such shapes per line
+# ("bakerloo-inbound"…), coarser than the spacing between neighbouring
+# tube bores, and chart's Viterbi follows them onto the wrong tracks.
+# Fetches an OSM XML window (the geojson rail extract won't do — pfaedle
+# reads OSM), map-matches every trip, and zips the result back over the
+# feed. Modes come from routes.txt route_type (ferries are left alone).
+shapes() { # $1 = feed key
+  local feed=$1 gtfs w s e n xml modes tmp
+  need docker
+  gtfs=$(get "$feed" gtfs)
+  [ -s "$gtfs" ] || { echo "$feed: no GTFS at $gtfs — see docs/CITIES.md"; exit 2; }
+  case "$gtfs" in /*) echo "$feed: gtfs is the shared mirror ($gtfs) — copy it under data/gtfs first"; exit 2 ;; esac
+  bbox "$feed"
+  # pad the window: routes run to the bbox edge, and a shape matched
+  # against a clipped window goes straight-line outside it
+  w=$(python3 -c "print($w-0.1)"); s=$(python3 -c "print($s-0.05)")
+  e=$(python3 -c "print($e+0.1)"); n=$(python3 -c "print($n+0.05)")
+
+  modes=$(unzip -p "$gtfs" routes.txt | python3 -c '
+import csv,sys
+m={"0":"tram","1":"subway","2":"rail","5":"funicular","6":"gondola","7":"funicular"}
+t={m[r["route_type"]] for r in csv.DictReader(sys.stdin) if r.get("route_type") in m}
+print(",".join(sorted(t)))')
+  [ -n "$modes" ] || { echo "$feed: no pfaedle-matchable route types"; exit 2; }
+
+  xml="data/osm/$feed.osm"
+  mkdir -p data/osm
+  if [ ! -s "$xml" ]; then
+    echo "$feed: Overpass XML window $w,$s,$e,$n → $xml (minutes for a big window)"
+    local query="[out:xml][timeout:900];
+way[\"railway\"]($s,$w,$n,$e);
+(._;>;);
+out;"
+    local try ok=0
+    for try in 1 2 3; do
+      if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+         "$OVERPASS" -o "$xml.tmp"; then ok=1; break; fi
+      echo "$feed: attempt $try failed — public Overpass under load; waiting…"
+      sleep $((try * 20))
+    done
+    [ "$ok" = 1 ] || { echo "$feed: Overpass gave up after 3 tries"; rm -f "$xml.tmp"; exit 1; }
+    grep -q '<osm' "$xml.tmp" || { echo "$feed: not OSM XML:"; head -c 300 "$xml.tmp"; rm -f "$xml.tmp"; exit 1; }
+    mv "$xml.tmp" "$xml"
+  fi
+  echo "$feed: $(du -h "$xml" | cut -f1) OSM window, matching modes: $modes"
+
+  tmp=$(mktemp -d)
+  cp "$gtfs" "$tmp/feed.zip"
+  # -D drops the feed's existing shapes first: without it pfaedle keeps
+  # whatever is there, and a feed with SKELETAL shapes comes back unchanged
+  docker run -i --rm \
+    -v "$PWD/data/osm:/osm" -v "$tmp:/gtfs" -v "$tmp/out:/gtfs-out" \
+    ghcr.io/ad-freiburg/pfaedle:latest -x "/osm/$feed.osm" -i /gtfs/feed.zip -m "$modes" -D
+  [ -s "$tmp/out/shapes.txt" ] || { echo "$feed: pfaedle produced no shapes"; rm -rf "$tmp"; exit 1; }
+  cp "$gtfs" "$gtfs.bak"
+  (cd "$tmp/out" && zip -q -r feed-shaped.zip ./*.txt)
+  mv "$tmp/out/feed-shaped.zip" "$gtfs"
+  rm -rf "$tmp"
+  echo "$feed: shapes.txt now $(unzip -p "$gtfs" shapes.txt | wc -l | tr -d ' ') rows (was $(unzip -p "$gtfs.bak" shapes.txt 2>/dev/null | wc -l | tr -d ' ')); original at $gtfs.bak"
+}
+
 case "${1:-list}" in
   list) list ;;
   gtfs)  known "${2:-}" gtfs;  gtfs "$2" "${3:-}" ;;
   rail)  known "${2:-}" rail;  rail "$2" ;;
+  shapes) known "${2:-}" shapes; shapes "$2" ;;
   build) known "${2:-}" build; build "$2" ;;
   all)   known "${2:-}" all;   rail "$2"; build "$2" ;;
-  *) echo "usage: $0 list|gtfs|rail|build|all [city] [transitland-feed-id]"; exit 2 ;;
+  *) echo "usage: $0 list|gtfs|rail|shapes|build|all [city] [transitland-feed-id]"; exit 2 ;;
 esac

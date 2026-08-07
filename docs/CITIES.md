@@ -17,7 +17,7 @@ bundle is the whole map).
 | `atlanta` | Atlanta (MARTA) | mirror `17.zip` | ✅ 60 seg | 4 lines + streetcar |
 | `charlotte` | Charlotte (CATS) | mirror `886.zip` | ✅ 8 seg | Blue Line + Gold streetcar |
 | `la` | LA Metro | Transitland `734` | ✅ 112 seg | rail-only feed; 6 lines |
-| `london` | London (TfL) | Transitland `9788` | ✅ 1428 seg | Interline's conversion; 11 Tube lines + DLR + Tram |
+| `london` | London (TfL) | Transitland `9788` + pfaedle | ✅ 2898 seg | Interline's conversion ships SKELETAL shapes (2 per line, station-to-station chords) — `tools/city.sh shapes london` re-matches them; see below |
 | `paris` | Paris (RATP) | Transitland `762` | ⚠️ 4690 seg | Metro/tram correct; RER + Transilien + TER stray outside the window (below) |
 | `berlin` | Berlin (BVG) | Transitland `1268`, subset + pfaedle | ✅ 1358 seg | U1–U9 + 89 tram labels; no S-Bahn (below) |
 | `tokyo` | Tokyo Metro | Transitland `8923` + pfaedle | ✅ 132 seg | all 9 lines, official colours |
@@ -41,6 +41,25 @@ group as LOOM). Docker is the least painful install:
 Tokyo: 9539 trips matched in about a second against a 12 MB window. This is
 the general answer for GTFS-JP, which routinely omits shapes — neither
 Tokyo Metro (`8923`) nor Toei (`8922`) has them.
+
+All of the above is now one command — it fetches the OSM XML window from
+the city's bbox, derives `-m` from `routes.txt`, and zips the result back
+over the feed (original kept at `<gtfs>.bak`):
+
+    tools/city.sh shapes london
+
+**Skeletal shapes are worse than none.** London's Interline conversion HAS
+a `shapes.txt` — 965 rows for the whole network, two shapes per line
+("bakerloo-inbound"), consecutive points 1.7 km apart: station-to-station
+chords, one polyline shared by every branch. chart's Viterbi followed
+those chords onto whichever tracks they grazed — Bakerloo rode the Met's
+Allsop Place curve at Baker St, the Central tangled at North Acton, the
+Northern lost its entire Bank branch (one shape can only trace one
+branch), and the tube pairs braided at Waterloo. pfaedle's `-D` flag
+(part of `tools/city.sh shapes`) drops the feed's own shapes first —
+without it pfaedle keeps whatever is there and returns the feed
+unchanged. After re-matching: 62,423 trips, 168,886 shape rows, 344
+patterns, and every branch draws on its own steel.
 
 **National feeds must be subset first.** `1268 f-germany~urban~transport` is
 240 MB and 21k routes covering all of Germany; pfaedle bills per trip, and
