@@ -1031,17 +1031,15 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 			erp := rp
-			if len(e.Routes) > 0 {
-				street := true
-				for _, r := range e.Routes {
-					if !streetRoute[r] {
-						street = false
-						break
-					}
+			street := len(e.Routes) > 0
+			for _, r := range e.Routes {
+				if !streetRoute[r] {
+					street = false
+					break
 				}
-				if street {
-					erp = rpStreet
-				}
+			}
+			if street {
+				erp = rpStreet
 			}
 			cl := geo.NewLine(e.Pts)
 			var members []*geo.Line
@@ -1050,7 +1048,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 				if len(members) == 0 {
 					break
 				}
-				members = append(members, edgeTwins(cl, twinLines, tgrid)...)
+				members = append(members, edgeTwins(cl, twinLines, tgrid, street)...)
 				cl = bundle.Refine(cl, members, erp)
 			}
 			if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
@@ -1073,25 +1071,70 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 // the paired rail is unridden steel — but the drawn line must sit on
 // the pair's center. Turnaround arcs and yard ladders parallel an edge
 // only briefly and never qualify (the South Ferry law holds).
-func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid) []*geo.Line {
+func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool) []*geo.Line {
 	const ds = 12.0
-	const twinMax = 6.0
+	// gauge admits the whole TRACK GROUP, not just the adjacent bore: a
+	// street-running one-way pair straddles the roadway ~9-12 m apart
+	// (Charlotte Gold at Hawthorne Lane), and the drawn line belongs in
+	// the middle of the group whatever its track count. Membership is a
+	// sustained parallel RUN (the kiss rule, as in edgeMates) rather than
+	// 80% of the whole edge — a 6 km edge with a pair along one street
+	// section could never twin under the whole-edge rule. Turnaround arcs
+	// and switch ladders still drop out: they cannot hold the gauge for a
+	// run, and Refine's own per-pass persistence probes guard each
+	// crossing after membership.
+	twinMax := dial("split_twin_max", 18)
+	if !street {
+		// metro keeps the production-tuned twin rule: adjacent-bore gauge,
+		// whole-edge parallelism. The wide run-based rule centered street
+		// pairs but captured unridden mainlines alongside subway corridors
+		// (NYC dup 34.8→47.8, five new spikes) — widening it for
+		// grade-separated modes is its own tuning session.
+		twinMax = 6.0
+	}
 	samples := cl.Resample(ds)
-	counts := map[int]int{}
+	runs := map[int]int{}
+	bests := map[int]int{}  // longest consecutive run (street rule)
+	counts := map[int]int{} // total in-gauge samples (tuned metro rule)
 	for _, q := range samples {
+		here := map[int]bool{}
 		tgrid.Near(q, twinMax, func(si int) {
 			if twinLines[si].Within(q, twinMax) {
-				counts[si]++
+				here[si] = true
 			}
 		})
-	}
-	need := int(0.8 * float64(len(samples)))
-	if need < 3 {
-		need = 3
+		for si := range runs {
+			if !here[si] {
+				delete(runs, si)
+			}
+		}
+		for si := range here {
+			counts[si]++
+			runs[si]++
+			if runs[si] > bests[si] {
+				bests[si] = runs[si]
+			}
+		}
 	}
 	var out []*geo.Line
-	for si, c := range counts {
-		if c >= need {
+	if !street {
+		need := int(0.8 * float64(len(samples)))
+		if need < 3 {
+			need = 3
+		}
+		for si, c := range counts {
+			if c >= need {
+				out = append(out, twinLines[si])
+			}
+		}
+		return out
+	}
+	need := 8 // ~96 m of sustained parallelism
+	if n := int(0.8 * float64(len(samples))); n < need && n >= 3 {
+		need = n // short edges: whole-edge criterion
+	}
+	for si, b := range bests {
+		if b >= need {
 			out = append(out, twinLines[si])
 		}
 	}
