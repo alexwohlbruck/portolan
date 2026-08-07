@@ -343,7 +343,43 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				strandCounts = append(strandCounts, countAt[i])
 			}
 		}
-		filt := medianFilter(offStar, has, 2)
+		// street vote sets flap at threshold cliffs — a couplet partner
+		// breathing across the roadway gauge, a far rail sliding along the
+		// reach boundary — with 10–30 m periods that the ±12 m window
+		// passes straight through (Berlin M1 read [0,16.8]→[0]→[0,16.8]
+		// and drew an 8 m sawtooth). A ±60 m majority window kills the
+		// alternation while leaving regime CHANGES (real divergences,
+		// which hold their new offset for hundreds of metres) intact;
+		// slopeLimit below ramps whatever step survives.
+		medianW := 2
+		if p.SwitchTolerant {
+			medianW = 10
+		}
+		filt := medianFilter(offStar, has, medianW)
+		// offset must never exceed the base line's local turn radius:
+		// street pair-centering can ask for 8-10 m of lateral move, and
+		// carrying that through a junction-mouth corner tighter than the
+		// offset FOLDS the polyline back over itself (Berlin M1 at
+		// Eberswalder drew 175° reversal knots from exactly this — MATCH
+		// clean, votes stable, geometry folded). Clamp to 0.8R; the
+		// gaussian and slope limit below ramp the clamped pockets.
+		if p.SwitchTolerant {
+			for i := 1; i < n-1; i++ {
+				if !has[i] || filt[i] == 0 {
+					continue
+				}
+				a, b, c := pts[i-1], pts[i], pts[i+1]
+				ab, bc, ca := a.Dist(b), b.Dist(c), c.Dist(a)
+				// 4*area via cross product; R = abc/(4K), huge when collinear
+				k4 := 2 * math.Abs((b.X-a.X)*(c.Y-a.Y)-(b.Y-a.Y)*(c.X-a.X))
+				if k4 < 1e-9 {
+					continue
+				}
+				if lim := 0.8 * ab * bc * ca / k4; math.Abs(filt[i]) > lim {
+					filt[i] = math.Copysign(lim, filt[i])
+				}
+			}
+		}
 		// Stiffness scales with corridor width. On a wide interlocking
 		// (W 4 St: two stacked 4-track levels flattened to 2D) the strand
 		// count flickers as tracks interleave and every flicker steps the
