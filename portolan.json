@@ -11,8 +11,9 @@
     },
     "29": {
       "name": "Chicago",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/29.zip",
+      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/29.zip,data/gtfs/metra.zip,data/gtfs/amtrak.zip",
       "rail": "build/chi-rail.geojson",
+      "streets": "build/chi-streets.geojson",
       "out": "build/chi.geojson",
       "network": "sketches/network-29.json",
       "bbox": [-87.95, 41.7, -87.52, 42.08]

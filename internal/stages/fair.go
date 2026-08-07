@@ -1,9 +1,9 @@
 package stages
 
 import (
-	"os"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
@@ -111,9 +111,19 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		return o
 	}
 	label := func(ei int, color string) string {
+		rs := colorRoutes[ei][color]
+		// a bus corridor can carry dozens of routes — the label is a
+		// sample, not a roster
+		const maxNames = 4
 		out := ""
-		for _, r := range colorRoutes[ei][color] {
+		for i, r := range rs {
+			if i == maxNames && len(rs) > maxNames+1 {
+				return fmt.Sprintf("%s +%d", out, len(rs)-maxNames)
+			}
 			sn := routes[r].ShortName
+			if sn == "" {
+				sn = routes[r].LongName // Amtrak names its trains, not numbers
+			}
 			if sn == "" {
 				sn = r
 			}
@@ -377,12 +387,12 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		// Bowling Green green fork). Planning first lets longer chains
 		// claim their span; anything touching a claimed end is dropped.
 		type cand struct {
-			a, cur           int
-			aAtTo, bAtFrom   bool
-			color            string
-			mid              []geo.Pt
-			mids             [][2]int
-			bend             float64
+			a, cur         int
+			aAtTo, bAtFrom bool
+			color          string
+			mid            []geo.Pt
+			mids           [][2]int
+			bend           float64
 		}
 		// entry/exit travel tangents of a connection, measured at the OUTER
 		// ends (steady side) — inner ends carry corner overshoot. 100 m out:
@@ -484,7 +494,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					p0, p3 := tailP[0], headP[len(headP)-1]
 					near := tailP[len(tailP)-1]
 					tlP, hlP := geo.NewLine(tailP), geo.NewLine(headP)
-					if tc, needA, needB := trackCurveBetween(p0, p3, near, tlP, hlP); tc != nil {
+					if tc, needA, needB := trackCurveBetween(p0, p3, near, tlP, hlP,
+						mode.Of(routeType(c.a, c.color)) == mode.Bus); tc != nil {
 						cand := append(append([]geo.Pt{p0}, tc...), p3)
 						allow := 25 + 20*math.Min(1, c.bend/90)
 						if maxTurn12(smoothPolyline(geo.NewLine(cand))) <= allow {
@@ -584,7 +595,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				p0 := tail[0]
 				p3 := head[len(head)-1]
 				near := tail[len(tail)-1]
-				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head))
+				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head),
+					mode.Of(routeType(a, c.color)) == mode.Bus)
 				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 && near.Dist(dbg3Pt) < 150 {
 					mt := -1.0
 					if tc != nil {
@@ -781,7 +793,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 // arc from the tail's node-side tip back to the curve's start, and
 // from the head's tip forward to the curve's end — valid only when the
 // curve is non-nil; the cut pass uses them to shrink turning cuts.
-func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) ([]geo.Pt, float64, float64) {
+func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, busOK bool) ([]geo.Pt, float64, float64) {
 	if lvlGrid == nil {
 		return nil, 0, 0
 	}
@@ -794,6 +806,12 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) ([]geo.Pt, float64
 	var bestFit *fit
 	lvlGrid.Near(near, 25, func(ti int) {
 		t := lvlLines[ti]
+		// class discipline: a bus movement connects over streets, a rail
+		// movement never does — an el corner with a street below would
+		// otherwise offer the road as its "connector steel"
+		if (wayRailClass[lvlWays[ti]] == "street") != busOK {
+			return
+		}
 		if t.Len() < 15 || t.DistTo(near) > 25 {
 			return
 		}
@@ -947,6 +965,9 @@ func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
 	var bestOff float64
 	lvlGrid.Near(apex, 25, func(ti int) {
 		t := lvlLines[ti]
+		if wayRailClass[lvlWays[ti]] == "street" {
+			return // bus edges are street geometry already; rail never borrows a road corner
+		}
 		da := t.DistTo(a)
 		db := t.DistTo(b)
 		dx := t.DistTo(apex)

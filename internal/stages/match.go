@@ -132,6 +132,8 @@ func classCompat(routeType int, cls string) bool {
 		return cls == "funicular"
 	case mode.Aerial:
 		return cls == "aerial"
+	case mode.Bus:
+		return cls == "street"
 	}
 	return true
 }

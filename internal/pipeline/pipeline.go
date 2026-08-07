@@ -6,10 +6,11 @@
 package pipeline
 
 import (
-	"strconv"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,8 +97,16 @@ func levelClass(tags map[string]string) int {
 }
 
 type ChartOpts struct {
-	GTFS  string
-	Rail  string
+	GTFS string
+	Rail string
+	// Streets: optional street extract (osm.LoadStreets). Bus patterns are
+	// drawn only when set; the streets join the MATCH graph but never the
+	// strand pool.
+	Streets string
+	// BBox [w,s,e,n]: clip pattern shapes to the city window. A national
+	// feed's Amtrak shape would otherwise leave the extract and draw a
+	// gap chord across the continent.
+	BBox  []float64
 	Out   string
 	Dials *Dials
 	// Scenario: build the layout for one service scenario (gtfs.Scenario
@@ -131,17 +140,39 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 	}
 	stages.SetCrossoverWays(xover)
-	tracks := make([]bundle.Track, len(ways))
-	for i, w := range ways {
-		pts := make([]geo.Pt, len(w.Coords))
-		for j, ll := range w.Coords {
-			pts[j] = frame.ToXY(ll)
+	toTracks := func(ws []osm.Way) []bundle.Track {
+		ts := make([]bundle.Track, len(ws))
+		for i, w := range ws {
+			pts := make([]geo.Pt, len(w.Coords))
+			for j, ll := range w.Coords {
+				pts[j] = frame.ToXY(ll)
+			}
+			ts[i] = bundle.Track{ID: w.ID, Line: geo.NewLine(pts),
+				Level: levelClass(w.Tags)}
 		}
-		tracks[i] = bundle.Track{ID: w.ID, Line: geo.NewLine(pts),
-			Level: levelClass(w.Tags)}
+		return ts
+	}
+	tracks := toTracks(ways)
+	// streets are a separate opt-in layer for bus matching: they join the
+	// class/level maps and the MATCH graph, but never the strand pool —
+	// a street way IS the drawn road centerline already, and 100k street
+	// lines through bundling would be pure cost.
+	var streetTracks []bundle.Track
+	if o.Streets != "" {
+		sways, serr := osm.LoadStreets(o.Streets)
+		if serr != nil {
+			return serr
+		}
+		streetTracks = toTracks(sways)
+		ways = append(ways, sways...)
 	}
 	lvls := map[string]int{}
 	for _, t := range tracks {
+		if t.Level != 0 {
+			lvls[t.ID] = t.Level
+		}
+	}
+	for _, t := range streetTracks {
 		if t.Level != 0 {
 			lvls[t.ID] = t.Level
 		}
@@ -153,8 +184,8 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	stages.SetWayRailClass(cls)
 	strands := bundle.Chain(tracks, d.JoinTol)
-	logf("chart: %d rail ways → %d strands (%.1fs)",
-		len(ways), len(strands), time.Since(t0).Seconds())
+	logf("chart: %d rail ways (+%d street) → %d strands (%.1fs)",
+		len(tracks), len(streetTracks), len(strands), time.Since(t0).Seconds())
 	if err := writeStrands(o.Out+".strands.geojson", strands, frame); err != nil {
 		return err
 	}
@@ -171,9 +202,13 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	// parse. The kept patterns are identical — the same predicate re-runs
 	// below on what used to be the full set.
 	drawable := func(r gtfs.Route) bool {
-		return mode.Of(r.Type).Drawable()
+		c := mode.Of(r.Type)
+		if c == mode.Bus {
+			return o.Streets != ""
+		}
+		return c.Drawable()
 	}
-	feed, err := gtfs.LoadFiltered(o.GTFS, loadCover, drawable)
+	feed, err := loadFeeds(o.GTFS, loadCover, drawable)
 	if err != nil {
 		return err
 	}
@@ -184,8 +219,13 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 	}
 	logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
+	if len(o.BBox) == 4 {
+		before := len(rail)
+		rail = clipPatterns(rail, o.BBox)
+		logf("chart: bbox clip: %d patterns → %d in-window pieces", before, len(rail))
+	}
 	if o.Scenario != "" {
-		si, err := gtfs.LoadService(o.GTFS)
+		si, err := gtfs.LoadService(firstFeed(o.GTFS))
 		if err != nil {
 			return fmt.Errorf("scenario build: %w", err)
 		}
@@ -212,12 +252,17 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 	}
 
-if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
+	if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
 		var la, lo float64
 		fmt.Sscanf(v, "%f,%f", &la, &lo)
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
-	paths, err := stages.Match(rail, tracks, frame)
+	stages.SetBusRoutes(busRouteSet(feed.Routes))
+	matchTracks := tracks
+	if len(streetTracks) > 0 {
+		matchTracks = append(append([]bundle.Track{}, tracks...), streetTracks...)
+	}
+	paths, err := stages.Match(rail, matchTracks, frame)
 	if err != nil {
 		return fmt.Errorf("MATCH: %w", err)
 	}
@@ -226,7 +271,11 @@ if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
 	if err := writePaths(o.Out+".paths.geojson", paths, frame); err != nil {
 		return err
 	}
-	net, err := stages.Split(paths, tracks)
+	// SPLIT must see the SAME track slice as MATCH: path steps index into
+	// the match graph's pieces, and buildTrackGraphCached only returns that
+	// graph for the identical slice. (A rail+used-streets subset here
+	// panicked on piece ids past the smaller graph's range.)
+	net, err := stages.Split(paths, matchTracks)
 	if err != nil {
 		return fmt.Errorf("SPLIT: %w", err)
 	}
@@ -392,11 +441,11 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 			"color": s.Color, "route_color": s.Color,
 			"routes": strings.Join(s.Routes, ","), "label": s.Label,
 			"route_type": s.RouteType, "mode": s.Mode,
-			"slot":       s.Slot, "nslots": s.NSlots,
+			"slot": s.Slot, "nslots": s.NSlots,
 			"offset_px":   s.OffsetPx,
 			"off_from_px": s.OffFromPx,
 			"off_to_px":   s.OffToPx,
-			"band_min": s.BandMin, "band_max": s.BandMax,
+			"band_min":    s.BandMin, "band_max": s.BandMax,
 			"len_m": int(s.Line.Len()),
 		}, s.Line, frame); ok {
 			fc.Features = append(fc.Features, f)
@@ -458,4 +507,104 @@ func LoadBuildFeatures(path string, frame geo.Frame) ([]sketch.BuildFeature, err
 		out = append(out, sketch.BuildFeature{Color: color, Routes: rts, Line: geo.NewLine(pts)})
 	}
 	return out, nil
+}
+
+// firstFeed: ChartOpts.GTFS is a comma list (primary feed first, overlay
+// feeds after). Scenario derivation stays a primary-feed concept.
+func firstFeed(paths string) string {
+	if i := strings.IndexByte(paths, ','); i >= 0 {
+		return strings.TrimSpace(paths[:i])
+	}
+	return strings.TrimSpace(paths)
+}
+
+// loadFeeds loads and merges every feed in the comma list. Overlay route
+// ids are prefixed f<i>: unconditionally — deterministic, and route ids
+// only surface in the routes prop; labels come from short names.
+func loadFeeds(paths string, cover float64, keep func(gtfs.Route) bool) (*gtfs.Feed, error) {
+	parts := strings.Split(paths, ",")
+	base, err := gtfs.LoadFiltered(strings.TrimSpace(parts[0]), cover, keep)
+	if err != nil {
+		return nil, err
+	}
+	for i, p := range parts[1:] {
+		p = strings.TrimSpace(p)
+		f, err := gtfs.LoadFiltered(p, cover, keep)
+		if err != nil {
+			return nil, fmt.Errorf("overlay feed %s: %w", p, err)
+		}
+		pre := fmt.Sprintf("f%d:", i+1)
+		for id, r := range f.Routes {
+			r.ID = pre + id
+			base.Routes[r.ID] = r
+		}
+		for _, pat := range f.Patterns {
+			pat.Route.ID = pre + pat.Route.ID
+			base.Patterns = append(base.Patterns, pat)
+		}
+	}
+	return base, nil
+}
+
+func busRouteSet(routes map[string]gtfs.Route) map[string]bool {
+	m := map[string]bool{}
+	for id, r := range routes {
+		if mode.Of(r.Type) == mode.Bus {
+			m[id] = true
+		}
+	}
+	return m
+}
+
+// clipPatterns cuts every shape to the window (plus margin): each maximal
+// in-window run ≥1 km becomes its own pattern piece, ending at the window
+// edge the way Apple draws a line running off the map. Without this a
+// national feed (Amtrak) chords across the continent as gap bridges.
+func clipPatterns(pats []gtfs.Pattern, bbox []float64) []gtfs.Pattern {
+	const margin = 0.02 // ~2 km
+	w, s, e, n := bbox[0]-margin, bbox[1]-margin, bbox[2]+margin, bbox[3]+margin
+	inside := func(ll geo.LL) bool {
+		return ll.Lon >= w && ll.Lon <= e && ll.Lat >= s && ll.Lat <= n
+	}
+	var out []gtfs.Pattern
+	for _, pat := range pats {
+		runs := [][]geo.LL{}
+		var cur []geo.LL
+		for _, ll := range pat.Shape {
+			if inside(ll) {
+				cur = append(cur, ll)
+			} else if len(cur) > 0 {
+				runs = append(runs, cur)
+				cur = nil
+			}
+		}
+		if len(cur) > 0 {
+			runs = append(runs, cur)
+		}
+		if len(runs) == 1 && len(runs[0]) == len(pat.Shape) {
+			out = append(out, pat) // wholly inside — untouched
+			continue
+		}
+		for ri, run := range runs {
+			if len(run) < 2 || runLenKm(run) < 1.0 {
+				continue
+			}
+			np := pat
+			np.Shape = run
+			np.ShapeID = fmt.Sprintf("%s#clip%d", pat.ShapeID, ri)
+			out = append(out, np)
+		}
+	}
+	return out
+}
+
+func runLenKm(run []geo.LL) float64 {
+	km := 0.0
+	midLat := run[0].Lat * math.Pi / 180
+	for i := 1; i < len(run); i++ {
+		dx := (run[i].Lon - run[i-1].Lon) * 111.32 * math.Cos(midLat)
+		dy := (run[i].Lat - run[i-1].Lat) * 110.54
+		km += math.Hypot(dx, dy)
+	}
+	return km
 }

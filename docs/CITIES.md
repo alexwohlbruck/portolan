@@ -13,7 +13,7 @@ bundle is the whole map).
 | feed key | city | GTFS source | builds | notes |
 |---|---|---|---|---|
 | `5` | NYC | mirror `5.zip` | ✅ 15 lines | the tuning city, scored |
-| `29` | Chicago | mirror `29.zip` | ✅ | Loop topology correct |
+| `29` | Chicago | mirror `29.zip` + `metra.zip` + `amtrak.zip` | ✅ 5512 seg | CTA L + 125 bus routes + 11 Metra lines + Amtrak; the multi-feed + streets city |
 | `atlanta` | Atlanta (MARTA) | mirror `17.zip` | ✅ 60 seg | 4 lines + streetcar |
 | `charlotte` | Charlotte (CATS) | mirror `886.zip` | ✅ 8 seg | Blue Line + Gold streetcar |
 | `la` | LA Metro | Transitland `734` | ✅ 112 seg | rail-only feed; 6 lines |
@@ -74,12 +74,21 @@ tram + 6 ferries. It streams `stop_times.txt` rather than loading it —
 the national copy is multiple GB uncompressed, and the dict-per-row version
 of this script did not finish in ten minutes.
 
-**Berlin has no S-Bahn.** Feed `1268` carries none as rail: every `S1`/`S41`
-in it is a `route_type` 3 replacement bus. The S-Bahn lives in
-`1267 f-germany~regional~rail`, and merging two feeds into one city is not
-something `portolan.json` can express today — one `gtfs` path per city.
-Transitland has no VBB or BVG-named feed at all (searched; the search
-endpoint works, `marta` → `17`).
+**Berlin has no S-Bahn yet.** Feed `1268` carries none as rail: every
+`S1`/`S41` in it is a `route_type` 3 replacement bus. The S-Bahn lives in
+`1267 f-germany~regional~rail`. `gtfs` now takes a comma list (Chicago
+carries CTA + Metra + Amtrak that way), so the remaining work is subsetting
+`1267` to the Berlin operator and appending it — plus pfaedle for its
+shapes. Transitland has no VBB or BVG-named feed at all (searched; the
+search endpoint works, `marta` → `17`).
+
+**Buses are opt-in per city.** Add a `streets` path to the feed row and
+fetch it (`tools/city.sh streets 29` — the highway extract is 10–50× the
+rail one); bus routes then draw as corridor-trunked ribbons in the top
+zoom band. Without the extract the same feed builds rail-only, unchanged.
+Chicago is the only city wired so far. Feeds like Metra's ship CSV headers
+with spaces after commas — the reader trims both headers and values, a
+whole commuter system vanished silently before that.
 
 **Paris strays.** Feed `762` bundles RER (A–E), Transilien (H/J/L/N/P) and
 TER in with the Metro and trams. Those run hundreds of km past any

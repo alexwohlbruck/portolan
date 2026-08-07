@@ -77,15 +77,11 @@ func Of(routeType int) Class {
 	return Unknown
 }
 
-// Drawable reports whether the pipeline charts this class today. Bus is
-// designed (corridor trunking, docs/MODES.md) but needs the street graph
-// in the extract and road-aware matching — deliberately last.
+// Drawable reports whether the pipeline charts this class. Bus requires a
+// street extract — the pipeline drops bus patterns when the city has none
+// configured (streets are opt-in per city, not part of the rail extract).
 func (c Class) Drawable() bool {
-	switch c {
-	case Metro, Tram, Regional, Monorail, Funicular, Cable, Aerial, Ferry:
-		return true
-	}
-	return false
+	return c != Unknown
 }
 
 // BandFloor is the lowest FAIR zoom band this class draws in (fair.go
@@ -116,6 +112,12 @@ func (c Class) BandFloor() int {
 func TrunkKey(r gtfs.Route) string {
 	c := Of(r.Type)
 	switch c {
+	case Bus:
+		// corridor trunking: grouping is per edge already (ORDER and FAIR
+		// group within each edge), so a constant key collapses every bus
+		// route on an edge into exactly one ribbon — the street's ribbon
+		// count stops depending on how many routes ride it.
+		return "bus"
 	case Ferry, Aerial, Funicular, Cable:
 		return "route:" + r.ID
 	case Regional:

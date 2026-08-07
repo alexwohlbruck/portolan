@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -439,7 +440,9 @@ func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
 	for j, c := range cols {
 		idxs[j] = -1
 		for i, h := range header {
-			if h == c {
+			// Metra ships "route_id, route_short_name, …" — spaces after
+			// every comma, in headers AND values
+			if strings.TrimSpace(h) == c {
 				idxs[j] = i
 				break
 			}
@@ -458,7 +461,7 @@ func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
 			if ix < 0 || ix >= len(row) {
 				vals[j] = ""
 			} else {
-				vals[j] = row[ix]
+				vals[j] = strings.TrimSpace(row[ix])
 			}
 		}
 		fn(vals)
@@ -484,7 +487,7 @@ func eachRow(f *zip.File, fn func(get func(string) string)) error {
 	}
 	idx := map[string]int{}
 	for i, h := range header {
-		idx[h] = i
+		idx[strings.TrimSpace(h)] = i
 	}
 	for {
 		row, err := r.Read()
@@ -499,7 +502,7 @@ func eachRow(f *zip.File, fn func(get func(string) string)) error {
 			if !ok || i >= len(row) {
 				return ""
 			}
-			return row[i]
+			return strings.TrimSpace(row[i])
 		})
 	}
 }

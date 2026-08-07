@@ -7,14 +7,17 @@ colour ("law 5: same-colour routes share one ribbon",
 [order.go:13](../internal/stages/order.go)). That set of assumptions holds
 for NYC and Chicago and breaks for everything else.
 
-This document is the design for every other mode. **Steps 1–4 are
+This document is the design for every other mode. **All five steps are
 implemented** (`internal/mode`, wired through chart/match/order/fair):
-ferries, the rail family, agency-fallback trunking and aerials all draw —
-proven on Berlin's F-lines, Montmartre's funicular and the Câble C1
-gondola, with NYC and Chicago byte-identical before and after. Step 5
-(bus) is not started. The zoom floors marked *inferred* still need the
-observation pass in the last section — one of them has already been
-refuted by evidence (see the floors table).
+ferries, the rail family, agency-fallback trunking, aerials AND buses all
+draw. Proof cities: Berlin's F-lines, Montmartre's funicular, the Câble
+C1 gondola, and Chicago running CTA rail + CTA bus + Metra + Amtrak from
+one config row — with NYC byte-identical before and after. Buses are
+opt-in per city: they draw only where a street extract is configured
+(`streets` in portolan.json, fetched by `tools/city.sh streets <city>`).
+The zoom floors marked *inferred* still need the observation pass in the
+last section — one of them has already been refuted by evidence (see the
+floors table).
 
 ## Why this is not a filter change
 
@@ -153,11 +156,34 @@ it until a second casualty shows up.
    today: London's Overground and Paris's Transilien are both in feeds we
    already build.
 4. **Aerial** — needs `aerialway` in the extract; small and self-contained.
-5. **Bus** — the big one, deliberately last: highways in the extract
-   (10–100× the ways), road-aware matching, corridor trunking, and the BRT
-   promotion rule. Nothing before it depends on it.
+5. **Bus** — done, with three load-bearing choices. (a) Streets are a
+   SEPARATE opt-in extract: they join the match graph and the class maps
+   but never the strand pool — a street way already IS the drawn road
+   centerline, so bus edges skip strand refinement and twins entirely.
+   (b) Corridor trunking costs one line of code: ORDER and FAIR group
+   within each edge already, so a constant trunk key ("bus") collapses
+   every route on an edge into exactly one ribbon. (c) A family gate in
+   the SPLIT merge rules keeps bus edges from ever merging with rail —
+   Lake St buses run directly under the el, and one corridor there would
+   weld two maps together. MATCH needs no new machinery: streets carry a
+   synthetic class "street", classCompat pins buses to it and everything
+   else off it, and the gap gate already requires class compatibility so
+   streets cannot close a train's gap. Chicago (125 CTA bus routes + 8 L
+   + Metra + Amtrak): ~40 s, 2130 edges, 5512 segments. Still open: the
+   BRT promotion rule (needs the headway signal), and bus labels are a
+   sample ("77·80·92 +9"), not a roster.
 
-Steps 1–4 are the "rail family + ferry/gondola" scope; step 5 is the fork.
+**Multi-feed cities.** `gtfs` in portolan.json takes a comma list —
+primary feed first (scenarios stay a primary-feed concept), overlay feeds
+after, overlay route ids prefixed `f<i>:`. That is how Chicago carries
+CTA + Metra + Amtrak, and it retires the "portolan.json cannot express
+two feeds" limit that blocked Berlin's S-Bahn.
+
+**BBox shape clipping.** National feeds (Amtrak) would otherwise draw
+their shapes to Seattle as gap chords. With the city `bbox` on the chart
+call, every pattern shape is cut to the window (+~2 km margin); each
+in-window run ≥1 km draws to the window edge, the way Apple runs a line
+off the map.
 
 ## The observation pass
 

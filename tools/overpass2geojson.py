@@ -10,6 +10,8 @@ import json
 import sys
 
 TAGS = ("railway", "aerialway", "service", "bridge", "tunnel", "layer")
+if "--streets" in sys.argv:
+    TAGS = ("highway", "service", "bridge", "tunnel", "layer", "oneway")
 
 data = json.load(sys.stdin)
 feats = []
@@ -29,5 +31,5 @@ for el in data.get("elements", []):
     })
 
 if not feats:
-    sys.exit("overpass2geojson: no rail ways in the response — check the bbox")
+    sys.exit("overpass2geojson: no ways in the response — check the bbox")
 json.dump({"type": "FeatureCollection", "features": feats}, sys.stdout)

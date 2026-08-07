@@ -143,17 +143,62 @@ out geom;"
 }
 
 build() { # $1 = feed key
-  local feed=$1 gtfs rail out net
+  local feed=$1 gtfs rail out net streets bboxarg first
   gtfs=$(get "$feed" gtfs); rail=$(get "$feed" rail)
   out=$(get "$feed" out);   net=$(get "$feed" network)
+  streets=$(get "$feed" streets)
   [ -s "$rail" ] || { echo "$feed: no rail extract at $rail — tools/city.sh rail $feed"; exit 2; }
-  [ -s "$gtfs" ] || { echo "$feed: no GTFS at $gtfs — see docs/CITIES.md"; exit 2; }
-  go run ./cmd/portolan chart --gtfs "$gtfs" --rail "$rail" --out "$out"
+  # gtfs may be a comma list (primary + overlay feeds) — every part must exist
+  local IFS=','
+  for first in $gtfs; do
+    [ -s "$first" ] || { echo "$feed: no GTFS at $first — see docs/CITIES.md"; exit 2; }
+  done
+  unset IFS
+  bboxarg=$(jq -r --arg f "$feed" '.feeds[$f].bbox // empty | join(",")' "$CFG")
+  set -- --gtfs "$gtfs" --rail "$rail" --out "$out"
+  [ -n "$bboxarg" ] && set -- "$@" --bbox "$bboxarg"
+  if [ -n "$streets" ]; then
+    if [ -s "$streets" ]; then set -- "$@" --streets "$streets"
+    else echo "$feed: streets configured but missing at $streets — tools/city.sh streets $feed (building rail-only)"; fi
+  fi
+  go run ./cmd/portolan chart "$@"
   if [ -s "$net" ]; then
     go run ./cmd/portolan sound --network "$net" --build "$out" || true
   else
     echo "$feed: no drawn network at $net — draw one in the atlas sketch editor to score"
   fi
+}
+
+# streets: the highway layer for bus matching — separate from the rail
+# extract, opt-in per city ('streets' path in portolan.json), and big: a
+# whole-city street grid is 10-50x the rail ways.
+streets() { # $1 = feed key
+  local feed=$1 out w s e n query tmp
+  out=$(get "$feed" streets)
+  [ -n "$out" ] || { echo "$feed: no 'streets' path in $CFG"; exit 2; }
+  bbox "$feed"
+  query="[out:json][timeout:900];
+way[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|busway|bus_guideway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)\$\"]($s,$w,$n,$e);
+out geom;"
+  mkdir -p "$(dirname "$out")"
+  tmp="$out.tmp"
+  echo "$feed: Overpass streets $w,$s,$e,$n → $out (this one is BIG — minutes)"
+  local try ok=0
+  for try in 1 2 3; do
+    if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+       "$OVERPASS" -o "$tmp.json"; then ok=1; break; fi
+    echo "$feed: attempt $try failed — public Overpass under load; waiting…"
+    sleep $((try * 30))
+  done
+  if [ "$ok" = 0 ]; then
+    echo "$feed: Overpass gave up after 3 tries."; rm -f "$tmp.json"; exit 1
+  fi
+  head -c 200 "$tmp.json" | grep -q '"elements"\|"version"' || {
+    echo "$feed: not Overpass JSON:"; head -c 300 "$tmp.json"; rm -f "$tmp.json"; exit 1; }
+  python3 tools/overpass2geojson.py --streets < "$tmp.json" > "$tmp"
+  rm -f "$tmp.json"
+  mv "$tmp" "$out"
+  echo "$feed: $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["features"]),"ways")' "$out"), $(du -h "$out" | cut -f1)"
 }
 
 # shapes: regenerate the feed's shapes.txt with pfaedle (docs/CITIES.md).
@@ -228,6 +273,7 @@ case "${1:-list}" in
   list) list ;;
   gtfs)  known "${2:-}" gtfs;  gtfs "$2" "${3:-}" ;;
   rail)  known "${2:-}" rail;  rail "$2" ;;
+  streets) known "${2:-}" streets; streets "$2" ;;
   shapes) known "${2:-}" shapes; shapes "$2" ;;
   build) known "${2:-}" build; build "$2" ;;
   all)   known "${2:-}" all;   rail "$2"; build "$2" ;;

@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 )
 
 // dbgRPt reports whether the line passes near the PORTOLAN_DBGR "x,y"
@@ -60,6 +61,27 @@ func defaultSplitParams() splitParams {
 // Split detects junctions where matched paths intersect or diverge,
 // divides the paths into segments at each junction, and assigns each
 // segment the set of routes riding it.
+// busRoutes: route ids of Bus-class routes (SetBusRoutes, from the
+// pipeline). Bus edges ride street centerlines that ARE the drawn
+// geometry: they skip strand refinement and twins, and never merge with
+// rail-family edges — a bus street directly under an el is two maps'
+// worth of separation, not one corridor.
+var busRoutes map[string]bool
+
+func SetBusRoutes(m map[string]bool) { busRoutes = m }
+
+func edgeIsBus(e *Edge) bool {
+	if busRoutes == nil || len(e.Routes) == 0 {
+		return false
+	}
+	for _, r := range e.Routes {
+		if !busRoutes[r] {
+			return false
+		}
+	}
+	return true
+}
+
 func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	setLevelIndex(tracks)
 	g := buildTrackGraphCached(tracks)
@@ -70,8 +92,8 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// same rule as FAIR's smoothing)
 	streetRoute := map[string]bool{}
 	for _, pa := range paths {
-		t := pa.Pattern.Route.Type
-		streetRoute[pa.Pattern.Route.ID] = t == 0 || t == 900
+		c := mode.Of(pa.Pattern.Route.Type)
+		streetRoute[pa.Pattern.Route.ID] = c == mode.Tram || c == mode.Cable
 	}
 
 	// ---- usage: route set per used piece
@@ -690,7 +712,6 @@ func compactNodes(net *Network) {
 	rebuildAdj(net)
 }
 
-
 // dropShadowStubs removes dangling slivers that duplicate coverage: a
 // deg-1 fragment lying entirely alongside another edge that carries a
 // superset of its routes is fold/relay residue (the Bowling Green ring
@@ -701,7 +722,9 @@ func compactNodes(net *Network) {
 // pts[:seam] and pts[seam:] by iterated neighbor averaging; vertices
 // outside the window are pinned.
 func blendSeam(pts []geo.Pt, seam int, radius float64) {
-	if os.Getenv("PORTOLAN_NOBLEND") != "" { return }
+	if os.Getenv("PORTOLAN_NOBLEND") != "" {
+		return
+	}
 	if seam <= 0 || seam >= len(pts) {
 		return
 	}
@@ -1034,6 +1057,9 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 		e := &net.Edges[i]
 		if e.Gap || len(e.Pts) < 3 {
 			continue
+		}
+		if edgeIsBus(e) {
+			continue // street ways are already the drawn centerline
 		}
 		if geo.NewLine(e.Pts).Len() < p.MinRefine {
 			continue
