@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -22,6 +23,7 @@ type Route struct {
 	LongName  string
 	Color     string // hex without '#', GTFS convention
 	Type      int    // GTFS route_type
+	Agency    string // agency_id — trunk-key fallback for colorless regional
 }
 
 // Pattern is one distinct (route, shape) service pattern.
@@ -35,6 +37,7 @@ type Pattern struct {
 type Feed struct {
 	Routes   map[string]Route
 	Patterns []Pattern
+	Agencies map[string]string // agency_id → agency_name (labels for agency trunks)
 }
 
 // Load reads a GTFS zip and returns patterns covering ≥ coverFrac of each
@@ -69,7 +72,13 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		return nil, fmt.Errorf("gtfs: %s missing %s", path, name)
 	}
 
-	feed := &Feed{Routes: map[string]Route{}}
+	feed := &Feed{Routes: map[string]Route{}, Agencies: map[string]string{}}
+	if af, ok := files["agency.txt"]; ok {
+		if err := eachRowCols(af, []string{"agency_id", "agency_name"},
+			func(v []string) { feed.Agencies[v[0]] = v[1] }); err != nil {
+			return nil, err
+		}
+	}
 
 	// phase 1: routes ∥ stops (independent files, own maps)
 	rf, err := need("routes.txt")
@@ -83,12 +92,12 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	go func() {
 		defer wg.Done()
 		routesErr = eachRowCols(rf, []string{"route_id", "route_type",
-			"route_short_name", "route_long_name", "route_color"},
+			"route_short_name", "route_long_name", "route_color", "agency_id"},
 			func(v []string) {
 				t, _ := strconv.Atoi(v[1])
 				feed.Routes[v[0]] = Route{
 					ID: v[0], ShortName: v[2], LongName: v[3],
-					Color: v[4], Type: t,
+					Color: v[4], Type: t, Agency: v[5],
 				}
 			})
 	}()
@@ -117,6 +126,21 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	}
 	if stopsErr != nil {
 		return nil, stopsErr
+	}
+	// agency_id is optional in routes.txt when the feed has one agency
+	// (LIRR ships without the column entirely) — backfill it, or the
+	// agency trunk key has nothing to hold onto
+	if len(feed.Agencies) == 1 {
+		var only string
+		for id := range feed.Agencies {
+			only = id
+		}
+		for id, r := range feed.Routes {
+			if r.Agency == "" {
+				r.Agency = only
+				feed.Routes[id] = r
+			}
+		}
 	}
 
 	// phase 2: trips (needs Routes for the keep predicate)
@@ -347,7 +371,6 @@ func trimToStops(pts []geo.LL, first, last geo.LL) []geo.LL {
 	return out
 }
 
-
 // exciseLoops removes stop-less self-returning excursions from a shape: a
 // stretch that leaves the line, rings around (250–2500 m) and comes back
 // within closeTol of where it left, serving NO stop on the way, is
@@ -438,7 +461,9 @@ func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
 	for j, c := range cols {
 		idxs[j] = -1
 		for i, h := range header {
-			if h == c {
+			// Metra ships "route_id, route_short_name, …" — spaces after
+			// every comma, in headers AND values
+			if strings.TrimSpace(h) == c {
 				idxs[j] = i
 				break
 			}
@@ -457,7 +482,7 @@ func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
 			if ix < 0 || ix >= len(row) {
 				vals[j] = ""
 			} else {
-				vals[j] = row[ix]
+				vals[j] = strings.TrimSpace(row[ix])
 			}
 		}
 		fn(vals)
@@ -483,7 +508,7 @@ func eachRow(f *zip.File, fn func(get func(string) string)) error {
 	}
 	idx := map[string]int{}
 	for i, h := range header {
-		idx[h] = i
+		idx[strings.TrimSpace(h)] = i
 	}
 	for {
 		row, err := r.Read()
@@ -498,7 +523,7 @@ func eachRow(f *zip.File, fn func(get func(string) string)) error {
 			if !ok || i >= len(row) {
 				return ""
 			}
-			return row[i]
+			return strings.TrimSpace(row[i])
 		})
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/atlas"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
@@ -37,8 +39,11 @@ func usage() {
 
 func chart(args []string) {
 	fs := flag.NewFlagSet("chart", flag.ExitOnError)
-	gtfsPath := fs.String("gtfs", "", "GTFS zip")
+	gtfsPath := fs.String("gtfs", "", "GTFS zip (comma list: primary,overlay,…)")
 	railPath := fs.String("rail", "", "OSM rail extract (GeoJSON)")
+	streets := fs.String("streets", "", "OSM street extract (GeoJSON) — enables bus routes")
+	bboxStr := fs.String("bbox", "", "w,s,e,n — clip pattern shapes to the window")
+	lineAg := fs.String("line-agencies", "", "comma list: regional agencies keeping per-line colors")
 	out := fs.String("out", "build.geojson", "output GeoJSON")
 	cover := fs.Float64("cover", 0.99, "pattern trip-coverage fraction")
 	fs.Parse(args)
@@ -46,10 +51,29 @@ func chart(args []string) {
 		fs.Usage()
 		os.Exit(2)
 	}
+	var bbox []float64
+	if *bboxStr != "" {
+		for _, p := range strings.Split(*bboxStr, ",") {
+			v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+			if err != nil {
+				die(fmt.Errorf("bad --bbox: %w", err))
+			}
+			bbox = append(bbox, v)
+		}
+		if len(bbox) != 4 {
+			die(fmt.Errorf("--bbox wants w,s,e,n"))
+		}
+	}
+	var las []string
+	if *lineAg != "" {
+		las = strings.Split(*lineAg, ",")
+	}
 	d := pipeline.DefaultDials()
 	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
-		GTFS: *gtfsPath, Rail: *railPath, Out: *out, Dials: &d,
+		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, BBox: bbox,
+		LineAgencies: las,
+		Out:          *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 	die(err)
 }

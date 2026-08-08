@@ -7,10 +7,17 @@ colour ("law 5: same-colour routes share one ribbon",
 [order.go:13](../internal/stages/order.go)). That set of assumptions holds
 for NYC and Chicago and breaks for everything else.
 
-This document is the design for every other mode. **No pipeline code has
-been written against it yet** — it is the plan, and the parts marked
-*inferred* need the observation pass in the last section before they get
-built.
+This document is the design for every other mode. **All five steps are
+implemented** (`internal/mode`, wired through chart/match/order/fair):
+ferries, the rail family, agency-fallback trunking, aerials AND buses all
+draw. Proof cities: Berlin's F-lines, Montmartre's funicular, the Câble
+C1 gondola, and Chicago running CTA rail + CTA bus + Metra + Amtrak from
+one config row — with NYC byte-identical before and after. Buses are
+opt-in per city: they draw only where a street extract is configured
+(`streets` in portolan.json, fetched by `tools/city.sh streets <city>`).
+The zoom floors marked *inferred* still need the observation pass in the
+last section — one of them has already been refuted by evidence (see the
+floors table).
 
 ## Why this is not a filter change
 
@@ -55,9 +62,16 @@ Two notes that matter:
   `internal/gtfs/service.go` already computes exactly this), or agency
   route naming. Treat BRT as a *promotion rule* applied to `bus`, not a
   class of its own.
-- **`ferry` needs no infrastructure layer.** There is nothing to match to;
-  the GTFS shape is the geometry. That makes ferries the cheapest mode to
-  add and a good first proof that the class machinery works.
+- **`ferry` matches the seaway layer.** OSM maps ferry lanes as
+  `route=ferry` ways; the loader gives them the synthetic class `seaway`
+  and ferries Viterbi-match onto them like every other mode (NYC: 20 of
+  27 paths fully snapped; Berlin's F-lines all ride lanes). Where the
+  harbor has no mapped lane, the gap machinery chords the crossing — the
+  original shape-is-geometry behaviour survives as the fallback. Seaway
+  is the third hard layer beside rail and street: no candidate mixing
+  (a train must never ride a ferry lane across a river whose bridge is
+  unmapped — the no-compat leniency would allow exactly that), no
+  cross-layer graph welds, no strand-pool votes, no cross-family merges.
 
 ## The trunk key
 
@@ -73,13 +87,39 @@ the slot unit:
 | class | trunk key | consequence |
 |---|---|---|
 | `metro`, `tram`, `monorail` | `color` (law 5, unchanged) | NYC/Chicago behaviour is bit-for-bit preserved |
-| `regional` | `color`, falling back to `agency:class` | colourless commuter stops collapsing into one grey trunk |
-| `bus` | **`corridor`** — the edge id | any number of bus routes on a street render as exactly one ribbon |
+| `regional` | **`agency`** by default; `color` for configured `line_agencies` | LIRR's twelve branch-diagram colours draw as ONE line, the way Apple draws them |
+| `bus` | *(none — never trunked)* | matched bus paths bypass SPLIT/ORDER/FAIR entirely; see below |
 | `ferry`, `aerial`, `funicular`, `cable` | `route` | too few to bundle; never merge them |
 
-Corridor trunking for buses is what caps complexity globally: a street's
-ribbon count stops depending on how many routes ride it. Route identity
-moves to the label and to selection, which is where Apple puts it.
+The regional rule was settled by evidence, not the original inference
+(which had colour first). Owner's Apple screenshots: Penn Station is one
+LIRR line and one Metro-North line, while our colour-trunked build
+stacked eleven branch ribbons. But Paris proves colour-first is right for
+SOME agencies: Apple draws RER A–E and the lettered Transilien lines
+individually, and the IDFM feed even encodes the other case — its ten TER
+routes all carry colour `AAAAAA`, so class-level collapse of intercity
+falls out of colour trunking for free. No computable threshold separates
+LIRR branch-diagram colours from RER line brands; that call is curation,
+so it lives in config: `"line_agencies": ["IDFM:71", "IDFM:1046"]` on the
+city row names the agencies whose colours are real line identities.
+Labels follow the grouping — a multi-route agency trunk is labelled with
+the agency name from `agency.txt`, and a single-route stretch keeps its
+route name, so the shared Metra trunk reads "Metra" downtown and "BNSF"
+on the outer branch. (LIRR gotcha: `agency_id` is optional in routes.txt
+for single-agency feeds and LIRR omits the whole column — the loader
+backfills it from the feed's sole agency.) Collapsing the LIRR to one
+group also erased the three Jamaica drawn-breaks outright: no
+inter-branch transitions to miss when the branches are one ribbon.
+
+Buses are simpler still (owner call, 2026-08-08): **path matching and
+nothing more**. A matched bus path is already a street-centerline walk —
+the drawn geometry — so bus paths skip SPLIT/ORDER/FAIR entirely and
+emit directly (`stages.BusSegments`): one thin neutral line per street,
+overlap deduped at the drawn-segment level so forty routes down Fifth
+Avenue draw once. No junction graph, no corridor merging, no slots, no
+smoothing. The earlier corridor-trunking machinery (constant "bus" trunk
+key, bus merge family in SPLIT) was removed with it — the dedup gives
+the same complexity cap with far less machinery.
 
 The fallback rule matters as much as the key. `regional` keyed on colour
 alone would put every colourless commuter operator in one trunk — the
@@ -94,14 +134,18 @@ mode's segments below its band rather than adding new machinery:
 | class | floor | rationale |
 |---|---|---|
 | `metro`, `regional` | band 0 | the skeleton of the city; visible at every zoom |
-| `tram`, `monorail` | band 13 | too dense to read at metro scale |
+| `tram`, `monorail` | band 0 | **revised — the 13 inference was refuted** (below) |
 | `ferry` | band 13 | few routes, long geometry, reads fine when zoomed out |
 | `bus` corridor | band 15 | top band only — this is the density valve |
 | `aerial`, `funicular`, `cable` | band 15 | short, local, invisible at range |
 
-Every row is an inference from general cartographic practice plus the one
-documented Apple behaviour (BRT gets rail-like prominence). None of it is
-measured yet.
+The tram floor of 13 shipped and was rolled back the same hour: GTFS type
+0 covers streetcars AND light-rail backbones, so the floor erased
+Charlotte's Lynx and LA's A·C·E·K below the default zoom — in those
+cities the "tram" IS the skeleton. Streetcar demotion needs a signal the
+feed doesn't carry (frequency, or the observation pass). The remaining
+rows are still inferences from general cartographic practice plus the one
+documented Apple behaviour (BRT gets rail-like prominence).
 
 ## Render treatment
 
@@ -110,9 +154,30 @@ from `route_type`:
 
 - `metro`/`regional` — current ribbon treatment, full width and casing
 - `tram`/`monorail` — thinner, same casing
-- `ferry` — dashed, no casing (the existing `Gap` dash pattern generalises)
+- `ferry` — thinner + translucent (dasharray is barred from ribbons: it
+  routes through lineSDF and bypasses the fork's variable offset), and
+  ONE canonical colour network-wide (`4A9EDB`, placeholder pending the
+  observation pass) — a harbor of per-route brand colours reads as seven
+  unrelated lines
 - `aerial`/`funicular`/`cable` — thin, dotted
-- `bus` corridor — thinnest, neutral colour, no per-route colouring
+- `bus` — thinnest, neutral colour, no per-route colouring
+
+Display colours are canonical per GROUP kind, like Apple: every ferry the
+ferry colour, every bus line `888888`, and each regional AGENCY one
+stable colour everywhere — the majority `route_color` of its routes, tie
+broken lexicographically. The per-edge first-member colour painted Amtrak
+a different hue on every corridor; per-agency majority makes intercity
+uniform for free (all of Amtrak is all of Amtrak) while commuter agencies
+keep their feed branding (LIRR, Metra). Colour-trunked groups (metro,
+tram, RER-class line agencies) are untouched — their colour IS the key.
+
+**Known limit — micro-ferries.** SPLIT heals gap edges whose endpoints
+nearly coincide (~100 m): for rail that pattern means "not missing track",
+but a ferry crossing SHORTER than the weld tolerance is real service and
+gets eaten — Berlin's F24 rowboat (~50 m across the Müggelspree) is the
+one known casualty; the other five F-lines draw. Teaching the heal to
+spare ferry-carrying edges means passing route types into SPLIT; not worth
+it until a second casualty shows up.
 
 ## Where the code changes
 
@@ -137,11 +202,34 @@ from `route_type`:
    today: London's Overground and Paris's Transilien are both in feeds we
    already build.
 4. **Aerial** — needs `aerialway` in the extract; small and self-contained.
-5. **Bus** — the big one, deliberately last: highways in the extract
-   (10–100× the ways), road-aware matching, corridor trunking, and the BRT
-   promotion rule. Nothing before it depends on it.
+5. **Bus** — done, then SIMPLIFIED (2026-08-08) to path matching and
+   nothing more. What remains: (a) Streets are a SEPARATE opt-in
+   extract: they join the match graph and the class maps but never the
+   strand pool — a street way already IS the drawn road centerline.
+   (b) MATCH needs no new machinery: streets carry a synthetic class
+   "street", classCompat pins buses to it and everything else off it,
+   and the gap gate already requires class compatibility so streets
+   cannot close a train's gap. (c) After MATCH, bus paths leave the
+   pipeline: `stages.BusSegments` emits them directly with drawn-segment
+   dedup (first path wins a shared street piece). What was REMOVED with
+   the simplification: the constant "bus" trunk key, the bus merge
+   family in SPLIT, and bus edges in ORDER/FAIR — the Lake-St-under-
+   the-el hazard is gone by construction because buses never enter the
+   junction graph at all. Still open: the BRT promotion rule (a
+   frequent-trunkline bus that DESERVES rail treatment would re-enter
+   the full pipeline as a promoted class, not as a bus).
 
-Steps 1–4 are the "rail family + ferry/gondola" scope; step 5 is the fork.
+**Multi-feed cities.** `gtfs` in portolan.json takes a comma list —
+primary feed first (scenarios stay a primary-feed concept), overlay feeds
+after, overlay route ids prefixed `f<i>:`. That is how Chicago carries
+CTA + Metra + Amtrak, and it retires the "portolan.json cannot express
+two feeds" limit that blocked Berlin's S-Bahn.
+
+**BBox shape clipping.** National feeds (Amtrak) would otherwise draw
+their shapes to Seattle as gap chords. With the city `bbox` on the chart
+call, every pattern shape is cut to the window (+~2 km margin); each
+in-window run ≥1 km draws to the window edge, the way Apple runs a line
+off the map.
 
 ## The observation pass
 

@@ -153,6 +153,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// index; strand counts land by index too and are consumed as a
 		// sorted multiset (medianInt), so the fan-out is bit-identical
 		countAt := make([]int, n)
+		widthAt := make([]float64, n)
 		var offsPool sync.Pool
 		lo, hi := 1, n-1
 		if p.FreeStart {
@@ -253,7 +254,16 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						dd1, ok1 = line.DistToCapped(qd1, p.Reach)
 						dd2, ok2 = line.DistToCapped(qd2, p.Reach)
 					}
-					if p.SwitchTolerant && ok1 && ok2 && math.Abs(dd1-dd2) > 3 {
+					// a mover is a SWITCH only if it converges onto the
+					// ridden line: a crossover diagonal ends ON a rail, so
+					// one probe reads ~0. A street couplet whose separation
+					// BREATHES (Charlotte's Gold swings 4→10→5 m through
+					// downtown corners) drifts >3 m without ever
+					// approaching — dropping it flapped the vote set
+					// {pair}→{own}→{pair} block after block and sawtoothed
+					// the median at ±5 m (clt_squiggle_2).
+					if p.SwitchTolerant && ok1 && ok2 && math.Abs(dd1-dd2) > 3 &&
+						math.Min(dd1, dd2) < 2.5 {
 						if dbgHere {
 							fmt.Printf("REFC3 i=%d member %d SKIP switch-drift %.1f->%.1f\n", i, mi, dd1, dd2)
 						}
@@ -272,6 +282,14 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			st := Strands(offs, p.StrandGap)
 			countAt[i] = len(st)
+			if len(st) > 1 {
+				lo2, hi2 := st[0], st[0]
+				for _, v := range st {
+					lo2 = math.Min(lo2, v)
+					hi2 = math.Max(hi2, v)
+				}
+				widthAt[i] = hi2 - lo2
+			}
 			o := MedianStrand(st)
 			offStar[i] = math.Max(-p.Reach, math.Min(p.Reach, o))
 			has[i] = true
@@ -328,13 +346,96 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				}
 			}
 		}
+		// PINCH BRIDGING, by group width: a street couplet narrows to
+		// cross every intersection interlaced — approach ramp, crossing,
+		// recede can span 150-250 m, longer than any fixed neighborhood
+		// window, and the tracked pair-center faithfully bends around
+		// the whole thing. The corridor's TRUE width is an edge-global
+		// statistic (p75); runs where the group narrows below 60% of it
+		// are switch furniture — blank them (extended to 85%-width
+		// shoulders) and let fillGaps run the stable regimes' straight
+		// line through. Runs past 400 m are a real convergence and keep.
+		if p.SwitchTolerant {
+			var ws []float64
+			for i := range has {
+				if has[i] && widthAt[i] > 0 {
+					ws = append(ws, widthAt[i])
+				}
+			}
+			if len(ws) >= 8 {
+				sort.Float64s(ws)
+				wide := ws[len(ws)*3/4]
+				if wide > 4 {
+					thresh := 0.6 * wide
+					for i := 0; i < n; {
+						if !has[i] || widthAt[i] >= thresh {
+							i++
+							continue
+						}
+						j := i
+						for j < n && (!has[j] || widthAt[j] < thresh) {
+							j++
+						}
+						a, b := i, j
+						for a > 0 && has[a-1] && widthAt[a-1] < 0.85*wide {
+							a--
+						}
+						for b < n-1 && has[b] && widthAt[b] < 0.85*wide {
+							b++
+						}
+						if arcOf[min(b, n-1)]-arcOf[a] < 400 {
+							for k := a; k < b; k++ {
+								has[k] = false
+							}
+						}
+						i = j + 1
+					}
+				}
+			}
+		}
 		var strandCounts []int
 		for i := 1; i < n-1; i++ {
 			if has[i] {
 				strandCounts = append(strandCounts, countAt[i])
 			}
 		}
-		filt := medianFilter(offStar, has, 2)
+		// street vote sets flap at threshold cliffs — a couplet partner
+		// breathing across the roadway gauge, a far rail sliding along the
+		// reach boundary — with 10–30 m periods that the ±12 m window
+		// passes straight through (Berlin M1 read [0,16.8]→[0]→[0,16.8]
+		// and drew an 8 m sawtooth). A ±60 m majority window kills the
+		// alternation while leaving regime CHANGES (real divergences,
+		// which hold their new offset for hundreds of metres) intact;
+		// slopeLimit below ramps whatever step survives.
+		medianW := 2
+		if p.SwitchTolerant {
+			medianW = 10
+		}
+		filt := medianFilter(offStar, has, medianW)
+		// offset must never exceed the base line's local turn radius:
+		// street pair-centering can ask for 8-10 m of lateral move, and
+		// carrying that through a junction-mouth corner tighter than the
+		// offset FOLDS the polyline back over itself (Berlin M1 at
+		// Eberswalder drew 175° reversal knots from exactly this — MATCH
+		// clean, votes stable, geometry folded). Clamp to 0.8R; the
+		// gaussian and slope limit below ramp the clamped pockets.
+		if p.SwitchTolerant {
+			for i := 1; i < n-1; i++ {
+				if !has[i] || filt[i] == 0 {
+					continue
+				}
+				a, b, c := pts[i-1], pts[i], pts[i+1]
+				ab, bc, ca := a.Dist(b), b.Dist(c), c.Dist(a)
+				// 4*area via cross product; R = abc/(4K), huge when collinear
+				k4 := 2 * math.Abs((b.X-a.X)*(c.Y-a.Y)-(b.Y-a.Y)*(c.X-a.X))
+				if k4 < 1e-9 {
+					continue
+				}
+				if lim := 0.8 * ab * bc * ca / k4; math.Abs(filt[i]) > lim {
+					filt[i] = math.Copysign(lim, filt[i])
+				}
+			}
+		}
 		// Stiffness scales with corridor width. On a wide interlocking
 		// (W 4 St: two stacked 4-track levels flattened to 2D) the strand
 		// count flickers as tracks interleave and every flicker steps the

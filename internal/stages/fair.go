@@ -1,14 +1,16 @@
 package stages
 
 import (
-	"os"
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 )
 
 // FAIR — owner's step 5, the node-front model. Per zoom band each edge is
@@ -64,12 +66,13 @@ func SetDbg3(p geo.Pt) { dbg3Pt = p }
 func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, paths []Path) ([]Segment, error) {
 	p := defaultFairParams()
 
+	// the group key is the TRUNK KEY (docs/MODES.md): the color string
+	// itself for color-trunked rail — identical to the old colorOf — but
+	// an opaque token for agency-trunked regional and the singleton modes.
+	// Anywhere a segment needs a DISPLAY color, resolve through hexOf,
+	// never the key.
 	colorOf := func(rid string) string {
-		c := routes[rid].Color
-		if c == "" {
-			c = "888888"
-		}
-		return c
+		return mode.TrunkKey(routes[rid])
 	}
 	// per edge: color → routes of that color (sorted, stable)
 	colorRoutes := make([]map[string][]string, len(n.Edges))
@@ -109,9 +112,27 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		return o
 	}
 	label := func(ei int, color string) string {
+		rs := colorRoutes[ei][color]
+		// a MULTI-route agency trunk is labelled as the agency — "Long
+		// Island Rail Road", not four branch names and a +9. A lone route
+		// keeps its own name (the SIR is not "MTA New York City Transit").
+		if len(rs) > 1 && strings.HasPrefix(color, "agency:") {
+			if n := agencyNames[strings.TrimPrefix(color, "agency:")]; n != "" {
+				return n
+			}
+		}
+		// a trunk can carry many routes — the label is a sample, not a
+		// roster
+		const maxNames = 4
 		out := ""
-		for _, r := range colorRoutes[ei][color] {
+		for i, r := range rs {
+			if i == maxNames && len(rs) > maxNames+1 {
+				return fmt.Sprintf("%s +%d", out, len(rs)-maxNames)
+			}
 			sn := routes[r].ShortName
+			if sn == "" {
+				sn = routes[r].LongName // Amtrak names its trains, not numbers
+			}
 			if sn == "" {
 				sn = r
 			}
@@ -128,6 +149,68 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			return 1
 		}
 		return routes[rs[0]].Type
+	}
+	// display color for a group: the first member's route_color. For a
+	// color-trunked group this IS the key (unchanged behaviour); for
+	// agency- and route-trunked groups the key is opaque and the members
+	// supply the hex.
+	// stable display color per agency trunk: the majority route_color of
+	// the agency's regional routes, ties broken lexicographically. The
+	// per-edge first-member color painted Amtrak a different hue on every
+	// corridor (whichever train happened to ride it); Apple gives each
+	// operator ONE color everywhere, and intercity uniformity falls out —
+	// all of Amtrak is all of Amtrak.
+	agencyHex := map[string]string{}
+	{
+		counts := map[string]map[string]int{}
+		for _, r := range routes {
+			if mode.Of(r.Type) != mode.Regional || r.Agency == "" || r.Color == "" {
+				continue
+			}
+			if counts[r.Agency] == nil {
+				counts[r.Agency] = map[string]int{}
+			}
+			counts[r.Agency][r.Color]++
+		}
+		for ag, cc := range counts {
+			best, bestN := "", -1
+			cols := make([]string, 0, len(cc))
+			for c := range cc {
+				cols = append(cols, c)
+			}
+			sort.Strings(cols)
+			for _, c := range cols {
+				if cc[c] > bestN {
+					best, bestN = c, cc[c]
+				}
+			}
+			agencyHex[ag] = best
+		}
+	}
+	// ferries paint one canonical color network-wide, like Apple: a
+	// harbor of per-route brand colors reads as seven unrelated lines.
+	// Placeholder hue pending the observation pass (docs/MODES.md).
+	const ferryHex = "4A9EDB"
+	hexOf := func(ei int, color string) string {
+		if mode.Of(routeType(ei, color)) == mode.Ferry {
+			return ferryHex
+		}
+		if ag, ok := strings.CutPrefix(color, "agency:"); ok {
+			if h := agencyHex[ag]; h != "" {
+				return h
+			}
+		}
+		rs := colorRoutes[ei][color]
+		if len(rs) == 0 || routes[rs[0]].Color == "" {
+			return "888888"
+		}
+		return routes[rs[0]].Color
+	}
+	// band floor per group: a mode invisible below its floor emits no
+	// copy into those bands at all (docs/MODES.md, inferred pending the
+	// Apple observation pass).
+	belowFloor := func(ei int, color string, bandMin int) bool {
+		return bandMin < mode.Of(routeType(ei, color)).BandFloor()
 	}
 
 	// matched walks per route id — the authority on which junction movements
@@ -282,6 +365,13 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	straightPts := make([][]geo.Pt, len(n.Edges))
 	for ei, e := range n.Edges {
 		tol := dial("fair_straight_tol", 2.2)
+		// The street 2x-tolerance experiment is DEAD — do not retry: it
+		// straightened Trade St but also chorded away Hawthorne Lane's
+		// genuine gentle curve (sagitta > tol, heading deviation < any
+		// cone — the cone cannot save a long shallow arc; only tol
+		// decides). Pinch flattening lives in Refine's width bridging
+		// now, which distinguishes furniture from geometry at the vote
+		// level, where the information still exists.
 		// pass 1 cone ~5.7°: wide enough to flatten corridor micro-waves,
 		// tight enough that a real gradual curve keeps vertices every
 		// ~11° of bend (a wider cone concentrated the Union Square elbow
@@ -358,12 +448,12 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		// Bowling Green green fork). Planning first lets longer chains
 		// claim their span; anything touching a claimed end is dropped.
 		type cand struct {
-			a, cur           int
-			aAtTo, bAtFrom   bool
-			color            string
-			mid              []geo.Pt
-			mids             [][2]int
-			bend             float64
+			a, cur         int
+			aAtTo, bAtFrom bool
+			color          string
+			mid            []geo.Pt
+			mids           [][2]int
+			bend           float64
 		}
 		// entry/exit travel tangents of a connection, measured at the OUTER
 		// ends (steady side) — inner ends carry corner overshoot. 100 m out:
@@ -465,7 +555,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					p0, p3 := tailP[0], headP[len(headP)-1]
 					near := tailP[len(tailP)-1]
 					tlP, hlP := geo.NewLine(tailP), geo.NewLine(headP)
-					if tc, needA, needB := trackCurveBetween(p0, p3, near, tlP, hlP); tc != nil {
+					if tc, needA, needB := trackCurveBetween(p0, p3, near, tlP, hlP,
+						patternLayer(routeType(c.a, c.color))); tc != nil {
 						cand := append(append([]geo.Pt{p0}, tc...), p3)
 						allow := 25 + 20*math.Min(1, c.bend/90)
 						if maxTurn12(smoothPolyline(geo.NewLine(cand))) <= allow {
@@ -491,6 +582,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		})
 		for _, c := range cands {
 			a, cur := c.a, c.cur
+			if belowFloor(a, c.color, band.min) {
+				continue // mode hidden in this band; its steady bodies skip too
+			}
 			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
 				for _, e := range []int{a, cur} {
 					pts2 := n.Edges[e].Pts
@@ -562,7 +656,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				p0 := tail[0]
 				p3 := head[len(head)-1]
 				near := tail[len(tail)-1]
-				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head))
+				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head),
+					patternLayer(routeType(a, c.color)))
 				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 && near.Dist(dbg3Pt) < 150 {
 					mt := -1.0
 					if tc != nil {
@@ -655,10 +750,11 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			}
 			segs = append(segs, Segment{
 				Kind:      "transition",
-				Color:     c.color,
+				Color:     hexOf(a, c.color),
 				Routes:    colorRoutes[a][c.color],
 				Label:     label(a, c.color),
 				RouteType: routeType(a, c.color),
+				Mode:      mode.Of(routeType(a, c.color)).String(),
 				OffFromPx: travelOffsetPx(a, c.color, c.aAtTo),
 				OffToPx:   travelOffsetPx(cur, c.color, c.bAtFrom),
 				BandMin:   band.min,
@@ -689,6 +785,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				if absorbed[[2]int{ei, ci}] {
 					continue // fully covered by a chained transition
 				}
+				if belowFloor(ei, color, band.min) {
+					continue
+				}
 				from := cutFor(ei, 0, ci)
 				if !served[[3]int{ei, 0, ci}] {
 					from = 0
@@ -708,10 +807,11 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				s, ns := slotOf(ei, color)
 				segs = append(segs, Segment{
 					Kind:      kind,
-					Color:     color,
+					Color:     hexOf(ei, color),
 					Routes:    colorRoutes[ei][color],
 					Label:     label(ei, color),
 					RouteType: routeType(ei, color),
+					Mode:      mode.Of(routeType(ei, color)).String(),
 					Slot:      s,
 					NSlots:    ns,
 					OffsetPx:  offsetPx(ei, color),
@@ -733,10 +833,21 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// modes keep tight corners; grade-separated modes keep the wide kit.
 	for i := range segs {
 		s := 1.0
-		if rt := segs[i].RouteType; rt == 0 || rt == 900 {
+		switch mode.Of(segs[i].RouteType) {
+		case mode.Tram, mode.Cable: // street-running: real corners survive
 			s = 0.4
 		}
 		segs[i].Line = smoothPolylineScaled(segs[i].Line, s)
+		// transition VERTEX DENSITY is load-bearing: the renderer
+		// evaluates the line-progress offset ease per vertex, so a
+		// geometrically-straight transition simplified to its two
+		// endpoints draws its offset swing as one hard diagonal — the
+		// smooth S lives entirely in the interior samples the collinear
+		// simplify just deleted. Re-densify after smoothing; 12 m spacing
+		// gives the cubic ease ~5+ samples on even the shortest seam.
+		if segs[i].Kind == "transition" {
+			segs[i].Line = geo.NewLine(segs[i].Line.Densify(12))
+		}
 	}
 	return segs, nil
 }
@@ -753,7 +864,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 // arc from the tail's node-side tip back to the curve's start, and
 // from the head's tip forward to the curve's end — valid only when the
 // curve is non-nil; the cut pass uses them to shrink turning cuts.
-func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) ([]geo.Pt, float64, float64) {
+func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, connLayer string) ([]geo.Pt, float64, float64) {
 	if lvlGrid == nil {
 		return nil, 0, 0
 	}
@@ -766,6 +877,12 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line) ([]geo.Pt, float64
 	var bestFit *fit
 	lvlGrid.Near(near, 25, func(ti int) {
 		t := lvlLines[ti]
+		// layer discipline: a ferry movement connects over seaways, a
+		// rail movement over rail only — an el corner with a street
+		// below would otherwise offer the road as its "connector"
+		if wayLayer(wayRailClass[lvlWays[ti]]) != connLayer {
+			return
+		}
 		if t.Len() < 15 || t.DistTo(near) > 25 {
 			return
 		}
@@ -919,6 +1036,9 @@ func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
 	var bestOff float64
 	lvlGrid.Near(apex, 25, func(ti int) {
 		t := lvlLines[ti]
+		if wayRailClass[lvlWays[ti]] == "street" || wayRailClass[lvlWays[ti]] == "seaway" {
+			return // streets/seaways are foreign layers; rail never borrows either
+		}
 		da := t.DistTo(a)
 		db := t.DistTo(b)
 		dx := t.DistTo(apex)

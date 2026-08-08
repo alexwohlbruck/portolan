@@ -52,9 +52,9 @@ func TestComponentGaps(t *testing.T) {
 			break
 		}
 		type hit struct {
-			d    float64
-			at   geo.Pt
-			way  string
+			d   float64
+			at  geo.Pt
+			way string
 		}
 		var hits []hit
 		for ni, node := range g.nodes {

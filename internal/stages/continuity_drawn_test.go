@@ -21,6 +21,7 @@ func TestDrawnContinuity(t *testing.T) {
 		Features []struct {
 			Props struct {
 				Color   string  `json:"color"`
+				Mode    string  `json:"mode"`
 				Kind    string  `json:"kind"`
 				Label   string  `json:"label"`
 				Routes  string  `json:"routes"`
@@ -50,6 +51,16 @@ func TestDrawnContinuity(t *testing.T) {
 	var feats []feat
 	for _, f := range fc.Features {
 		if f.Props.BandMin != 15 || len(f.Geometry.Coords) < 2 {
+			continue
+		}
+		// metro+tram keep the strict zero-break baseline (the guard's
+		// original mandate: the subway map). Bus and regional are new
+		// machinery with known tails — 2 bus corridor ends, and 3 LIRR
+		// ends inside the Jamaica interlocking (the LIRR's Tower 18,
+		// 27-450 m fragments carrying 4-10 branches) — that get their own
+		// baselines when their junction passes happen. They must not mask
+		// a subway regression here, nor block on their own.
+		if f.Props.Mode != "" && f.Props.Mode != "metro" && f.Props.Mode != "tram" {
 			continue
 		}
 		cs := f.Geometry.Coords

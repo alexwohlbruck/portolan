@@ -7,25 +7,25 @@ import (
 	"sort"
 
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 )
 
-// ORDER — owner's step 4, LOOM-lite. The slot unit is the COLOR GROUP
-// (law 5: same-color routes share one ribbon), which on a color-trunked
-// system keeps every edge at 1–4 groups — small enough to search each
-// edge's permutations exhaustively inside a hill climb. The objective is
-// the number of order inversions between colors that continue across a
-// node, always compared in the travel frame (storage order flips when an
-// edge is walked against its orientation — LESSONS #12).
+// ORDER — owner's step 4, LOOM-lite. The slot unit is the TRUNK GROUP
+// (law 5 generalized, docs/MODES.md): for rail the key is the color —
+// same-color routes share one ribbon, exactly as before — while colorless
+// regional falls back to agency and the singleton modes (ferry, aerial,
+// funicular, cable) never merge. On a color-trunked system this keeps
+// every edge at 1–4 groups — small enough to search each edge's
+// permutations exhaustively inside a hill climb. The objective is the
+// number of order inversions between groups that continue across a node,
+// always compared in the travel frame (storage order flips when an edge
+// is walked against its orientation — LESSONS #12).
 //
-// slots[ei] is the edge's color order left→right in its STORAGE (From→To)
-// travel frame.
+// slots[ei] is the edge's group-key order left→right in its STORAGE
+// (From→To) travel frame.
 func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 	colorOf := func(rid string) string {
-		c := routes[rid].Color
-		if c == "" {
-			c = "888888"
-		}
-		return c
+		return mode.TrunkKey(routes[rid])
 	}
 	perm := make([][]string, len(n.Edges))
 	for ei, e := range n.Edges {
@@ -644,8 +644,22 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 }
 
 // permute calls fn with every permutation of v (v is scratch space; fn must
-// copy if it keeps one).
+// copy if it keeps one) — up to 6 elements (720 candidates). Wider groups
+// enumerate adjacent-pair swaps instead: LIRR funnels 12 distinctly-colored
+// branches through Jamaica, and 12! is half a billion candidates per edge
+// per climb pass — the NYC all-modes build sat in ORDER for 2h40m without
+// finishing. Swap moves compose across climb passes into longer
+// reorderings, the same way the tie-walking plateau steps do.
 func permute(v []string, fn func([]string)) {
+	if len(v) > 6 {
+		fn(v)
+		for i := 0; i+1 < len(v); i++ {
+			v[i], v[i+1] = v[i+1], v[i]
+			fn(v)
+			v[i], v[i+1] = v[i+1], v[i]
+		}
+		return
+	}
 	var rec func(k int)
 	rec = func(k int) {
 		if k == len(v) {

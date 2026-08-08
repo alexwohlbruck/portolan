@@ -36,12 +36,23 @@ var navJS []byte
 
 // FeedCfg is one city in portolan.json.
 type FeedCfg struct {
-	Name    string    `json:"name"`
-	GTFS    string    `json:"gtfs"`
-	Rail    string    `json:"rail"`
-	Out     string    `json:"out"`
-	Network string    `json:"network"` // drawn ground truth for scoring
-	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window (tools/city.sh rail)
+	Name         string    `json:"name"`
+	GTFS         string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
+	Rail         string    `json:"rail"`
+	Streets      string    `json:"streets"`       // optional street extract — enables bus routes
+	LineAgencies []string  `json:"line_agencies"` // regional agencies keeping per-line colors (RER)
+	Out          string    `json:"out"`
+	Network      string    `json:"network"` // drawn ground truth for scoring
+	BBox         []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
+}
+
+// primaryGTFS: the first feed of the comma list — scenarios and mtime
+// checks are primary-feed concepts.
+func (f FeedCfg) primaryGTFS() string {
+	if i := strings.IndexByte(f.GTFS, ','); i >= 0 {
+		return strings.TrimSpace(f.GTFS[:i])
+	}
+	return strings.TrimSpace(f.GTFS)
 }
 
 type Config struct {
@@ -519,7 +530,7 @@ func (s *Server) scenariosAPI(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"available": false})
 		return
 	}
-	st, err := os.Stat(fc.GTFS)
+	st, err := os.Stat(fc.primaryGTFS())
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
 		return
@@ -528,7 +539,7 @@ func (s *Server) scenariosAPI(w http.ResponseWriter, r *http.Request) {
 	c := s.scenarios[feed]
 	if c == nil || !c.mod.Equal(st.ModTime()) {
 		s.scenMu.Unlock()
-		si, err := gtfs.LoadService(fc.GTFS)
+		si, err := gtfs.LoadService(fc.primaryGTFS())
 		if err != nil {
 			log.Printf("atlas: scenarios unavailable for feed %s: %v", feed, err)
 			json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
@@ -627,7 +638,9 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		switch cmd {
 		case "chart":
 			err = pipeline.Chart(pipeline.ChartOpts{
-				GTFS: fc.GTFS, Rail: fc.Rail, Out: out, Dials: dials,
+				GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
+				LineAgencies: fc.LineAgencies,
+				BBox:         fc.BBox, Out: out, Dials: dials,
 				Scenario: scen,
 			}, logf)
 		case "sound":
