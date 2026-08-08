@@ -1,6 +1,8 @@
 # Scenario delta — one geometry, many timetables *(proposal)*
 
-Status: **transport half BUILT** (`/api/build-delta`, commit below);
+Status: superseded in direction by [DYNAMIC-SERVICE.md](DYNAMIC-SERVICE.md)
+(one layout, timestamps applied at render). The transport half here is
+BUILT and remains in use (`/api/build-delta`, commit below);
 the pipeline half — stable segmentation and transitions-as-ramps — is
 still proposed. Written 2026-08-08 off measurements of the NYC union
 build and its `Sat 07–22` scenario.

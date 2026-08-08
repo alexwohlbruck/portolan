@@ -1,5 +1,14 @@
 # Service scenarios — time-of-day / day-of-week maps
 
+> **Direction change (2026-08-08):** the rendering target is now FULLY
+> DYNAMIC — one union layout per region, any timestamp applied at render
+> by filtering + re-centering within the union slot order. See
+> [DYNAMIC-SERVICE.md](DYNAMIC-SERVICE.md). The derivation below stays
+> (it powers the Service grid and the QA harness), but per-scenario
+> prebuilt layouts stop being the product: at world scale, with every
+> GTFS feed combined, per-timetable artifacts cannot be the unit of
+> rendering.
+
 NYC runs different railroads at different times: routes short-turn, swap
 express/local tracks, reroute entirely, or stop running at night and on
 weekends. One union map drawn from every pattern that ever runs shows
