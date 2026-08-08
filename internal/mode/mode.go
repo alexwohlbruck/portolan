@@ -132,12 +132,7 @@ func TrunkKey(r gtfs.Route) string {
 		// route on an edge into exactly one ribbon — the street's ribbon
 		// count stops depending on how many routes ride it.
 		return "bus"
-	case Ferry:
-		// one trunk per channel, like buses per street: grouping is per
-		// edge, and with the seaway channel merge every co-channel ferry
-		// lands on one edge — one blue ribbon per waterway
-		return "ferry"
-	case Aerial, Funicular, Cable:
+	case Ferry, Aerial, Funicular, Cable:
 		return "route:" + r.ID
 	case Regional:
 		if lineAgencies[r.Agency] || r.Agency == "" {
