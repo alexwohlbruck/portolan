@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/atlas"
+	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
 )
 
@@ -25,6 +27,8 @@ func main() {
 		chart(os.Args[2:])
 	case "sound":
 		sound(os.Args[2:])
+	case "scenarios":
+		scenarios(os.Args[2:])
 	case "atlas":
 		atlasCmd(os.Args[2:])
 	default:
@@ -33,8 +37,41 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: portolan chart|sound|atlas [flags] (see README.md)")
+	fmt.Fprintln(os.Stderr, "usage: portolan chart|sound|scenarios|atlas [flags] (see README.md)")
 	os.Exit(2)
+}
+
+// scenarios lists a feed's derived service scenarios — the ids `chart
+// --scenario` takes. Derivation is the pipeline's, so the ids match.
+func scenarios(args []string) {
+	fs := flag.NewFlagSet("scenarios", flag.ExitOnError)
+	gtfsPath := fs.String("gtfs", "", "GTFS zip (comma list: primary,overlay,…)")
+	routes := fs.Bool("routes", false, "list each scenario's route short names")
+	fs.Parse(args)
+	if *gtfsPath == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	si, err := pipeline.LoadServiceInfo(*gtfsPath)
+	if err != nil {
+		die(err)
+	}
+	cover := pipeline.DefaultDials().Cover
+	for _, sc := range gtfs.BuildScenarios(si, cover) {
+		fmt.Printf("%s  %-44s %4d patterns\n", sc.ID, sc.Label, sc.Patterns)
+		if *routes {
+			names := map[string]bool{}
+			for k := range si.Select(sc.Cells, cover) {
+				names[k.Route] = true
+			}
+			list := make([]string, 0, len(names))
+			for n := range names {
+				list = append(list, n)
+			}
+			sort.Strings(list)
+			fmt.Printf("    %s\n", strings.Join(list, " "))
+		}
+	}
 }
 
 func chart(args []string) {
@@ -46,6 +83,7 @@ func chart(args []string) {
 	lineAg := fs.String("line-agencies", "", "comma list: regional agencies keeping per-line colors")
 	out := fs.String("out", "build.geojson", "output GeoJSON")
 	cover := fs.Float64("cover", 0.99, "pattern trip-coverage fraction")
+	scenario := fs.String("scenario", "", "service scenario id (see `portolan scenarios`)")
 	fs.Parse(args)
 	if *railPath == "" {
 		fs.Usage()
@@ -72,7 +110,7 @@ func chart(args []string) {
 	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
 		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, BBox: bbox,
-		LineAgencies: las,
+		LineAgencies: las, Scenario: *scenario,
 		Out:          *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 	die(err)

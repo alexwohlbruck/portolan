@@ -223,13 +223,12 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		}
 	}
 	logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
-	if len(o.BBox) == 4 {
-		before := len(rail)
-		rail = clipPatterns(rail, o.BBox)
-		logf("chart: bbox clip: %d patterns → %d in-window pieces", before, len(rail))
-	}
+	// scenario selection runs BEFORE the bbox clip: clipping rewrites a
+	// pattern's ShapeID to "<shape>#clipN", and a scenario names patterns
+	// by (route, shape) — filtering after the clip silently dropped every
+	// pattern that touched the window edge.
 	if o.Scenario != "" {
-		si, err := gtfs.LoadService(firstFeed(o.GTFS))
+		si, err := LoadServiceInfo(o.GTFS)
 		if err != nil {
 			return fmt.Errorf("scenario build: %w", err)
 		}
@@ -243,17 +242,27 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		if sc == nil {
 			return fmt.Errorf("unknown scenario %q", o.Scenario)
 		}
+		// Select, not sc.Keys: the scenario is DERIVED from rail ink but
+		// DRAWS everything that runs in its hours (buses, ferries, the
+		// commuter railroads).
+		draw := si.Select(sc.Cells, d.Cover)
 		var keep []gtfs.Pattern
 		for _, pat := range rail {
-			if sc.Keys[gtfs.PatKey{Route: pat.Route.ID, Shape: pat.ShapeID}] {
+			if draw[gtfs.PatKey{Route: pat.Route.ID, Shape: pat.ShapeID}] {
 				keep = append(keep, pat)
 			}
 		}
+		before := len(rail)
 		rail = keep
-		logf("scenario %s (%s): %d rail patterns", sc.ID, sc.Label, len(rail))
+		logf("scenario %s (%s): %d of %d patterns run", sc.ID, sc.Label, len(rail), before)
 		if len(rail) == 0 {
-			return fmt.Errorf("scenario %s has no rail patterns", sc.ID)
+			return fmt.Errorf("scenario %s has no patterns", sc.ID)
 		}
+	}
+	if len(o.BBox) == 4 {
+		before := len(rail)
+		rail = clipPatterns(rail, o.BBox)
+		logf("chart: bbox clip: %d patterns → %d in-window pieces", before, len(rail))
 	}
 
 	if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
@@ -547,13 +556,20 @@ func LoadBuildFeatures(path string, frame geo.Frame) ([]sketch.BuildFeature, err
 	return out, nil
 }
 
-// firstFeed: ChartOpts.GTFS is a comma list (primary feed first, overlay
-// feeds after). Scenario derivation stays a primary-feed concept.
-func firstFeed(paths string) string {
-	if i := strings.IndexByte(paths, ','); i >= 0 {
-		return strings.TrimSpace(paths[:i])
-	}
-	return strings.TrimSpace(paths)
+// LoadServiceInfo reads the weekly service picture for a city's whole feed
+// list under the pipeline's own mode policy: a scenario may contain any
+// DRAWABLE pattern, but is derived from the rail family only (bus
+// timetables would shatter the week into near-identical maps). The atlas
+// and the CLI must both call this — deriving under different predicates
+// would give the same service two different scenario ids.
+func LoadServiceInfo(gtfsPaths string) (*gtfs.ServiceInfo, error) {
+	return gtfs.LoadServiceFeeds(gtfsPaths, gtfs.ServiceOpts{
+		Drawable: func(t int) bool { return mode.Of(t).Drawable() },
+		Derive: func(t int) bool {
+			c := mode.Of(t)
+			return c.Drawable() && c != mode.Bus
+		},
+	})
 }
 
 // loadFeeds loads and merges every feed in the comma list. Overlay route

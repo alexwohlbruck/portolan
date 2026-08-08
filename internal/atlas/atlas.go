@@ -539,7 +539,7 @@ func (s *Server) scenariosAPI(w http.ResponseWriter, r *http.Request) {
 	c := s.scenarios[feed]
 	if c == nil || !c.mod.Equal(st.ModTime()) {
 		s.scenMu.Unlock()
-		si, err := gtfs.LoadService(fc.primaryGTFS())
+		si, err := pipeline.LoadServiceInfo(fc.GTFS)
 		if err != nil {
 			log.Printf("atlas: scenarios unavailable for feed %s: %v", feed, err)
 			json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
