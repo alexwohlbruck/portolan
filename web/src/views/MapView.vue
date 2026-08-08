@@ -27,10 +27,31 @@ let ro: ResizeObserver | null = null
 // Zoom bands: FAIR emits one copy of the map per band, and exactly one
 // band may be visible at a time or every ribbon doubles.
 const BANDS = [
-  { min: 15, max: 24 },
-  { min: 14, max: 15 },
-  { min: 13, max: 14 },
-  { min: 0, max: 13 },
+  { min: 15, max: 24, key: 15 },
+  { min: 14, max: 15, key: 14 },
+  { min: 13, max: 14, key: 13 },
+  { min: 0, max: 13, key: 0 },
+]
+
+// Offsets live in DIFFERENT properties depending on the segment kind, and
+// getting this wrong is invisible in the data and glaring on the map: a
+// steady segment carries its slot offset in `offset_px` (off_from/off_to
+// are 0), a transition carries the ease endpoints in off_from_px/
+// off_to_px (offset_px is 0). Reading the transition pair for everything
+// draws every steady ribbon at offset 0 — the whole bundle collapses onto
+// one line and only the topmost colour is visible.
+const zoomScaledOffset = (e: any) => ['interpolate', ['linear'], ['zoom'], 11, ['*', e, 0.5], 14, e]
+const STEADY_OFFSET = zoomScaledOffset(['get', 'offset_px'])
+const TRANSITION_OFFSET = zoomScaledOffset([
+  'interpolate', ['cubic-bezier', 0.4, 0, 0.6, 1], ['line-progress'],
+  0, ['get', 'off_from_px'], 1, ['get', 'off_to_px'],
+])
+// bridges render exactly like steady ribbons — the gap-bridge distinction
+// is pipeline bookkeeping, not something a rider sees.
+const KINDS: [string, any][] = [
+  ['steady', STEADY_OFFSET],
+  ['transition', TRANSITION_OFFSET],
+  ['bridge', STEADY_OFFSET],
 ]
 const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
 
@@ -56,30 +77,34 @@ function modeExprs(st: StyleSet | null) {
   return { w, o }
 }
 
+const ribbonIds: string[] = []
+
 function addLayers() {
   const { w, o } = modeExprs(styleSet.value)
   const COLOR = ['concat', '#', ['get', 'route_color']]
-  const off = [
-    'interpolate', ['linear'], ['line-progress'],
-    0, ['get', 'off_from_px'], 1, ['get', 'off_to_px'],
-  ]
   for (const b of BANDS) {
-    const id = `ribbon-${b.min}`
-    map.addLayer({
-      id,
-      type: 'line',
-      source: 'build',
-      minzoom: b.min,
-      maxzoom: b.max,
-      filter: ['all', ['==', ['get', 'band_min'], b.min], ['==', ['get', 'band_max'], b.max]],
-      layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': COLOR, 'line-width': widthExpr(w), 'line-opacity': o, 'line-offset': off },
-    })
-    map.on('click', id, (e: any) => {
-      inspect.value = e.features?.[0]?.properties ?? null
-    })
-    map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'))
-    map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''))
+    for (const [kind, off] of KINDS) {
+      const id = `ribbon-${b.key}-${kind}`
+      map.addLayer({
+        id,
+        type: 'line',
+        source: 'build',
+        minzoom: b.min === 0 ? 0 : b.min,
+        maxzoom: b.max === 24 ? 24 : b.max,
+        filter: ['all', ['==', ['get', 'band_min'], b.key], ['==', ['get', 'kind'], kind]],
+        // round caps: at a transition/steady seam the eased line arrives
+        // with lateral slope while the steady leaves flat, and butt caps
+        // cut at those two angles leave a wedge notch at every seam
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': COLOR, 'line-width': widthExpr(w), 'line-opacity': o, 'line-offset': off },
+      })
+      ribbonIds.push(id)
+      map.on('click', id, (e: any) => {
+        inspect.value = e.features?.[0]?.properties ?? null
+      })
+      map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'))
+      map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''))
+    }
   }
 
   map.addLayer({
@@ -123,8 +148,7 @@ async function reload() {
     const src = map.getSource('build')
     if (src) src.setData(buildURL(feed.value, scenario.value || undefined))
     const { w, o } = modeExprs(styleSet.value)
-    for (const b of BANDS) {
-      const id = `ribbon-${b.min}`
+    for (const id of ribbonIds) {
       if (!map.getLayer(id)) continue
       map.setPaintProperty(id, 'line-width', widthExpr(w))
       map.setPaintProperty(id, 'line-opacity', o)
