@@ -130,3 +130,22 @@ need them.
 `internal/gtfs/service_diag_test.go` prints the derived scenarios per
 feed; `service_det_test.go` guards process determinism. Both skip when
 the local GTFS zips are absent.
+
+## Storage and transport
+
+A scenario ships as a complete redraw (`build/<city>.scen-<id>.geojson`),
+which is a strange price for "the same city with some lines not running":
+69% of a scenario's geometry is byte-identical to the union build's, and
+only 28 features need a different offset. Strip coordinates and a
+scenario's information content is 0.46 MB against an 10.9 MB file.
+
+Two transport fixes ship today and need no pipeline change: the workbench
+gzips responses (3.1x), and `/api/build.geojson?band=N` serves one zoom
+band — FAIR emits a complete copy of the map per band and exactly one is
+ever visible. NYC over the wire at default zoom: **11.54 MB -> 1.32 MB**.
+
+The structural fix — ship geometry once per city and a ~0.5 MB slot table
+per scenario, with transitions expressed as offset ramps rather than
+geometry — is specced in [SCENARIO-DELTA.md](SCENARIO-DELTA.md). It is
+not built; the blocker is that FAIR's junction treatment is set-dependent,
+so stable segmentation needs FAIR to know when a junction is inert.
