@@ -120,9 +120,45 @@ than a 404.
 segment inspector, scenario switcher. *Build* runs the pipeline with a
 live log and a stage bar driven off the pipeline's own stage lines.
 *Service* shows the 7×24 week grid coloured by scenario, with per-scenario
-build buttons. *Cities* is CRUD over the config, flagging inputs that are
-missing before a build wastes time on them. *Style* edits class defaults
-and colour overrides. *Problem areas* manages the review bookmarks.
+build buttons. *Sketch* is the ground-truth editor (below). *Tuning* is
+the pipeline dials. *Cities* is CRUD over the config, flagging inputs that
+are missing before a build wastes time on them. *Style* edits class
+defaults and colour overrides. *Problem areas* manages the review
+bookmarks.
+
+### Sketch editor
+
+A bezier pen over the map: anchors with in/out handles, baked to the
+polyline the scorer reads. Gestures are unchanged from the old editor —
+click places a corner, click-drag pulls a curve, Enter finishes, drag an
+anchor to move it, alt-drag to pull fresh handles, right-click deletes an
+anchor, double-click toggles corner ⇄ auto-smooth, clicking a selected
+line inserts an anchor. Keys: `d` new, `c` continue, `x` split, `m` merge,
+`z`/`Z` undo/redo, `⌫` delete line. Autosaves 900 ms after the last edit.
+
+Three things the rewrite fixed rather than reproduced. Merge used to
+reverse anchors **without** swapping `hin`/`hout`, kinking every curve it
+joined. Anchor insertion picked the span by midpoint proximity, which
+mis-assigns clicks on long or curved spans — it is perpendicular distance
+now. And `Cmd+C` fell through to "continue line", so copying text started
+drawing.
+
+`coords` IS the contract: `internal/sketch` reads only `coords` and
+`routes`, so every mutation re-bakes. `npm run check` (in `web/`) re-bakes
+every file in `sketches/` from its anchors and demands the result be
+byte-identical to what is on disk — the drawn networks are months of
+hand-made ground truth, and a change to the baker would silently move
+every reference line and every gate number with it. It also covers the
+merge, split, insert and reverse invariants.
+
+### Tuning
+
+`pipeline.Dials` rendered from `/api/params`, grouped by the stage prefix
+in each key, so a new dial in the Go struct appears with no UI change.
+Values are stored per city in the browser and travel in the build request
+body — they are never written to `portolan.json`, so a tuning run cannot
+disturb anyone else's build. Values off default are highlighted with a
+one-click reset.
 
 **MapLibre is not bundled.** Portolan renders on a fork (variable
 line-offset along line-progress); the server exposes it at

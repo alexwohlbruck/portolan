@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Map, MapPin, Hammer, Clock, Palette, Crosshair, Compass } from 'lucide-vue-next'
+import { Map, MapPin, Hammer, Clock, Palette, Crosshair, Compass, PenTool, SlidersHorizontal } from 'lucide-vue-next'
 import Badge from './ui/Badge.vue'
 import Select from './ui/Select.vue'
 import Spinner from './ui/Spinner.vue'
@@ -12,6 +12,8 @@ const nav = [
   { to: '/map', label: 'Map', icon: Map },
   { to: '/build', label: 'Build', icon: Hammer, badge: 'run' },
   { to: '/service', label: 'Service', icon: Clock },
+  { to: '/sketch', label: 'Sketch', icon: PenTool },
+  { to: '/tuning', label: 'Tuning', icon: SlidersHorizontal },
 ]
 const config = [
   { to: '/cities', label: 'Cities', icon: MapPin },
@@ -81,10 +83,10 @@ const options = computed(() => cities.value.map((c) => ({ value: c.id, label: c.
 
     <div class="border-t border-border px-3 py-3">
       <a
-        href="/sketch"
+        href="/map"
         class="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
       >
-        <Compass class="size-4" /> Sketch editor
+        <Compass class="size-4" /> Old workbench
       </a>
     </div>
   </aside>
