@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
-import { Layers, Crosshair, RefreshCw } from 'lucide-vue-next'
+import { Layers, Crosshair, RefreshCw, Clock } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Select from '@/components/ui/Select.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, clearGeomCache, type Scenario, type StyleSet } from '@/lib/api'
-import { feed, currentCity } from '@/lib/store'
+import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 // MapLibre comes from the FORK the server exposes at /vendor — it carries
@@ -18,7 +18,12 @@ declare const maplibregl: any
 const el = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const scenarios = ref<Scenario[]>([])
-const scenario = ref('')
+// grid[dayOfWeek][hour] -> scenario id. Day 0 = Monday, matching the
+// pipeline's convention, NOT JavaScript's Sunday-first getDay().
+const grid = ref<string[][]>([])
+const when = ref('')          // datetime-local value; empty = all service
+const building = ref(false)
+const scenario = ref('__all')
 const styleSet = ref<StyleSet | null>(null)
 const inspect = ref<Record<string, any> | null>(null)
 let map: any = null
@@ -55,10 +60,66 @@ const KINDS: [string, any][] = [
 ]
 const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
 
+// ALL is a sentinel, not the empty string: reka-ui reads '' as "nothing
+// selected", so an empty-valued option shows the placeholder instead of
+// its label and can never be re-selected — switching back to the union
+// map would be impossible.
+const ALL = '__all'
 const scenarioOptions = computed(() => [
-  { value: '', label: 'All service' },
+  { value: ALL, label: 'All service' },
   ...scenarios.value.filter((s) => s.built).map((s) => ({ value: s.id, label: s.label })),
 ])
+const scenarioId = computed(() => (scenario.value === ALL ? undefined : scenario.value))
+
+const byId = computed(() => Object.fromEntries(scenarios.value.map((s) => [s.id, s])))
+
+/** The scenario that draws a given instant. Resolution is by weekday and
+ *  hour because that is the structure GTFS calendars actually carry — any
+ *  date in the year works, and a date resolves to its weekday's service.
+ *  Holidays deliberately follow regular service (see docs). */
+function scenarioAt(iso: string): { id: string; label: string; built: boolean } | null {
+  if (!iso || !grid.value.length) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const day = (d.getDay() + 6) % 7 // JS Sunday=0 -> our Monday=0
+  const id = grid.value[day]?.[d.getHours()] ?? ''
+  if (!id) return null
+  const s = byId.value[id]
+  return { id, label: s?.label ?? id, built: !!s?.built }
+}
+
+const resolved = computed(() => scenarioAt(when.value))
+
+const localNow = () => {
+  const d = new Date()
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+  return d.toISOString().slice(0, 16)
+}
+
+// Picking a time selects the map that draws it. An unbuilt scenario keeps
+// the current map on screen rather than blanking it — the banner offers to
+// build it instead.
+watch(resolved, (r) => {
+  if (!when.value) return
+  if (r?.built) scenario.value = r.id
+})
+
+async function buildResolved() {
+  const r = resolved.value
+  if (!r || !feed.value) return
+  building.value = true
+  try {
+    await api.run(feed.value, 'chart', r.id)
+    toast({ title: 'Building this service map', description: r.label, variant: 'success' })
+  } catch (e: any) {
+    toast({ title: 'Could not start build', description: e.message, variant: 'error' })
+  } finally {
+    building.value = false
+  }
+}
+
+// a finished run may have produced the scenario we are waiting on
+watch(() => run.value.done, (d) => d && loadScenarios())
 
 function widthExpr(w: any) {
   return ['interpolate', ['linear'], ['zoom'], 10, ['*', 1.0, w], 13, ['*', 2.0, w], 15, ['*', 3.0, w], 16, ['*', 3.6, w]]
@@ -94,7 +155,7 @@ async function ensureBand() {
   if (loadedBands.has(key)) return
   loadedBands.add(key)
   try {
-    const { data, stats } = await fetchBuild(feed.value, key, scenario.value || undefined)
+    const { data, stats } = await fetchBuild(feed.value, key, scenarioId.value)
     map.getSource(`build-${key}`)?.setData(data)
     transferred.value = stats
   } catch {
@@ -202,11 +263,12 @@ function fitCity() {
 
 async function loadScenarios() {
   scenarios.value = []
-  scenario.value = ''
+  scenario.value = '__all'
   if (!feed.value) return
   try {
     const r = await api.scenarios(feed.value)
     if (r.available && r.scenarios) scenarios.value = r.scenarios
+    grid.value = r.grid ?? []
   } catch {
     /* not every feed has a usable calendar */
   }
@@ -264,9 +326,12 @@ onMounted(async () => {
     addLayers()
     // crossing a band boundary pulls that band in the first time
     map.on('zoomend', ensureBand)
-    await loadScenarios()
     await reload()
   })
+  // the scenario list does not wait on the map: it is a plain API call,
+  // and burying it in the load handler meant the picker stayed empty
+  // whenever WebGL was slow or unavailable
+  loadScenarios()
 })
 
 onBeforeUnmount(() => {
@@ -297,7 +362,41 @@ watch(scenario, reload)
         <Button variant="ghost" size="icon" title="Fit to city" @click="fitCity"><Crosshair class="size-4" /></Button>
       </div>
 
-      <div class="pointer-events-auto flex items-center gap-2">
+      <div class="pointer-events-auto flex flex-col items-end gap-2">
+        <div class="flex items-center gap-2 rounded-xl border border-border bg-card/90 px-3 py-2 shadow-sm backdrop-blur">
+          <Clock class="size-4 shrink-0 text-muted-foreground" />
+          <input
+            v-model="when"
+            type="datetime-local"
+            class="h-8 rounded-md border border-input bg-transparent px-2 text-sm [color-scheme:dark]"
+          />
+          <Button variant="ghost" size="sm" title="Now" @click="when = localNow()">now</Button>
+          <Button v-if="when" variant="ghost" size="sm" title="Show all service" @click="when = ''; scenario = ALL">
+            clear
+          </Button>
+        </div>
+
+        <div
+          v-if="when"
+          class="max-w-sm rounded-xl border border-border bg-card/90 px-3 py-2 text-xs shadow-sm backdrop-blur"
+        >
+          <template v-if="resolved">
+            <div class="flex items-center gap-2">
+              <Badge :variant="resolved.built ? 'success' : 'warning'">
+                {{ resolved.built ? 'showing' : 'not built' }}
+              </Badge>
+              <span class="truncate font-medium">{{ resolved.label }}</span>
+            </div>
+            <div v-if="!resolved.built" class="mt-1.5 flex items-center gap-2">
+              <span class="text-muted-foreground">This service map has not been laid out yet.</span>
+              <Button size="sm" :disabled="building || run.running" @click="buildResolved">
+                <Spinner v-if="building || run.running" class="size-3" /> Build it
+              </Button>
+            </div>
+          </template>
+          <div v-else class="text-muted-foreground">No service at this hour.</div>
+        </div>
+
         <Select
           v-if="scenarioOptions.length > 1"
           v-model="scenario"

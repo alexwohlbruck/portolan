@@ -16,7 +16,7 @@ import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 const scenarios = ref<Scenario[]>([])
-const scenario = ref('')
+const scenario = ref('__all')
 const starting = ref(false)
 const logEl = ref<HTMLElement | null>(null)
 const stick = ref(true)
@@ -40,8 +40,11 @@ const lastError = computed(() => {
   return run.value.log.filter((l) => /portolan:|error|panic|FAIL/i.test(l)).slice(-1)[0] ?? ''
 })
 
+// sentinel rather than '': see MapView — reka-ui cannot represent an
+// empty-valued option as a selection.
+const ALL = '__all'
 const scenarioOptions = computed(() => [
-  { value: '', label: 'All service (union)' },
+  { value: ALL, label: 'All service (union)' },
   ...scenarios.value.map((s) => ({ value: s.id, label: `${s.label}${s.built ? ' ✓' : ''}` })),
 ])
 
@@ -76,7 +79,7 @@ async function start(cmd: 'chart' | 'sound') {
   if (!feed.value) return
   starting.value = true
   try {
-    await api.run(feed.value, cmd, cmd === 'chart' ? scenario.value || undefined : undefined)
+    await api.run(feed.value, cmd, cmd === 'chart' && scenario.value !== ALL ? scenario.value : undefined)
     stick.value = true
     toast({ title: cmd === 'chart' ? 'Build started' : 'Scoring started', variant: 'success' })
   } catch (e: any) {

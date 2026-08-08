@@ -131,6 +131,26 @@ need them.
 feed; `service_det_test.go` guards process determinism. Both skip when
 the local GTFS zips are absent.
 
+## Picking a time
+
+The viewer takes a **timestamp**, not a scenario id. `/api/scenarios`
+already returns `grid[day][hour] -> scenario id`, so an instant resolves
+by weekday and hour — which is the structure GTFS calendars actually
+carry. Any date in the year works; it resolves to its weekday's service.
+Two consequences worth stating plainly:
+
+- **Holidays follow regular service.** Derivation ignores
+  `calendar_dates` for feeds that have a `calendar.txt` (see above), so
+  25 December resolves to ordinary Friday service. The map shows the
+  regular timetable, not the holiday one.
+- **Resolution is hourly.** A cell is an hour, so 14:05 and 14:55 are the
+  same map. Sub-hour precision would need the activity histogram to be
+  finer than the 7x24 grid.
+
+An hour whose scenario has not been laid out yet keeps the current map on
+screen and offers to build it, rather than blanking. An hour with no
+service at all says so.
+
 ## Storage and transport
 
 A scenario ships as a complete redraw (`build/<city>.scen-<id>.geojson`),
