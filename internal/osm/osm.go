@@ -70,10 +70,16 @@ func Load(path string) ([]Way, error) {
 			}
 		}
 		if !railValues[tags["railway"]] {
-			if !aerialValues[tags["aerialway"]] {
+			switch {
+			case aerialValues[tags["aerialway"]]:
+				tags["railway"] = "aerial"
+			case tags["route"] == "ferry":
+				// OSM maps ferry LANES as route=ferry ways — real-world
+				// geometry for water crossings, the seaway layer
+				tags["railway"] = "seaway"
+			default:
 				continue
 			}
-			tags["railway"] = "aerial"
 		}
 		if s := tags["service"]; s != "" && s != "crossover" {
 			continue

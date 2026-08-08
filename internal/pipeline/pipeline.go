@@ -261,7 +261,8 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		fmt.Sscanf(v, "%f,%f", &la, &lo)
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
-	stages.SetBusRoutes(busRouteSet(feed.Routes))
+	stages.SetBusRoutes(routeSetOf(feed.Routes, mode.Bus))
+	stages.SetFerryRoutes(routeSetOf(feed.Routes, mode.Ferry))
 	la := map[string]bool{}
 	for _, a := range o.LineAgencies {
 		la[strings.TrimSpace(a)] = true
@@ -577,10 +578,10 @@ func loadFeeds(paths string, cover float64, keep func(gtfs.Route) bool) (*gtfs.F
 	return base, nil
 }
 
-func busRouteSet(routes map[string]gtfs.Route) map[string]bool {
+func routeSetOf(routes map[string]gtfs.Route, c mode.Class) map[string]bool {
 	m := map[string]bool{}
 	for id, r := range routes {
-		if mode.Of(r.Type) == mode.Bus {
+		if mode.Of(r.Type) == c {
 			m[id] = true
 		}
 	}

@@ -9,7 +9,7 @@ loader and the bundler look at. Ways are passed through untouched otherwise
 import json
 import sys
 
-TAGS = ("railway", "aerialway", "service", "bridge", "tunnel", "layer")
+TAGS = ("railway", "aerialway", "route", "service", "bridge", "tunnel", "layer")
 if "--streets" in sys.argv:
     TAGS = ("highway", "service", "bridge", "tunnel", "layer", "oneway")
 

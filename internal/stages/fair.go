@@ -564,7 +564,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					near := tailP[len(tailP)-1]
 					tlP, hlP := geo.NewLine(tailP), geo.NewLine(headP)
 					if tc, needA, needB := trackCurveBetween(p0, p3, near, tlP, hlP,
-						mode.Of(routeType(c.a, c.color)) == mode.Bus); tc != nil {
+						patternLayer(routeType(c.a, c.color))); tc != nil {
 						cand := append(append([]geo.Pt{p0}, tc...), p3)
 						allow := 25 + 20*math.Min(1, c.bend/90)
 						if maxTurn12(smoothPolyline(geo.NewLine(cand))) <= allow {
@@ -665,7 +665,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				p3 := head[len(head)-1]
 				near := tail[len(tail)-1]
 				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head),
-					mode.Of(routeType(a, c.color)) == mode.Bus)
+					patternLayer(routeType(a, c.color)))
 				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 && near.Dist(dbg3Pt) < 150 {
 					mt := -1.0
 					if tc != nil {
@@ -872,7 +872,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 // arc from the tail's node-side tip back to the curve's start, and
 // from the head's tip forward to the curve's end — valid only when the
 // curve is non-nil; the cut pass uses them to shrink turning cuts.
-func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, busOK bool) ([]geo.Pt, float64, float64) {
+func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, connLayer string) ([]geo.Pt, float64, float64) {
 	if lvlGrid == nil {
 		return nil, 0, 0
 	}
@@ -885,10 +885,10 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, busOK bool) ([]geo
 	var bestFit *fit
 	lvlGrid.Near(near, 25, func(ti int) {
 		t := lvlLines[ti]
-		// class discipline: a bus movement connects over streets, a rail
-		// movement never does — an el corner with a street below would
-		// otherwise offer the road as its "connector steel"
-		if (wayRailClass[lvlWays[ti]] == "street") != busOK {
+		// layer discipline: a bus movement connects over streets, a ferry
+		// over seaways, a rail movement over neither — an el corner with a
+		// street below would otherwise offer the road as its "connector"
+		if wayLayer(wayRailClass[lvlWays[ti]]) != connLayer {
 			return
 		}
 		if t.Len() < 15 || t.DistTo(near) > 25 {
@@ -1044,8 +1044,8 @@ func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
 	var bestOff float64
 	lvlGrid.Near(apex, 25, func(ti int) {
 		t := lvlLines[ti]
-		if wayRailClass[lvlWays[ti]] == "street" {
-			return // bus edges are street geometry already; rail never borrows a road corner
+		if wayRailClass[lvlWays[ti]] == "street" || wayRailClass[lvlWays[ti]] == "seaway" {
+			return // bus/ferry edges are layer geometry already; rail never borrows either
 		}
 		da := t.DistTo(a)
 		db := t.DistTo(b)

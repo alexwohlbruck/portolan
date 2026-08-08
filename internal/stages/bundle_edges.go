@@ -145,10 +145,10 @@ func levelAt(q geo.Pt, routes []string) (int, bool) {
 // doubling is one corridor by definition, but a cross-service pair must
 // not merge across levels (el over subway).
 func lvlOK(net *Network, a, b int, la, lb *geo.Line, samples []geo.Pt, i, j int) bool {
-	// family gate before anything else: a bus-only edge never merges with
-	// a rail-family edge, however parallel — Lake St buses run directly
-	// under the el, and one corridor there would weld two maps together.
-	if edgeIsBus(&net.Edges[a]) != edgeIsBus(&net.Edges[b]) {
+	// family gate before anything else: bus, ferry and rail edges never
+	// merge across families, however parallel — Lake St buses run directly
+	// under the el, and a ferry lane hugs many a bridge.
+	if edgeFamily(&net.Edges[a]) != edgeFamily(&net.Edges[b]) {
 		return false
 	}
 	if edgeRoutesIntersect(net.Edges[a].Routes, net.Edges[b].Routes) {

@@ -115,6 +115,7 @@ rail() { # $1 = feed key
 (
 way[\"railway\"~\"^(rail|subway|light_rail|tram|monorail|funicular|narrow_gauge)\$\"]($s,$w,$n,$e);
 way[\"aerialway\"~\"^(cable_car|gondola|mixed_lift)\$\"]($s,$w,$n,$e);
+way[\"route\"=\"ferry\"]($s,$w,$n,$e);
 );
 out geom;"
 

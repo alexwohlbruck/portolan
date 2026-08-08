@@ -141,8 +141,32 @@ func classCompat(routeType int, cls string) bool {
 		return cls == "aerial"
 	case mode.Bus:
 		return cls == "street"
+	case mode.Ferry:
+		return cls == "seaway"
 	}
 	return true
+}
+
+// patternLayer: which physical layer a pattern's candidates come from.
+// The hard bucket in emitSample — layers never mix, so a train can never
+// ride a ferry lane across a river where its own bridge is unmapped (the
+// no-compat leniency would shrug), and ferry lanes never eat rail
+// candidate slots.
+func patternLayer(routeType int) string {
+	switch mode.Of(routeType) {
+	case mode.Bus:
+		return "street"
+	case mode.Ferry:
+		return "seaway"
+	}
+	return "rail"
+}
+
+func wayLayer(cls string) string {
+	if cls == "street" || cls == "seaway" {
+		return cls
+	}
+	return "rail"
 }
 
 const classPen = 100.0
@@ -183,35 +207,14 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 		walks:     map[[2]int]walkRes{}}
 	var out []Path
 	for _, oi := range order {
-		// ferries have no infrastructure layer: there is no steel to match,
-		// so the GTFS shape IS the geometry. One all-gap step rides SPLIT's
-		// existing gap machinery — synthetic end nodes, Gap edges, dedup —
-		// and the segment comes out kind:bridge, which is already the
-		// "no track under this" rendering.
-		if mode.Of(patterns[oi].Route.Type) == mode.Ferry {
-			if path, ok := ferryPath(patterns[oi], frame); ok {
-				out = append(out, path)
-			}
-			continue
-		}
+		// ferries match the seaway layer (OSM route=ferry lanes) like
+		// everything else; where the harbor has no mapped lane the gap
+		// machinery chords the crossing exactly as the old bypass did.
 		if path, ok := m.matchOne(patterns[oi], frame); ok {
 			out = append(out, path)
 		}
 	}
 	return out, nil
-}
-
-func ferryPath(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
-	pts := make([]geo.Pt, len(pat.Shape))
-	for i, ll := range pat.Shape {
-		pts[i] = frame.ToXY(ll)
-	}
-	line := geo.NewLine(pts)
-	if line.Len() < 50 {
-		return Path{}, false
-	}
-	return Path{Pattern: pat, Line: line, WayIDs: []string{"gap"},
-		Steps: []PathStep{{Piece: -1, Gap: line}}}, true
 }
 
 type matcher struct {
@@ -293,11 +296,11 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 	// track out of the set (the MaxCand saturation failure, this time at
 	// city scale). The soft classPen stays for judgment calls WITHIN the
 	// rail family; the bucket is for layers that never mix.
-	wantStreet := mode.Of(pat.Route.Type) == mode.Bus
+	wantLayer := patternLayer(pat.Route.Type)
 	var near []pc
 	m.g.grid.Near(q, reach, func(piece int) {
 		if wayRailClass != nil &&
-			(wayRailClass[m.g.edges[2*piece].Way] == "street") != wantStreet {
+			wayLayer(wayRailClass[m.g.edges[2*piece].Way]) != wantLayer {
 			return
 		}
 		arc, d := m.g.pieces[piece].ProjectArc(q)

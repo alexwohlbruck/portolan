@@ -41,12 +41,21 @@ func (g *trackGraph) rev(e int) int { return e ^ 1 }
 
 const weldEps = 0.6 // m; OSM shared nodes survive GeoJSON at cm precision
 
-// streetLayer: streets and rails are disjoint physical layers — a road
-// crossing a subway grate in plan view is not a junction. Cross-layer
-// welds grafted bus street nodes onto subway junctions and changed their
-// cut and adjacency structure (the N·Q drawn break at 57th appeared the
-// moment NYC buses landed). No weld, split, or snap crosses this line.
-func streetLayer(id string) bool { return wayRailClass[id] == "street" }
+// layerOf: rails, streets and seaways are disjoint physical layers — a
+// road crossing a subway grate in plan view is not a junction, and a
+// ferry lane hugging a bridge is not a track. Cross-layer welds grafted
+// bus street nodes onto subway junctions and changed their cut and
+// adjacency structure (the N·Q drawn break at 57th appeared the moment
+// NYC buses landed). No weld, split, or snap crosses a layer line.
+func layerOf(id string) string {
+	switch wayRailClass[id] {
+	case "street":
+		return "street"
+	case "seaway":
+		return "seaway"
+	}
+	return "rail"
+}
 
 // Match and Split build the graph from the same tracks slice and already
 // rely on the two builds being identical (shared piece ids) — build once.
@@ -102,7 +111,7 @@ func buildTrackGraph(tracks []bundle.Track) *trackGraph {
 			for dy := -1; dy <= 1; dy++ {
 				for _, r := range endBuckets[[2]int{k[0] + dx, k[1] + dy}] {
 					if r.way != notWay && endPt(r).Dist(p) <= weldEps &&
-						streetLayer(tracks[r.way].ID) == streetLayer(tracks[notWay].ID) {
+						layerOf(tracks[r.way].ID) == layerOf(tracks[notWay].ID) {
 						return true
 					}
 				}
@@ -135,20 +144,20 @@ func buildTrackGraph(tracks []bundle.Track) *trackGraph {
 
 	// weld piece endpoints into nodes
 	nodeBuckets := map[[2]int][]int{}
-	nodeLayer := []bool{}
-	nodeOf := func(p geo.Pt, street bool) int {
+	nodeLayer := []string{}
+	nodeOf := func(p geo.Pt, layer string) int {
 		k := key(p)
 		for dx := -1; dx <= 1; dx++ {
 			for dy := -1; dy <= 1; dy++ {
 				for _, ni := range nodeBuckets[[2]int{k[0] + dx, k[1] + dy}] {
-					if nodeLayer[ni] == street && g.nodes[ni].At.Dist(p) <= weldEps {
+					if nodeLayer[ni] == layer && g.nodes[ni].At.Dist(p) <= weldEps {
 						return ni
 					}
 				}
 			}
 		}
 		g.nodes = append(g.nodes, tgNode{At: p})
-		nodeLayer = append(nodeLayer, street)
+		nodeLayer = append(nodeLayer, layer)
 		ni := len(g.nodes) - 1
 		nodeBuckets[key(p)] = append(nodeBuckets[key(p)], ni)
 		return ni
@@ -158,8 +167,8 @@ func buildTrackGraph(tracks []bundle.Track) *trackGraph {
 		if line.Len() < 1e-6 {
 			continue
 		}
-		from := nodeOf(rp.pts[0], streetLayer(rp.way))
-		to := nodeOf(rp.pts[len(rp.pts)-1], streetLayer(rp.way))
+		from := nodeOf(rp.pts[0], layerOf(rp.way))
+		to := nodeOf(rp.pts[len(rp.pts)-1], layerOf(rp.way))
 		p := len(g.pieces)
 		g.pieces = append(g.pieces, line)
 		fwd := tgEdge{Way: rp.way, Piece: p, From: from, To: to, Line: line}
@@ -297,7 +306,7 @@ func snapEndpoints(tracks []bundle.Track) []bundle.Track {
 		for _, p := range []geo.Pt{w[0], w[len(w)-1]} {
 			eachVertexNear(p, weldEps, func(v vref) {
 				if v.way != wi &&
-					streetLayer(tracks[v.way].ID) == streetLayer(tracks[wi].ID) {
+					layerOf(tracks[v.way].ID) == layerOf(tracks[wi].ID) {
 					parent[find(wi)] = find(v.way)
 				}
 			})
@@ -353,7 +362,7 @@ func snapEndpoints(tracks []bundle.Track) []bundle.Track {
 				bw, bsi, bq := -1, -1, geo.Pt{}
 				grid.Near(p, tol, func(cand int) {
 					if cand == wi || len(pts[cand]) < 2 ||
-						streetLayer(tracks[cand].ID) != streetLayer(tracks[wi].ID) {
+						layerOf(tracks[cand].ID) != layerOf(tracks[wi].ID) {
 						return
 					}
 					if pass == 1 && find(cand) == find(wi) {

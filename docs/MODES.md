@@ -62,9 +62,16 @@ Two notes that matter:
   `internal/gtfs/service.go` already computes exactly this), or agency
   route naming. Treat BRT as a *promotion rule* applied to `bus`, not a
   class of its own.
-- **`ferry` needs no infrastructure layer.** There is nothing to match to;
-  the GTFS shape is the geometry. That makes ferries the cheapest mode to
-  add and a good first proof that the class machinery works.
+- **`ferry` matches the seaway layer.** OSM maps ferry lanes as
+  `route=ferry` ways; the loader gives them the synthetic class `seaway`
+  and ferries Viterbi-match onto them like every other mode (NYC: 20 of
+  27 paths fully snapped; Berlin's F-lines all ride lanes). Where the
+  harbor has no mapped lane, the gap machinery chords the crossing — the
+  original shape-is-geometry behaviour survives as the fallback. Seaway
+  is the third hard layer beside rail and street: no candidate mixing
+  (a train must never ride a ferry lane across a river whose bridge is
+  unmapped — the no-compat leniency would allow exactly that), no
+  cross-layer graph welds, no strand-pool votes, no cross-family merges.
 
 ## The trunk key
 

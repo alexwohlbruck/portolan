@@ -70,16 +70,36 @@ var busRoutes map[string]bool
 
 func SetBusRoutes(m map[string]bool) { busRoutes = m }
 
-func edgeIsBus(e *Edge) bool {
-	if busRoutes == nil || len(e.Routes) == 0 {
+// ferryRoutes: same contract for the seaway layer — ferry edges ride OSM
+// ferry-lane geometry verbatim (no strand refinement, no twins) and never
+// merge with rail or bus edges.
+var ferryRoutes map[string]bool
+
+func SetFerryRoutes(m map[string]bool) { ferryRoutes = m }
+
+func edgeAll(e *Edge, set map[string]bool) bool {
+	if set == nil || len(e.Routes) == 0 {
 		return false
 	}
 	for _, r := range e.Routes {
-		if !busRoutes[r] {
+		if !set[r] {
 			return false
 		}
 	}
 	return true
+}
+
+func edgeIsBus(e *Edge) bool { return edgeAll(e, busRoutes) }
+
+// edgeFamily: the merge/refine family — edges only ever merge within one
+func edgeFamily(e *Edge) int {
+	switch {
+	case edgeAll(e, busRoutes):
+		return 1
+	case edgeAll(e, ferryRoutes):
+		return 2
+	}
+	return 0
 }
 
 func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
@@ -336,7 +356,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// buses landed).
 	var riddenTracks []bundle.Track
 	for _, t := range tracks {
-		if usedWays[t.ID] && wayRailClass[t.ID] != "street" {
+		if usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
 			riddenTracks = append(riddenTracks, t)
 		}
 	}
@@ -365,7 +385,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// so the South Ferry law holds.
 	var unriddenTracks []bundle.Track
 	for _, t := range tracks {
-		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" {
+		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
 			unriddenTracks = append(unriddenTracks, t)
 		}
 	}
@@ -1106,8 +1126,8 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 		if e.Gap || len(e.Pts) < 3 {
 			continue
 		}
-		if edgeIsBus(e) {
-			continue // street ways are already the drawn centerline
+		if edgeFamily(e) != 0 {
+			continue // street/seaway ways are already the drawn centerline
 		}
 		if geo.NewLine(e.Pts).Len() < p.MinRefine {
 			continue
