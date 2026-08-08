@@ -79,6 +79,22 @@ function modeExprs(st: StyleSet | null) {
 
 const ribbonIds: string[] = []
 
+// which bands have their data in already. A band is fetched the first time
+// the viewport enters it and then kept — flipping back and forth across a
+// boundary should not re-download.
+const loadedBands = new Set<number>()
+
+const bandForZoom = (z: number) =>
+  (BANDS.find((b) => z >= b.min && z < b.max) ?? BANDS[BANDS.length - 1]).key
+
+function ensureBand() {
+  if (!map || !feed.value) return
+  const key = bandForZoom(map.getZoom())
+  if (loadedBands.has(key)) return
+  loadedBands.add(key)
+  map.getSource(`build-${key}`)?.setData(buildURL(feed.value, scenario.value || undefined, key))
+}
+
 function addLayers() {
   const { w, o } = modeExprs(styleSet.value)
   const COLOR = ['concat', '#', ['get', 'route_color']]
@@ -88,7 +104,7 @@ function addLayers() {
       map.addLayer({
         id,
         type: 'line',
-        source: 'build',
+        source: `build-${b.key}`,
         minzoom: b.min === 0 ? 0 : b.min,
         maxzoom: b.max === 24 ? 24 : b.max,
         filter: ['all', ['==', ['get', 'band_min'], b.key], ['==', ['get', 'kind'], kind]],
@@ -145,8 +161,11 @@ async function reload() {
   loading.value = true
   try {
     styleSet.value = await api.style(feed.value)
-    const src = map.getSource('build')
-    if (src) src.setData(buildURL(feed.value, scenario.value || undefined))
+    loadedBands.clear()
+    for (const b of BANDS) {
+      map.getSource(`build-${b.key}`)?.setData({ type: 'FeatureCollection', features: [] })
+    }
+    ensureBand()
     const { w, o } = modeExprs(styleSet.value)
     for (const id of ribbonIds) {
       if (!map.getLayer(id)) continue
@@ -225,12 +244,19 @@ onMounted(async () => {
   ro.observe(el.value!)
   map.on('load', async () => {
     const empty = { type: 'FeatureCollection', features: [] }
-    map.addSource('build', { type: 'geojson', data: empty, lineMetrics: true })
+    // one source per zoom band, filled on demand: FAIR emits a complete
+    // copy of the map per band and only one is ever visible, so loading
+    // all four means four times the bytes for nothing.
+    for (const b of BANDS) {
+      map.addSource(`build-${b.key}`, { type: 'geojson', data: empty, lineMetrics: true })
+    }
     for (const n of ['rail', 'paths', 'trackcenter', 'nodes']) {
       map.addSource(n, { type: 'geojson', data: empty })
     }
     styleSet.value = feed.value ? await api.style(feed.value).catch(() => null) : null
     addLayers()
+    // crossing a band boundary pulls that band in the first time
+    map.on('zoomend', ensureBand)
     await loadScenarios()
     await reload()
   })

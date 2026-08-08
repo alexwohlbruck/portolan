@@ -130,5 +130,8 @@ export const api = {
     ),
 }
 
-export const buildURL = (feed: string, scenario?: string) =>
-  `/api/build.geojson?feed=${encodeURIComponent(feed)}${scenario ? `&scenario=${scenario}` : ''}&t=${Date.now()}`
+export const buildURL = (feed: string, scenario?: string, band?: number) =>
+  `/api/build.geojson?feed=${encodeURIComponent(feed)}` +
+  (scenario ? `&scenario=${scenario}` : '') +
+  (band === undefined ? '' : `&band=${band}`) +
+  `&t=${Date.now()}`

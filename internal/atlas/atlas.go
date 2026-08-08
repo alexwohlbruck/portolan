@@ -270,6 +270,13 @@ func (s *Server) Handler() http.Handler {
 			fmt.Fprint(w, `{"type":"FeatureCollection","features":[]}`)
 			return
 		}
+		// ?band=N serves one zoom band. FAIR emits a full copy of the map
+		// per band and only one is ever visible, so the viewer fetches the
+		// band it needs instead of four times the data.
+		if band, ok := bandOf(r); ok {
+			serveBand(w, p, band)
+			return
+		}
 		http.ServeFile(w, r, p)
 	})
 	mux.HandleFunc("/api/rail.geojson", s.fileFor(func(f FeedCfg) string { return f.Rail }))
@@ -886,5 +893,5 @@ func (s *Server) ListenAndServe(addr string) error {
 		return err
 	}
 	log.Printf("atlas: workbench at http://%s/  (map · sketch · run buttons)", addr)
-	return http.ListenAndServe(addr, s.Handler())
+	return http.ListenAndServe(addr, compress(s.Handler()))
 }
