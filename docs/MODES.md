@@ -80,9 +80,29 @@ the slot unit:
 | class | trunk key | consequence |
 |---|---|---|
 | `metro`, `tram`, `monorail` | `color` (law 5, unchanged) | NYC/Chicago behaviour is bit-for-bit preserved |
-| `regional` | `color`, falling back to `agency:class` | colourless commuter stops collapsing into one grey trunk |
+| `regional` | **`agency`** by default; `color` for configured `line_agencies` | LIRR's twelve branch-diagram colours draw as ONE line, the way Apple draws them |
 | `bus` | **`corridor`** — the edge id | any number of bus routes on a street render as exactly one ribbon |
 | `ferry`, `aerial`, `funicular`, `cable` | `route` | too few to bundle; never merge them |
+
+The regional rule was settled by evidence, not the original inference
+(which had colour first). Owner's Apple screenshots: Penn Station is one
+LIRR line and one Metro-North line, while our colour-trunked build
+stacked eleven branch ribbons. But Paris proves colour-first is right for
+SOME agencies: Apple draws RER A–E and the lettered Transilien lines
+individually, and the IDFM feed even encodes the other case — its ten TER
+routes all carry colour `AAAAAA`, so class-level collapse of intercity
+falls out of colour trunking for free. No computable threshold separates
+LIRR branch-diagram colours from RER line brands; that call is curation,
+so it lives in config: `"line_agencies": ["IDFM:71", "IDFM:1046"]` on the
+city row names the agencies whose colours are real line identities.
+Labels follow the grouping — a multi-route agency trunk is labelled with
+the agency name from `agency.txt`, and a single-route stretch keeps its
+route name, so the shared Metra trunk reads "Metra" downtown and "BNSF"
+on the outer branch. (LIRR gotcha: `agency_id` is optional in routes.txt
+for single-agency feeds and LIRR omits the whole column — the loader
+backfills it from the feed's sole agency.) Collapsing the LIRR to one
+group also erased the three Jamaica drawn-breaks outright: no
+inter-branch transitions to miss when the branches are one ribbon.
 
 Corridor trunking for buses is what caps complexity globally: a street's
 ribbon count stops depending on how many routes ride it. Route identity

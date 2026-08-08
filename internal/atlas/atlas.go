@@ -36,13 +36,14 @@ var navJS []byte
 
 // FeedCfg is one city in portolan.json.
 type FeedCfg struct {
-	Name    string    `json:"name"`
-	GTFS    string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
-	Rail    string    `json:"rail"`
-	Streets string    `json:"streets"` // optional street extract — enables bus routes
-	Out     string    `json:"out"`
-	Network string    `json:"network"` // drawn ground truth for scoring
-	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
+	Name         string    `json:"name"`
+	GTFS         string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
+	Rail         string    `json:"rail"`
+	Streets      string    `json:"streets"`       // optional street extract — enables bus routes
+	LineAgencies []string  `json:"line_agencies"` // regional agencies keeping per-line colors (RER)
+	Out          string    `json:"out"`
+	Network      string    `json:"network"` // drawn ground truth for scoring
+	BBox         []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
 }
 
 // primaryGTFS: the first feed of the comma list — scenarios and mtime
@@ -638,7 +639,8 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		case "chart":
 			err = pipeline.Chart(pipeline.ChartOpts{
 				GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
-				BBox: fc.BBox, Out: out, Dials: dials,
+				LineAgencies: fc.LineAgencies,
+				BBox:         fc.BBox, Out: out, Dials: dials,
 				Scenario: scen,
 			}, logf)
 		case "sound":

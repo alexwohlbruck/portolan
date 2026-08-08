@@ -103,12 +103,26 @@ func (c Class) BandFloor() int {
 	return 0
 }
 
+// lineAgencies: regional agencies whose routes keep PER-LINE identity
+// (config: line_agencies in the city's portolan.json row). The default
+// for regional is AGENCY trunking — Apple draws the LIRR's twelve
+// branch-diagram colors as one line, and 12 distinct groups through
+// Jamaica is exactly the bundle blow-up the design forbids — but some
+// networks' per-line colors ARE the cartography (Paris RER A–E,
+// Transilien's lettered lines), and no computable threshold separates
+// branch colors from line brands. That call is curation, so it lives in
+// config, the same way Apple makes it with humans.
+var lineAgencies map[string]bool
+
+func SetLineAgencies(m map[string]bool) { lineAgencies = m }
+
 // TrunkKey is the slot unit for ORDER and FAIR: routes with equal keys
-// share one ribbon (docs/MODES.md, "The trunk key"). Rail keeps law 5 —
-// the key IS the color string, byte-for-byte, so color-trunked systems
-// (NYC, Chicago) are unchanged. Colorless regional falls back to
-// agency+class rather than letting every gray commuter operator collapse
-// into one 888888 trunk. The singleton classes never merge.
+// share one ribbon (docs/MODES.md, "The trunk key"). Color-trunked rail
+// keeps law 5 — the key IS the color string, byte-for-byte, so NYC and
+// Chicago's subways are unchanged. Regional trunks by AGENCY unless the
+// agency is configured as a line agency; class-level collapse (European
+// intercity, TER) falls out for free where the feed colors a class
+// uniformly. The singleton classes never merge; bus is the corridor.
 func TrunkKey(r gtfs.Route) string {
 	c := Of(r.Type)
 	switch c {
@@ -121,13 +135,16 @@ func TrunkKey(r gtfs.Route) string {
 	case Ferry, Aerial, Funicular, Cable:
 		return "route:" + r.ID
 	case Regional:
-		if r.Color != "" {
-			return r.Color
+		if lineAgencies[r.Agency] || r.Agency == "" {
+			if r.Color != "" {
+				return r.Color
+			}
+			if r.Agency != "" {
+				return "agency:" + r.Agency
+			}
+			return "route:" + r.ID
 		}
-		if r.Agency != "" {
-			return "agency:" + r.Agency
-		}
-		return "route:" + r.ID
+		return "agency:" + r.Agency
 	}
 	if r.Color == "" {
 		return "888888"

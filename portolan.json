@@ -96,7 +96,11 @@
         2.55,
         48.98
       ],
-      "streets": "build/paris-streets.geojson"
+      "streets": "build/paris-streets.geojson",
+      "line_agencies": [
+        "IDFM:71",
+        "IDFM:1046"
+      ]
     },
     "berlin": {
       "name": "Berlin",

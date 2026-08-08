@@ -103,6 +103,10 @@ type ChartOpts struct {
 	// drawn only when set; the streets join the MATCH graph but never the
 	// strand pool.
 	Streets string
+	// LineAgencies: regional agencies whose routes keep per-line identity
+	// instead of collapsing into one agency trunk (Paris RER A–E). Config
+	// curation — see mode.SetLineAgencies.
+	LineAgencies []string
 	// BBox [w,s,e,n]: clip pattern shapes to the city window. A national
 	// feed's Amtrak shape would otherwise leave the extract and draw a
 	// gap chord across the continent.
@@ -258,6 +262,12 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
 	stages.SetBusRoutes(busRouteSet(feed.Routes))
+	la := map[string]bool{}
+	for _, a := range o.LineAgencies {
+		la[strings.TrimSpace(a)] = true
+	}
+	mode.SetLineAgencies(la)
+	stages.SetAgencyNames(feed.Agencies)
 	matchTracks := tracks
 	if len(streetTracks) > 0 {
 		matchTracks = append(append([]bundle.Track{}, tracks...), streetTracks...)
@@ -548,11 +558,20 @@ func loadFeeds(paths string, cover float64, keep func(gtfs.Route) bool) (*gtfs.F
 		pre := fmt.Sprintf("f%d:", i+1)
 		for id, r := range f.Routes {
 			r.ID = pre + id
+			if r.Agency != "" {
+				r.Agency = pre + r.Agency // "1" is MNR in one feed, someone else in the next
+			}
 			base.Routes[r.ID] = r
 		}
 		for _, pat := range f.Patterns {
 			pat.Route.ID = pre + pat.Route.ID
+			if pat.Route.Agency != "" {
+				pat.Route.Agency = pre + pat.Route.Agency
+			}
 			base.Patterns = append(base.Patterns, pat)
+		}
+		for id, name := range f.Agencies {
+			base.Agencies[pre+id] = name
 		}
 	}
 	return base, nil

@@ -37,6 +37,7 @@ type Pattern struct {
 type Feed struct {
 	Routes   map[string]Route
 	Patterns []Pattern
+	Agencies map[string]string // agency_id → agency_name (labels for agency trunks)
 }
 
 // Load reads a GTFS zip and returns patterns covering ≥ coverFrac of each
@@ -71,7 +72,13 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		return nil, fmt.Errorf("gtfs: %s missing %s", path, name)
 	}
 
-	feed := &Feed{Routes: map[string]Route{}}
+	feed := &Feed{Routes: map[string]Route{}, Agencies: map[string]string{}}
+	if af, ok := files["agency.txt"]; ok {
+		if err := eachRowCols(af, []string{"agency_id", "agency_name"},
+			func(v []string) { feed.Agencies[v[0]] = v[1] }); err != nil {
+			return nil, err
+		}
+	}
 
 	// phase 1: routes ∥ stops (independent files, own maps)
 	rf, err := need("routes.txt")
@@ -119,6 +126,21 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	}
 	if stopsErr != nil {
 		return nil, stopsErr
+	}
+	// agency_id is optional in routes.txt when the feed has one agency
+	// (LIRR ships without the column entirely) — backfill it, or the
+	// agency trunk key has nothing to hold onto
+	if len(feed.Agencies) == 1 {
+		var only string
+		for id := range feed.Agencies {
+			only = id
+		}
+		for id, r := range feed.Routes {
+			if r.Agency == "" {
+				r.Agency = only
+				feed.Routes[id] = r
+			}
+		}
 	}
 
 	// phase 2: trips (needs Routes for the keep predicate)
@@ -348,7 +370,6 @@ func trimToStops(pts []geo.LL, first, last geo.LL) []geo.LL {
 	}
 	return out
 }
-
 
 // exciseLoops removes stop-less self-returning excursions from a shape: a
 // stretch that leaves the line, rings around (250–2500 m) and comes back

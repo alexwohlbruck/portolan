@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -112,6 +113,14 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	}
 	label := func(ei int, color string) string {
 		rs := colorRoutes[ei][color]
+		// a MULTI-route agency trunk is labelled as the agency — "Long
+		// Island Rail Road", not four branch names and a +9. A lone route
+		// keeps its own name (the SIR is not "MTA New York City Transit").
+		if len(rs) > 1 && strings.HasPrefix(color, "agency:") {
+			if n := agencyNames[strings.TrimPrefix(color, "agency:")]; n != "" {
+				return n
+			}
+		}
 		// a bus corridor can carry dozens of routes — the label is a
 		// sample, not a roster
 		const maxNames = 4

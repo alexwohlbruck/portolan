@@ -43,6 +43,7 @@ func chart(args []string) {
 	railPath := fs.String("rail", "", "OSM rail extract (GeoJSON)")
 	streets := fs.String("streets", "", "OSM street extract (GeoJSON) — enables bus routes")
 	bboxStr := fs.String("bbox", "", "w,s,e,n — clip pattern shapes to the window")
+	lineAg := fs.String("line-agencies", "", "comma list: regional agencies keeping per-line colors")
 	out := fs.String("out", "build.geojson", "output GeoJSON")
 	cover := fs.Float64("cover", 0.99, "pattern trip-coverage fraction")
 	fs.Parse(args)
@@ -63,11 +64,16 @@ func chart(args []string) {
 			die(fmt.Errorf("--bbox wants w,s,e,n"))
 		}
 	}
+	var las []string
+	if *lineAg != "" {
+		las = strings.Split(*lineAg, ",")
+	}
 	d := pipeline.DefaultDials()
 	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
 		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, BBox: bbox,
-		Out: *out, Dials: &d,
+		LineAgencies: las,
+		Out:          *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 	die(err)
 }

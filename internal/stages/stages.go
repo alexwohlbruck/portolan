@@ -20,6 +20,12 @@ import (
 
 var ErrNotImplemented = errors.New("stage not implemented — see docs/FRESH-START.md")
 
+// agencyNames: agency_id → display name (gtfs agency.txt), for labelling
+// agency-trunked regional groups. Set by the pipeline before FAIR.
+var agencyNames map[string]string
+
+func SetAgencyNames(m map[string]string) { agencyNames = m }
+
 // Path is one GTFS route pattern matched onto real OSM geometry: a
 // continuous walk over ways, never leaving them.
 type Path struct {

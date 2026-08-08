@@ -160,8 +160,10 @@ build() { # $1 = feed key
   done
   unset IFS
   bboxarg=$(jq -r --arg f "$feed" '.feeds[$f].bbox // empty | join(",")' "$CFG")
+  lineag=$(jq -r --arg f "$feed" '.feeds[$f].line_agencies // empty | join(",")' "$CFG")
   set -- --gtfs "$gtfs" --rail "$rail" --out "$out"
   [ -n "$bboxarg" ] && set -- "$@" --bbox "$bboxarg"
+  [ -n "$lineag" ] && set -- "$@" --line-agencies "$lineag"
   if [ -n "$streets" ]; then
     if [ -s "$streets" ]; then set -- "$@" --streets "$streets"
     else echo "$feed: streets configured but missing at $streets — tools/city.sh streets $feed (building rail-only)"; fi
