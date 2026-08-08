@@ -454,9 +454,9 @@ func parseGTFSTime(s string) (int, bool) {
 // Scenario is one distinct drawn map, covering every (day, hour) cell
 // where service renders that map.
 type Scenario struct {
-	ID       string `json:"id"`    // stable short hash of the pattern set
-	Label    string `json:"label"` // "Mon–Fri 06–22" style
-	Patterns int    `json:"patterns"`
+	ID       string          `json:"id"`    // stable short hash of the pattern set
+	Label    string          `json:"label"` // "Mon–Fri 06–22" style
+	Patterns int             `json:"patterns"`
 	Cells    [7][24]bool     `json:"-"`
 	Keys     map[PatKey]bool `json:"-"`
 }

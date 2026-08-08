@@ -8,10 +8,10 @@ import "testing"
 func TestDefaultsMatchShippedBehaviour(t *testing.T) {
 	s := New()
 	for _, c := range []struct {
-		name             string
-		trunk, color     string
-		width, opacity   float64
-		floor            int
+		name           string
+		trunk, color   string
+		width, opacity float64
+		floor          int
 	}{
 		{"metro", TrunkColor, "", 1, 1, 0},
 		{"tram", TrunkColor, "", 0.75, 1, 0},
