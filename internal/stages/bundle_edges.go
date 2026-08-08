@@ -31,12 +31,30 @@ var (
 	// Schermerhorn, F+A/C on Jay St, the Chicago Loop inner/outer pair.
 	coMergeDist = 4.0 // (dial: split_co_merge_dist)
 
+	// ferryChannelDist: ferry-family pairs merge at CHANNEL width, not
+	// track gauge — the East River's route=ferry lanes spread from 26 m
+	// (co-channel destinations) to 505 m (services hugging opposite
+	// shores of a 1 km river), and the drawn map wants ONE centerline
+	// per waterway. The guard against welding genuinely distinct
+	// crossings is not distance but PERSISTENCE: ferry merges demand
+	// ferryChannelRun of sustained parallelism where rail needs 60 m —
+	// two different crossings diverge long before a quarter kilometre.
+	ferryChannelDist = 600.0
+	ferryChannelRun  = 250.0
+
 	// corridor-tail-from-anchor gates (cross-service trench corridors)
 	corrAnchor = 8.0   // lines must converge this close at one point
 	corrBand   = 25.0  // ...then stay within this band
 	corrHead   = 0.985 // ...with headings agreeing (|cos|, ~10°)
 	corrRun    = 250.0 // ...for at least this much arc
 )
+
+// mergeReach: the reach of the pair currently being merged — applyMerge's
+// midpoint blend cap must match the gate that admitted the pair, or a
+// ferry pair admitted at channel width blends nothing (the 18 m rail cap
+// missed every sample) and the "merged" edge keeps lane A verbatim.
+// mergeOnePair is serial; set before every applyMerge.
+var mergeReach = 12.0
 
 const (
 	mergeSnap   = 30.0 // interval ends this close to an edge end snap to it
@@ -50,7 +68,14 @@ const (
 // (DeKalb lost its full trunk to an eager 56 m twin once).
 var looseTwins = false
 
+// candNet: candFor needs the edge family for its reach, and bundleState
+// carries ids, not edges. A *Network, not an edge slice — merges append
+// edges and a snapshotted slice header goes stale (index panic at the
+// first post-merge candidate). Serial loop.
+var candNet *Network
+
 func bundleParallelEdges(net *Network) int {
+	candNet = net
 	mergeDist = dial("split_merge_dist", 12)
 	mergeRun = dial("split_merge_run", 60)
 	coMergeDist = dial("split_co_merge_dist", 4)
@@ -305,6 +330,10 @@ func (st *bundleState) candFor(a int) []candEntry {
 		return c
 	}
 	counts := map[int64]int{}
+	reach := 25.0
+	if edgeFamily(&candNet.Edges[a]) == 2 {
+		reach = ferryChannelDist + 5
+	}
 	for _, q := range st.samples[id] {
 		// gap bridges DO merge into a real corridor they shadow — a
 		// bridged service running alongside ridden track is the same
@@ -312,7 +341,7 @@ func (st *bundleState) candFor(a int) []candEntry {
 		// gaps have no parallel corridor and are untouched
 		// candidate reach covers the banded-corridor width, not just
 		// the kiss range — the DeKalb bypass rides 10–25 m out
-		st.grid.Near(q, 25, func(b int64) {
+		st.grid.Near(q, reach, func(b int64) {
 			if b != id {
 				counts[b]++
 			}
@@ -562,8 +591,13 @@ func mergeOnePair(net *Network, st *bundleState) bool {
 				}
 			}
 
+			famFerry := edgeFamily(&net.Edges[a]) == 2 && edgeFamily(&net.Edges[b]) == 2
+			runMin := mergeRun
+			if famFerry {
+				runMin = ferryChannelRun
+			}
 			cnt := cb.count
-			if float64(cnt)*ds < mergeRun {
+			if float64(cnt)*ds < runMin {
 				st.neg[key] = struct{}{}
 				continue
 			}
@@ -577,6 +611,12 @@ func mergeOnePair(net *Network, st *bundleState) bool {
 			if disjoint {
 				reach = coMergeDist
 			}
+			// ferry pairs merge at channel width, disjoint or not — the
+			// family gate in lvlOK already restricts this to ferry×ferry
+			if famFerry {
+				reach = ferryChannelDist
+			}
+			mergeReach = reach
 
 			// ANCHORED CONVERGENCE TAIL: a cross-service pair sharing one
 			// endpoint is one corridor FROM THAT POINT — the bundle must
@@ -586,6 +626,7 @@ func mergeOnePair(net *Network, st *bundleState) bool {
 			// blue/orange below W 4 St). From the shared end, take the
 			// run within the full kiss range.
 			if disjoint && (shared[0] || shared[1]) && la.Len() >= mergeRun {
+				mergeReach = mergeDist
 				try := func(fromStart bool) bool {
 					run := 0
 					if fromStart {
@@ -641,7 +682,7 @@ func mergeOnePair(net *Network, st *bundleState) bool {
 					cur = 0
 				}
 			}
-			if float64(best)*ds < mergeRun {
+			if float64(best)*ds < runMin {
 				st.neg[key] = struct{}{}
 				continue
 			}
@@ -651,6 +692,7 @@ func mergeOnePair(net *Network, st *bundleState) bool {
 				st.neg[key] = struct{}{}
 				continue
 			}
+			mergeReach = reach
 			if applyMerge(net, st, a, b, a1, a2) {
 				return true
 			}
@@ -726,8 +768,8 @@ func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan
 	mid := bundle.SubLine(la, a1, a2)
 	var mpts []geo.Pt
 	for _, q := range mid.Resample(6) {
-		arc, d, ok := lb.ProjectArcCapped(q, mergeDist*1.5+1)
-		if !ok || d > mergeDist*1.5 {
+		arc, d, ok := lb.ProjectArcCapped(q, math.Max(mergeReach, mergeDist)*1.5+1)
+		if !ok || d > math.Max(mergeReach, mergeDist)*1.5 {
 			mpts = append(mpts, q)
 			continue
 		}
