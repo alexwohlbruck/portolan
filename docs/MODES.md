@@ -141,9 +141,22 @@ from `route_type`:
 
 - `metro`/`regional` — current ribbon treatment, full width and casing
 - `tram`/`monorail` — thinner, same casing
-- `ferry` — dashed, no casing (the existing `Gap` dash pattern generalises)
+- `ferry` — thinner + translucent (dasharray is barred from ribbons: it
+  routes through lineSDF and bypasses the fork's variable offset), and
+  ONE canonical colour network-wide (`4A9EDB`, placeholder pending the
+  observation pass) — a harbor of per-route brand colours reads as seven
+  unrelated lines
 - `aerial`/`funicular`/`cable` — thin, dotted
 - `bus` corridor — thinnest, neutral colour, no per-route colouring
+
+Display colours are canonical per GROUP kind, like Apple: every ferry the
+ferry colour, every bus corridor `888888`, and each regional AGENCY one
+stable colour everywhere — the majority `route_color` of its routes, tie
+broken lexicographically. The per-edge first-member colour painted Amtrak
+a different hue on every corridor; per-agency majority makes intercity
+uniform for free (all of Amtrak is all of Amtrak) while commuter agencies
+keep their feed branding (LIRR, Metra). Colour-trunked groups (metro,
+tram, RER-class line agencies) are untouched — their colour IS the key.
 
 **Known limit — micro-ferries.** SPLIT heals gap edges whose endpoints
 nearly coincide (~100 m): for rail that pattern means "not missing track",

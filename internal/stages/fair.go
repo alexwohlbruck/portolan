@@ -154,6 +154,43 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// color-trunked group this IS the key (unchanged behaviour); for
 	// agency- and route-trunked groups the key is opaque and the members
 	// supply the hex.
+	// stable display color per agency trunk: the majority route_color of
+	// the agency's regional routes, ties broken lexicographically. The
+	// per-edge first-member color painted Amtrak a different hue on every
+	// corridor (whichever train happened to ride it); Apple gives each
+	// operator ONE color everywhere, and intercity uniformity falls out —
+	// all of Amtrak is all of Amtrak.
+	agencyHex := map[string]string{}
+	{
+		counts := map[string]map[string]int{}
+		for _, r := range routes {
+			if mode.Of(r.Type) != mode.Regional || r.Agency == "" || r.Color == "" {
+				continue
+			}
+			if counts[r.Agency] == nil {
+				counts[r.Agency] = map[string]int{}
+			}
+			counts[r.Agency][r.Color]++
+		}
+		for ag, cc := range counts {
+			best, bestN := "", -1
+			cols := make([]string, 0, len(cc))
+			for c := range cc {
+				cols = append(cols, c)
+			}
+			sort.Strings(cols)
+			for _, c := range cols {
+				if cc[c] > bestN {
+					best, bestN = c, cc[c]
+				}
+			}
+			agencyHex[ag] = best
+		}
+	}
+	// ferries paint one canonical color network-wide, like Apple: a
+	// harbor of per-route brand colors reads as seven unrelated lines.
+	// Placeholder hue pending the observation pass (docs/MODES.md).
+	const ferryHex = "4A9EDB"
 	hexOf := func(ei int, color string) string {
 		// bus corridors paint one NEUTRAL color network-wide
 		// (docs/MODES.md): the first-member color made each corridor a
@@ -162,6 +199,14 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		// phantom dangling ends in the continuity scan.
 		if color == "bus" {
 			return "888888"
+		}
+		if mode.Of(routeType(ei, color)) == mode.Ferry {
+			return ferryHex
+		}
+		if ag, ok := strings.CutPrefix(color, "agency:"); ok {
+			if h := agencyHex[ag]; h != "" {
+				return h
+			}
 		}
 		rs := colorRoutes[ei][color]
 		if len(rs) == 0 || routes[rs[0]].Color == "" {
