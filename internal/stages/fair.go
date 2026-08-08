@@ -792,6 +792,16 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			s = 0.4
 		}
 		segs[i].Line = smoothPolylineScaled(segs[i].Line, s)
+		// transition VERTEX DENSITY is load-bearing: the renderer
+		// evaluates the line-progress offset ease per vertex, so a
+		// geometrically-straight transition simplified to its two
+		// endpoints draws its offset swing as one hard diagonal — the
+		// smooth S lives entirely in the interior samples the collinear
+		// simplify just deleted. Re-densify after smoothing; 12 m spacing
+		// gives the cubic ease ~5+ samples on even the shortest seam.
+		if segs[i].Kind == "transition" {
+			segs[i].Line = geo.NewLine(segs[i].Line.Densify(12))
+		}
 	}
 	return segs, nil
 }
