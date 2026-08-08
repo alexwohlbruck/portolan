@@ -6,7 +6,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Select from '@/components/ui/Select.vue'
 import Spinner from '@/components/ui/Spinner.vue'
-import { api, buildURL, type Scenario, type StyleSet } from '@/lib/api'
+import { api, fetchBuild, clearGeomCache, type Scenario, type StyleSet } from '@/lib/api'
 import { feed, currentCity } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
@@ -83,16 +83,23 @@ const ribbonIds: string[] = []
 // the viewport enters it and then kept — flipping back and forth across a
 // boundary should not re-download.
 const loadedBands = new Set<number>()
+const transferred = ref<{ geometries_sent: number; geometries_reused: number; bytes: number } | null>(null)
 
 const bandForZoom = (z: number) =>
   (BANDS.find((b) => z >= b.min && z < b.max) ?? BANDS[BANDS.length - 1]).key
 
-function ensureBand() {
+async function ensureBand() {
   if (!map || !feed.value) return
   const key = bandForZoom(map.getZoom())
   if (loadedBands.has(key)) return
   loadedBands.add(key)
-  map.getSource(`build-${key}`)?.setData(buildURL(feed.value, scenario.value || undefined, key))
+  try {
+    const { data, stats } = await fetchBuild(feed.value, key, scenario.value || undefined)
+    map.getSource(`build-${key}`)?.setData(data)
+    transferred.value = stats
+  } catch {
+    loadedBands.delete(key) // let a later zoom retry
+  }
 }
 
 function addLayers() {
@@ -165,7 +172,7 @@ async function reload() {
     for (const b of BANDS) {
       map.getSource(`build-${b.key}`)?.setData({ type: 'FeatureCollection', features: [] })
     }
-    ensureBand()
+    await ensureBand()
     const { w, o } = modeExprs(styleSet.value)
     for (const id of ribbonIds) {
       if (!map.getLayer(id)) continue

@@ -1,9 +1,9 @@
 # Scenario delta — one geometry, many timetables *(proposal)*
 
-Status: **proposed, not built.** Written 2026-08-08 off measurements of
-the NYC union build and its `Sat 07–22` scenario. Nothing in the pipeline
-implements this yet; the shipped design is one fully-drawn GeoJSON per
-scenario (docs/SERVICE-SCENARIOS.md).
+Status: **transport half BUILT** (`/api/build-delta`, commit below);
+the pipeline half — stable segmentation and transitions-as-ramps — is
+still proposed. Written 2026-08-08 off measurements of the NYC union
+build and its `Sat 07–22` scenario.
 
 ## The problem
 
@@ -105,19 +105,41 @@ the two-implementations-drifting problem that internal/style was created
 to end. It costs 0.1 s server-side and its output is the table — ship the
 result, not the algorithm.
 
-## What was done instead, for now
+## What is built
 
-Transport-level wins that needed no pipeline change (commit `c796fbd`):
+The sharing does **not** need the pipeline changes above — it can be done
+at the transport layer by content-addressing what the pipeline already
+emits, with zero risk to the drawing.
 
-- gzip on the whole workbench — 3.1× on a build.
-- `?band=N` on `/api/build.geojson` — FAIR emits a full copy of the map
-  per zoom band and one is ever visible, so the viewer fetches the band it
-  needs.
+`POST /api/build-delta?feed=&band=&scenario=` takes the list of geometry
+hashes the client already holds and returns the feature table plus only
+the coordinates it is missing. A geometry's key is a hash of its exact
+serialized coordinates, so a cache hit is *always* safe to reuse — and
+safe across rebuilds too, since a hash can only ever mean the same
+coordinates. A stale entry can be unused, never wrong; there is nothing
+to invalidate.
 
-Together: **11.54 MB → 1.32 MB** over the wire at default zoom. That
-removes most of the practical pain without touching the drawing, which is
-why the structural change above is worth doing carefully rather than
-quickly.
+The client assembles features and geometry back into a FeatureCollection.
+Measured on NYC band 15, and **verified byte-identical to what
+`/api/build.geojson` serves in all three cases**:
+
+| step | over the wire | geometries sent / reused |
+|---|---|---|
+| union, cold cache | 1.46 MB | 1358 / 0 |
+| → weekend scenario | **0.39 MB** | 216 / 1023 |
+| → back to union | **0.05 MB** | 0 / 1443 |
+
+Against the 11.54 MB a scenario switch used to cost: **30× for a first
+visit, 230× for a revisit.** Switching time is now a fetch small enough to
+feel instant, which was the point.
+
+Two earlier transport wins it builds on (commit `c796fbd`): gzip across
+the workbench (3.1×), and `?band=N`, since FAIR emits a full copy of the
+map per zoom band and one is ever visible.
+
+The pipeline changes above would shrink the *first* visit too, by making
+the 31% of new geometry mostly disappear. That is the remaining work, and
+it is the part with drawing risk.
 
 ## Related
 

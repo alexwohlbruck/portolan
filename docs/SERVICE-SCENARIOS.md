@@ -144,8 +144,14 @@ gzips responses (3.1x), and `/api/build.geojson?band=N` serves one zoom
 band — FAIR emits a complete copy of the map per band and exactly one is
 ever visible. NYC over the wire at default zoom: **11.54 MB -> 1.32 MB**.
 
-The structural fix — ship geometry once per city and a ~0.5 MB slot table
-per scenario, with transitions expressed as offset ramps rather than
-geometry — is specced in [SCENARIO-DELTA.md](SCENARIO-DELTA.md). It is
-not built; the blocker is that FAIR's junction treatment is set-dependent,
-so stable segmentation needs FAIR to know when a junction is inert.
+Geometry sharing across scenarios IS built, at the transport layer:
+`POST /api/build-delta` content-addresses every geometry and sends only
+what the client lacks. A scenario switch costs **0.39 MB** on first visit
+and **0.05 MB** on a revisit, against 11.54 MB for the old whole-file
+fetch, and the assembled result is byte-identical to
+`/api/build.geojson`. See [SCENARIO-DELTA.md](SCENARIO-DELTA.md).
+
+The remaining pipeline change — stable segmentation and transitions as
+offset ramps, which would shrink first visits too — is specced but not
+built; the blocker is that FAIR's junction treatment is set-dependent, so
+stable segmentation needs FAIR to know when a junction is inert.

@@ -11,6 +11,8 @@ package atlas
 
 import (
 	"compress/gzip"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -181,4 +183,171 @@ func serveBand(w http.ResponseWriter, path string, band int) {
 	bands.m[key] = bandEntry{mod: st.ModTime().UnixNano(), size: st.Size(), body: out}
 	bands.mu.Unlock()
 	w.Write(out)
+}
+
+// ---- content-addressed delta --------------------------------------------
+
+// A scenario is mostly the union map with some lines missing: 69% of a
+// NYC scenario's drawn geometry is byte-identical to geometry already in
+// the union build, and only 28 features actually need a different offset.
+// Serving each scenario as a standalone GeoJSON re-sends all of it.
+//
+// So: address every geometry by a hash of its coordinates, and let the
+// client say which hashes it already holds. It gets the full feature list
+// (properties are small — 0.46 MB for a whole NYC scenario, all bands)
+// plus only the coordinates it is missing. Switching back to a scenario
+// already visited transfers properties alone.
+//
+// The client assembles features and geometry back into a FeatureCollection
+// identical to what /api/build.geojson would have served.
+
+type deltaReq struct {
+	Have []string `json:"have"`
+}
+
+type deltaResp struct {
+	Features []deltaFeature     `json:"features"`
+	Geom     map[string][][]any `json:"geom"`
+	Stats    map[string]int     `json:"stats"`
+}
+
+type deltaFeature struct {
+	Props json.RawMessage `json:"p"`
+	Geom  string          `json:"g"`
+}
+
+// geomHash keys a geometry by its exact serialized coordinates. Exactness
+// is the point: two features share a hash only when they would draw the
+// same line, so a hit is always safe to reuse.
+func geomHash(coords json.RawMessage) string {
+	h := sha1.Sum(coords)
+	return hex.EncodeToString(h[:9]) // 72 bits — collision-free at these counts
+}
+
+// buildDelta answers with the feature table plus the geometry the caller
+// lacks. The parse is cached per (path, band, mtime) exactly like
+// serveBand, so repeated scenario switches never re-read the file.
+func (s *Server) buildDelta(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	fc, _, ok := s.feedCfg(r)
+	if !ok {
+		http.Error(w, "unknown feed", 404)
+		return
+	}
+	p := fc.Out
+	if scen := r.URL.Query().Get("scenario"); scen != "" {
+		sp, err := scenOut(fc.Out, scen)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		p = sp
+	}
+	var req deltaReq
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req) // absent body = client holds nothing
+	}
+	have := make(map[string]bool, len(req.Have))
+	for _, h := range req.Have {
+		have[h] = true
+	}
+
+	band, wantBand := bandOf(r)
+	feats, err := parseFeatures(p)
+	if err != nil {
+		json.NewEncoder(w).Encode(deltaResp{Features: []deltaFeature{}, Geom: map[string][][]any{}})
+		return
+	}
+
+	resp := deltaResp{Geom: map[string][][]any{}, Stats: map[string]int{}}
+	sent, reused := 0, 0
+	for _, f := range feats {
+		if wantBand && f.band != band {
+			continue
+		}
+		resp.Features = append(resp.Features, deltaFeature{Props: f.props, Geom: f.hash})
+		if have[f.hash] {
+			reused++
+			continue
+		}
+		if _, dup := resp.Geom[f.hash]; dup {
+			continue
+		}
+		var coords [][]any
+		if json.Unmarshal(f.coords, &coords) == nil {
+			resp.Geom[f.hash] = coords
+			sent++
+		}
+	}
+	resp.Stats["features"] = len(resp.Features)
+	resp.Stats["geometries_sent"] = sent
+	resp.Stats["geometries_reused"] = reused
+	json.NewEncoder(w).Encode(resp)
+}
+
+type parsedFeature struct {
+	props  json.RawMessage
+	coords json.RawMessage
+	hash   string
+	band   int
+}
+
+type featCacheEntry struct {
+	mod  int64
+	size int64
+	list []parsedFeature
+}
+
+var featCache = struct {
+	mu sync.Mutex
+	m  map[string]featCacheEntry
+}{m: map[string]featCacheEntry{}}
+
+func parseFeatures(path string) ([]parsedFeature, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	featCache.mu.Lock()
+	if e, ok := featCache.m[path]; ok && e.mod == st.ModTime().UnixNano() && e.size == st.Size() {
+		list := e.list
+		featCache.mu.Unlock()
+		return list, nil
+	}
+	featCache.mu.Unlock()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var fc struct {
+		Features []struct {
+			Props json.RawMessage `json:"properties"`
+			Geom  struct {
+				Coords json.RawMessage `json:"coordinates"`
+			} `json:"geometry"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		return nil, err
+	}
+	out := make([]parsedFeature, 0, len(fc.Features))
+	for _, f := range fc.Features {
+		var probe struct {
+			BandMin *int `json:"band_min"`
+		}
+		json.Unmarshal(f.Props, &probe)
+		b := -1
+		if probe.BandMin != nil {
+			b = *probe.BandMin
+		}
+		out = append(out, parsedFeature{
+			props: f.Props, coords: f.Geom.Coords, hash: geomHash(f.Geom.Coords), band: b,
+		})
+	}
+	featCache.mu.Lock()
+	featCache.m[path] = featCacheEntry{mod: st.ModTime().UnixNano(), size: st.Size(), list: out}
+	featCache.mu.Unlock()
+	return out, nil
 }

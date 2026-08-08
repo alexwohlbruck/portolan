@@ -279,6 +279,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		http.ServeFile(w, r, p)
 	})
+	mux.HandleFunc("/api/build-delta", s.buildDelta)
 	mux.HandleFunc("/api/rail.geojson", s.fileFor(func(f FeedCfg) string { return f.Rail }))
 	for _, st := range []string{"strands", "support", "graph", "nodes", "trackcenter", "paths"} {
 		stage := st

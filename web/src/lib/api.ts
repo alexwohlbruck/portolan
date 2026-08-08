@@ -130,8 +130,62 @@ export const api = {
     ),
 }
 
-export const buildURL = (feed: string, scenario?: string, band?: number) =>
-  `/api/build.geojson?feed=${encodeURIComponent(feed)}` +
-  (scenario ? `&scenario=${scenario}` : '') +
-  (band === undefined ? '' : `&band=${band}`) +
-  `&t=${Date.now()}`
+
+// ── content-addressed build loading ───────────────────────────────────
+// A scenario is mostly the union map with lines missing, so most of its
+// geometry is geometry we already hold. The client keeps a coordinate
+// cache keyed by content hash and tells the server what it has; the
+// server returns the feature table plus only the missing coordinates.
+// Switching back to a scenario already visited costs properties alone.
+const geomCache = new Map<string, number[][]>()
+// Content addressing makes the cache safe across rebuilds — a hash always
+// means the same coordinates, so a stale entry can only ever be unused,
+// never wrong. It only needs a ceiling so a long session browsing every
+// city does not grow it without bound.
+const GEOM_CACHE_MAX = 20000
+
+export interface DeltaStats {
+  features: number
+  geometries_sent: number
+  geometries_reused: number
+  bytes: number
+}
+
+/** Fetch one band of a build and assemble it back into a
+ *  FeatureCollection identical to what /api/build.geojson would serve. */
+export async function fetchBuild(
+  feed: string,
+  band: number,
+  scenario?: string,
+): Promise<{ data: any; stats: DeltaStats }> {
+  const url =
+    `/api/build-delta?feed=${encodeURIComponent(feed)}&band=${band}` +
+    (scenario ? `&scenario=${encodeURIComponent(scenario)}` : '')
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ have: [...geomCache.keys()] }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  const text = await r.text()
+  const body = JSON.parse(text)
+  if (geomCache.size > GEOM_CACHE_MAX) geomCache.clear()
+  for (const [h, coords] of Object.entries(body.geom ?? {})) {
+    geomCache.set(h, coords as number[][])
+  }
+  const features = (body.features ?? [])
+    .map((f: any) => {
+      const coords = geomCache.get(f.g)
+      if (!coords) return null // geometry we claimed to have but dropped
+      return { type: 'Feature', properties: f.p, geometry: { type: 'LineString', coordinates: coords } }
+    })
+    .filter(Boolean)
+  return {
+    data: { type: 'FeatureCollection', features },
+    stats: { ...(body.stats ?? {}), bytes: text.length } as DeltaStats,
+  }
+}
+
+/** Drop cached geometry. Not needed for correctness — see above — but
+ *  useful when measuring cold-cache transfer. */
+export const clearGeomCache = () => geomCache.clear()
