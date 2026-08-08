@@ -4,7 +4,6 @@ import { Layers, Crosshair, RefreshCw, Clock } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
-import Select from '@/components/ui/Select.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
 import { applyDynamic, activePredicate } from '@/lib/dynamic'
@@ -28,7 +27,6 @@ const when = ref(new URL(window.location.href).searchParams.get('t') ?? '')
 // route id -> 168-bit weekly activity mask (docs/DYNAMIC-SERVICE.md).
 // This is what makes ANY timestamp renderable with no prebuilt layout.
 const masks = ref<Record<string, string>>({})
-const scenario = ref('__all')
 const styleSet = ref<StyleSet | null>(null)
 const inspect = ref<Record<string, any> | null>(null)
 let map: any = null
@@ -65,17 +63,6 @@ const KINDS: [string, any][] = [
 ]
 const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
 
-// ALL is a sentinel, not the empty string: reka-ui reads '' as "nothing
-// selected", so an empty-valued option shows the placeholder instead of
-// its label and can never be re-selected — switching back to the union
-// map would be impossible.
-const ALL = '__all'
-const scenarioOptions = computed(() => [
-  { value: ALL, label: 'All service' },
-  ...scenarios.value.filter((s) => s.built).map((s) => ({ value: s.id, label: s.label })),
-])
-const scenarioId = computed(() => (scenario.value === ALL ? undefined : scenario.value))
-
 const byId = computed(() => Object.fromEntries(scenarios.value.map((s) => [s.id, s])))
 
 /** The scenario that draws a given instant. Resolution is by weekday and
@@ -109,10 +96,7 @@ const localNow = () => {
 //
 // No time set is a meaningful state, not a missing one: it means the
 // all-service union map. Clearing the field goes back to it.
-watch(when, (v) => {
-  if (v && scenario.value !== ALL) scenario.value = ALL // dynamic runs on the union
-  else applyBands()
-})
+watch(when, applyBands)
 
 const activeAt = computed(() => {
   if (!when.value) return null
@@ -131,14 +115,6 @@ const runningCount = computed(() => {
 
 async function loadMasks() {
   masks.value = feed.value ? await api.activity(feed.value).catch(() => ({})) : {}
-}
-
-// Choosing a map directly and choosing a time are two ways to say the
-// same thing, so picking from the list drops the timestamp rather than
-// leaving the two controls disagreeing on screen.
-function pickScenario(id: string) {
-  when.value = ''
-  scenario.value = id
 }
 
 // ?t=<local ISO> makes a moment linkable; no parameter is the union map.
@@ -190,7 +166,7 @@ async function ensureBand() {
   if (loadedBands.has(key)) return
   loadedBands.add(key)
   try {
-    const { data, stats } = await fetchBuild(feed.value, key, scenarioId.value)
+    const { data, stats } = await fetchBuild(feed.value, key)
     bandRaw.set(key, data)
     applyBand(key)
     transferred.value = stats
@@ -204,7 +180,7 @@ function applyBand(key: number) {
   const raw = bandRaw.get(key)
   if (!raw || !map) return
   const pred = activeAt.value
-  map.getSource(`build-${key}`)?.setData(pred && !scenarioId.value ? applyDynamic(raw, pred) : raw)
+  map.getSource(`build-${key}`)?.setData(pred ? applyDynamic(raw, pred) : raw)
 }
 
 function applyBands() {
@@ -315,7 +291,6 @@ function fitCity() {
 
 async function loadScenarios() {
   scenarios.value = []
-  scenario.value = '__all'
   if (!feed.value) return
   try {
     const r = await api.scenarios(feed.value)
@@ -397,7 +372,6 @@ watch(feed, async () => {
   await loadScenarios()
   await reload()
 })
-watch(scenario, reload)
 </script>
 
 <template>
@@ -407,65 +381,46 @@ watch(scenario, reload)
          collapses the container to zero height. -->
     <div ref="el" class="h-full w-full" />
 
-    <!-- floating controls: the map is the page, so chrome overlays it -->
-    <div class="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-4">
-      <div class="pointer-events-auto flex items-center gap-2 rounded-xl border border-border bg-card/90 px-3 py-2 shadow-sm backdrop-blur">
-        <span class="text-sm font-medium">{{ currentCity?.name || 'No city' }}</span>
-        <Badge v-if="loading" variant="info"><Spinner class="size-3" /> loading</Badge>
+    <!-- one toolbar: the map is the page, so all chrome lives in a single
+         bar — city and view actions, then time, then a status word. The
+         scenario dropdown is gone: a timestamp IS the scenario selection
+         now (dynamic rendering), and the prebuilt-scenario QA controls
+         live on the Service page. -->
+    <div class="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center p-4">
+      <div class="pointer-events-auto flex max-w-full flex-wrap items-center gap-1 rounded-xl border border-border bg-card/90 px-2 py-1.5 shadow-sm backdrop-blur">
+        <span class="px-2 text-sm font-medium">{{ currentCity?.name || 'No city' }}</span>
+        <Badge v-if="loading" variant="info"><Spinner class="size-3" /></Badge>
         <Button variant="ghost" size="icon" title="Reload" @click="reload"><RefreshCw class="size-4" /></Button>
         <Button variant="ghost" size="icon" title="Fit to city" @click="fitCity"><Crosshair class="size-4" /></Button>
-      </div>
 
-      <div class="pointer-events-auto flex flex-col items-end gap-2">
-        <div class="flex items-center gap-2 rounded-xl border border-border bg-card/90 px-3 py-2 shadow-sm backdrop-blur">
-          <Clock class="size-4 shrink-0 text-muted-foreground" />
-          <input
-            v-model="when"
-            type="datetime-local"
-            class="h-8 rounded-md border border-input bg-transparent px-2 text-sm [color-scheme:dark]"
-          />
-          <Button variant="ghost" size="sm" title="Now" @click="when = localNow()">now</Button>
-          <Button
-            v-if="when"
-            variant="ghost"
-            size="sm"
-            title="Clear the time — show every service that ever runs"
-            @click="when = ''"
-          >
-            all service
-          </Button>
-        </div>
+        <span class="mx-1 h-5 w-px bg-border" />
 
-        <div
-          v-if="!when"
-          class="rounded-xl border border-border bg-card/90 px-3 py-2 text-xs shadow-sm backdrop-blur"
-        >
-          <div class="flex items-center gap-2">
-            <Badge variant="muted">all service</Badge>
-            <span class="text-muted-foreground">every pattern that ever runs — set a time to narrow it</span>
-          </div>
-        </div>
-
-        <div
-          v-else
-          class="max-w-sm rounded-xl border border-border bg-card/90 px-3 py-2 text-xs shadow-sm backdrop-blur"
-        >
-          <div v-if="runningCount && runningCount.on > 0" class="flex items-center gap-2">
-            <Badge variant="success">dynamic</Badge>
-            <span class="font-medium tabular-nums">{{ runningCount.on }} of {{ runningCount.total }} routes running</span>
-          </div>
-          <div v-else-if="runningCount" class="text-muted-foreground">No service at this hour.</div>
-          <div v-else class="text-muted-foreground">Loading service calendar…</div>
-          <div v-if="resolved" class="mt-1 truncate text-muted-foreground">{{ resolved.label }}</div>
-        </div>
-
-        <Select
-          v-if="scenarioOptions.length > 1"
-          :model-value="scenario"
-          :options="scenarioOptions"
-          class="w-56 bg-card/90 backdrop-blur"
-          @update:model-value="pickScenario"
+        <Clock class="ml-1 size-4 shrink-0 text-muted-foreground" />
+        <input
+          v-model="when"
+          type="datetime-local"
+          class="h-8 rounded-md border border-input bg-transparent px-2 text-sm [color-scheme:dark]"
         />
+        <Button variant="ghost" size="sm" title="Jump to the current time" @click="when = localNow()">now</Button>
+
+        <span class="mx-1 h-5 w-px bg-border" />
+
+        <button
+          v-if="when"
+          class="rounded-md px-2 py-1 text-xs transition-colors hover:bg-accent"
+          :title="(resolved?.label ? resolved.label + ' — ' : '') + 'click to show all service'"
+          @click="when = ''"
+        >
+          <template v-if="runningCount && runningCount.on > 0">
+            <span class="font-medium tabular-nums text-[var(--success)]">{{ runningCount.on }}</span>
+            <span class="text-muted-foreground"> / {{ runningCount.total }} routes</span>
+          </template>
+          <span v-else-if="runningCount" class="text-[var(--warning)]">no service</span>
+          <span v-else class="text-muted-foreground">…</span>
+        </button>
+        <span v-else class="px-2 text-xs text-muted-foreground" title="Every pattern that ever runs — set a time to narrow it">
+          all service
+        </span>
       </div>
     </div>
 
