@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
+	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/mode"
 )
 
@@ -69,6 +70,24 @@ var ferryRoutes map[string]bool
 
 func SetFerryRoutes(m map[string]bool) { ferryRoutes = m }
 
+// patternActs: weekly activity per pattern, keyed route id + "\x1f" +
+// base shape id (SetPatternActs, from the pipeline). SPLIT ORs these onto
+// the edges each pattern rides, which is what makes per-segment service
+// visibility possible. Nil = no service info, edges carry no acts.
+var patternActs map[string]gtfs.Mask168
+
+func SetPatternActs(m map[string]gtfs.Mask168) { patternActs = m }
+
+// pathActKey strips the bbox-clip suffix: "<shape>#clipN" pieces are the
+// same service pattern as their parent shape.
+func pathActKey(pa Path) string {
+	sid := pa.Pattern.ShapeID
+	if i := strings.Index(sid, "#clip"); i >= 0 {
+		sid = sid[:i]
+	}
+	return pa.Pattern.Route.ID + "\x1f" + sid
+}
+
 func edgeAll(e *Edge, set map[string]bool) bool {
 	if set == nil || len(e.Routes) == 0 {
 		return false
@@ -105,8 +124,14 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 
 	// ---- usage: route set per used piece
 	pieceRoutes := make([]map[string]bool, len(g.pieces))
+	pieceActs := map[int]map[string]gtfs.Mask168{}
 	for _, pa := range paths {
 		rid := pa.Pattern.Route.ID
+		var mask gtfs.Mask168
+		haveMask := false
+		if patternActs != nil {
+			mask, haveMask = patternActs[pathActKey(pa)]
+		}
 		for _, st := range pa.Steps {
 			if st.Piece < 0 {
 				continue
@@ -115,6 +140,14 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 				pieceRoutes[st.Piece] = map[string]bool{}
 			}
 			pieceRoutes[st.Piece][rid] = true
+			if haveMask {
+				pa := pieceActs[st.Piece]
+				if pa == nil {
+					pa = map[string]gtfs.Mask168{}
+					pieceActs[st.Piece] = pa
+				}
+				pa[rid] = pa[rid].Or(mask)
+			}
 		}
 	}
 
@@ -123,6 +156,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		from, to int
 		line     *geo.Line // oriented from→to
 		routes   map[string]bool
+		acts     map[string]gtfs.Mask168
 		gap      bool
 	}
 	var ue []uedge
@@ -131,7 +165,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			continue
 		}
 		e := g.edges[2*piece]
-		ue = append(ue, uedge{e.From, e.To, g.pieces[piece], rs, false})
+		ue = append(ue, uedge{e.From, e.To, g.pieces[piece], rs, pieceActs[piece], false})
 	}
 
 	// synthetic nodes for gap ends that anchor to no graph node
@@ -151,6 +185,11 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	gapDedup := map[[2]int]int{} // normalized node pair → ue index
 	for _, pa := range paths {
 		rid := pa.Pattern.Route.ID
+		var gapMask gtfs.Mask168
+		haveGapMask := false
+		if patternActs != nil {
+			gapMask, haveGapMask = patternActs[pathActKey(pa)]
+		}
 		for si, st := range pa.Steps {
 			if st.Piece >= 0 || st.Gap == nil || st.Gap.Len() < 1 {
 				continue
@@ -179,11 +218,20 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			key := [2]int{min(from, to), max(from, to)}
 			if ui, ok := gapDedup[key]; ok {
 				ue[ui].routes[rid] = true
+				if haveGapMask {
+					if ue[ui].acts == nil {
+						ue[ui].acts = map[string]gtfs.Mask168{}
+					}
+					ue[ui].acts[rid] = ue[ui].acts[rid].Or(gapMask)
+				}
 				continue
 			}
 			gapDedup[key] = len(ue)
-			ue = append(ue, uedge{from, to, st.Gap,
-				map[string]bool{rid: true}, true})
+			var acts map[string]gtfs.Mask168
+			if haveGapMask {
+				acts = map[string]gtfs.Mask168{rid: gapMask}
+			}
+			ue = append(ue, uedge{from, to, st.Gap, map[string]bool{rid: true}, acts, true})
 		}
 	}
 
@@ -257,6 +305,18 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		}
 		return pts
 	}
+	mergeActs := func(dst, src map[string]gtfs.Mask168) map[string]gtfs.Mask168 {
+		if src == nil {
+			return dst
+		}
+		if dst == nil {
+			dst = map[string]gtfs.Mask168{}
+		}
+		for r, m := range src {
+			dst[r] = dst[r].Or(m)
+		}
+		return dst
+	}
 	walk := func(start int, first incid) {
 		if visited[first.edge] {
 			return
@@ -265,6 +325,13 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		e0 := ue[first.edge]
 		pts = appendOriented(pts, e0, start)
 		visited[first.edge] = true
+		// acts are OR'd across the chained pieces: if any part of the edge
+		// carries an hour, the edge is lit that hour. Conservative where a
+		// short-turn terminal sits mid-edge (no junction to break at) —
+		// splitting there changes drawn geometry and stays on the roadmap
+		// (docs/DYNAMIC-SERVICE.md).
+		var acts map[string]gtfs.Mask168
+		acts = mergeActs(acts, e0.acts)
 		curEdge, cur := first.edge, first.other
 		for !isNet[cur] {
 			incs := adj[cur]
@@ -277,6 +344,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			}
 			pts = appendOriented(pts, ue[nx.edge], cur)
 			visited[nx.edge] = true
+			acts = mergeActs(acts, ue[nx.edge].acts)
 			curEdge, cur = nx.edge, nx.other
 		}
 		routes := make([]string, 0, len(e0.routes))
@@ -286,7 +354,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		sort.Strings(routes)
 		net.Edges = append(net.Edges, Edge{
 			From: netNode(start), To: netNode(cur),
-			Pts: pts, Routes: routes, Gap: e0.gap,
+			Pts: pts, Routes: routes, Gap: e0.gap, Acts: acts,
 		})
 	}
 	var netNodes []int
@@ -899,7 +967,7 @@ func contractChains(net *Network) {
 			to = b.From
 		}
 		merged := Edge{From: from, To: to, Pts: pts, Routes: a.Routes,
-			Tracks: max(a.Tracks, b.Tracks)}
+			Tracks: max(a.Tracks, b.Tracks), Acts: mergeActMaps(a.Acts, b.Acts)}
 		var out []Edge
 		for ei, e := range net.Edges {
 			if ei != ea && ei != eb {
@@ -1411,4 +1479,20 @@ func placeNodeAtMeet(net *Network, ni int, p splitParams) {
 		return
 	}
 	n.At = x
+}
+
+// mergeActMaps unions two edges' per-route activity — used wherever two
+// edges become one (degree-2 heal, parallel merge).
+func mergeActMaps(a, b map[string]gtfs.Mask168) map[string]gtfs.Mask168 {
+	if a == nil && b == nil {
+		return nil
+	}
+	out := map[string]gtfs.Mask168{}
+	for r, m := range a {
+		out[r] = out[r].Or(m)
+	}
+	for r, m := range b {
+		out[r] = out[r].Or(m)
+	}
+	return out
 }

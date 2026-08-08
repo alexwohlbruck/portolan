@@ -917,3 +917,89 @@ func hourRanges(hours []int) string {
 	}
 	return strings.Join(parts, ",")
 }
+
+// ---- activity masks (docs/DYNAMIC-SERVICE.md) -----------------------------
+
+// Mask168 is one week of service at hour resolution: 7 days (Monday
+// first) × 24 hours, hour 0 = bit 0 of each day's word. This is the
+// currency of dynamic rendering — "does this run at (day, hour)" in one
+// bit test — and its hex form is what the client decodes, so the layout
+// here and in web/src/lib/dynamic.ts must never drift (both are pinned
+// by tests against the same vectors).
+type Mask168 [7]uint32
+
+func (m Mask168) Set(day, hour int) Mask168 {
+	m[day] |= 1 << hour
+	return m
+}
+
+func (m Mask168) Active(day, hour int) bool { return m[day]>>hour&1 == 1 }
+
+func (m Mask168) Or(o Mask168) Mask168 {
+	for d := range m {
+		m[d] |= o[d]
+	}
+	return m
+}
+
+// And is the transition rule: a movement between two edges runs only in
+// the hours the route rides both.
+func (m Mask168) And(o Mask168) Mask168 {
+	for d := range m {
+		m[d] &= o[d]
+	}
+	return m
+}
+
+func (m Mask168) Empty() bool {
+	for _, d := range m {
+		if d != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Hex renders 7 × 6 hex chars, day-major.
+func (m Mask168) Hex() string {
+	var b strings.Builder
+	for _, d := range m {
+		fmt.Fprintf(&b, "%06x", d&0xffffff)
+	}
+	return b.String()
+}
+
+// PatternMasks: one mask per (route, shape) pattern — the granularity
+// short-turns live at. A route's full-length pattern and its late-night
+// short-turn are different shapes with different hours, and only
+// pattern-level masks let the tail beyond the short-turn terminal go
+// dark while the core stays lit.
+func (si *ServiceInfo) PatternMasks() map[PatKey]Mask168 {
+	out := make(map[PatKey]Mask168, len(si.Activity))
+	for key, act := range si.Activity {
+		var m Mask168
+		for d := 0; d < 7; d++ {
+			for h := 0; h < 24; h++ {
+				if act[d][h] > 0 {
+					m = m.Set(d, h)
+				}
+			}
+		}
+		out[key] = m
+	}
+	return out
+}
+
+// RouteMasks folds pattern masks per route — the coarse mask /api/activity
+// serves and the client's fallback when a segment carries no acts.
+func (si *ServiceInfo) RouteMasks() map[string]string {
+	byRoute := map[string]Mask168{}
+	for key, m := range si.PatternMasks() {
+		byRoute[key.Route] = byRoute[key.Route].Or(m)
+	}
+	out := make(map[string]string, len(byRoute))
+	for rid, m := range byRoute {
+		out[rid] = m.Hex()
+	}
+	return out
+}

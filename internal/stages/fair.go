@@ -239,6 +239,34 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		}
 		return routes[rs[0]].Color
 	}
+	// actsFor: per-route activity on one edge, aligned with the group's
+	// route list; AND across two edges for a transition — the movement
+	// runs only in the hours the route rides both sides.
+	actsFor := func(ei int, color string) []string {
+		e := n.Edges[ei]
+		if e.Acts == nil {
+			return nil
+		}
+		rs := colorRoutes[ei][color]
+		out := make([]string, len(rs))
+		for i, rid := range rs {
+			out[i] = e.Acts[rid].Hex()
+		}
+		return out
+	}
+	actsAcross := func(a, b int, color string) []string {
+		ea, eb := n.Edges[a], n.Edges[b]
+		if ea.Acts == nil || eb.Acts == nil {
+			return nil
+		}
+		rs := colorRoutes[a][color]
+		out := make([]string, len(rs))
+		for i, rid := range rs {
+			out[i] = ea.Acts[rid].And(eb.Acts[rid]).Hex()
+		}
+		return out
+	}
+
 	// band floor per group: a mode invisible below its floor emits no
 	// copy into those bands at all (docs/MODES.md, inferred pending the
 	// Apple observation pass).
@@ -792,6 +820,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				OffToPx:   travelOffsetPx(cur, c.color, c.bAtFrom),
 				BandMin:   band.min,
 				BandMax:   band.max,
+				Acts:      actsAcross(a, cur, c.color),
 				Line:      geo.NewLine(chain),
 			})
 			served[[3]int{a, boolIdx(c.aAtTo), colorIdx(a, c.color)}] = true
@@ -850,6 +879,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					OffsetPx:  offsetPx(ei, color),
 					BandMin:   band.min,
 					BandMax:   band.max,
+					Acts:      actsFor(ei, color),
 					Line:      body,
 				})
 			}

@@ -64,6 +64,22 @@ in one bit test. GTFS's own structure is weekly, so any date in the year
 resolves through its weekday; holidays deliberately follow regular
 service.
 
+Masks are **per segment, not per route** (`acts` on each feature): SPLIT
+ORs each pattern's mask onto the edges that pattern actually rides, so a
+short-turned route's tail carries only the full-length pattern's hours
+and goes dark when only the short variant runs. Transitions carry the
+AND of their two sides — a movement runs only when the route rides both.
+Route-level masks (/api/activity) remain as the toolbar summary and the
+fallback for builds that predate acts.
+
+Known residual: a short-turn terminal that sits mid-edge (no junction to
+break at) keeps its whole edge lit whenever any covering pattern runs —
+acts are OR'd along an edge. Splitting edges at mask-change boundaries
+would fix it but changes drawn geometry (new degree-2 seams through
+ORDER and FAIR), so it belongs with the eyes-on-map work in stage 4.
+Most short-turn terminals coincide with junctions, where SPLIT already
+breaks the edge.
+
 **3. Render time = filter + re-center.** At timestamp T the client:
    - hides ribbons whose routes are all inactive at T,
    - re-centers the survivors within the fixed union order (formula

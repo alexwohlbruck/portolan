@@ -39,18 +39,31 @@ export const routesOf = (props: any): string[] =>
     .split(',')
     .filter(Boolean)
 
-/** Predicate for one instant. A route with no mask stays visible — the
- *  build knows routes the calendar pass may not (shapes without trips in
- *  the load window), and failing visible is the honest default. */
+/** Predicate for one instant, per FEATURE. Precedence per member route:
+ *
+ *  1. the segment's own `acts` mask — the hours this route rides THIS
+ *     segment. This is where short-turns live: the tail beyond a
+ *     short-turn terminal carries only the full-length pattern's hours,
+ *     so it goes dark while the core stays lit.
+ *  2. the route-level mask — the hours the route runs anywhere (builds
+ *     made before acts existed).
+ *  3. visible — the build knows routes the calendar pass may not, and
+ *     failing visible is the honest default.
+ */
 export function activePredicate(masks: Record<string, string>, date: Date) {
   const day = (date.getDay() + 6) % 7 // JS Sunday=0 → our Monday=0
   const hour = date.getHours()
-  return (routes: string[]) =>
-    routes.length === 0 ||
-    routes.some((r) => {
+  return (f: FeatureLike) => {
+    const routes = routesOf(f.properties)
+    if (routes.length === 0) return true
+    const acts = String(f.properties.acts ?? '').split(';')
+    return routes.some((r, i) => {
+      const a = acts[i]
+      if (a && a.length === 42) return maskActive(a, day, hour)
       const m = masks[r]
       return !m || maskActive(m, day, hour)
     })
+  }
 }
 
 // ── the dynamic render rule ────────────────────────────────────────────
@@ -75,10 +88,10 @@ const endKey = (c: number[]) => c[0].toFixed(6) + ',' + c[1].toFixed(6)
  *    get their ramp endpoints updated to the moved offset, so ramps land
  *    where the steady now sits.
  */
-export function applyDynamic(fc: FCLike, isActive: (routes: string[]) => boolean): FCLike {
+export function applyDynamic(fc: FCLike, isActive: (f: FeatureLike) => boolean): FCLike {
   const hidden = new Set<FeatureLike>()
   for (const f of fc.features) {
-    if (!isActive(routesOf(f.properties))) hidden.add(f)
+    if (!isActive(f)) hidden.add(f)
   }
 
   // bundle = features sharing one centerline

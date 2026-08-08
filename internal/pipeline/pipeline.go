@@ -279,6 +279,24 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
 	stages.SetFerryRoutes(routeSetOf(feed.Routes, mode.Ferry))
+	// per-pattern activity masks power dynamic time rendering AND per-
+	// segment service (docs/DYNAMIC-SERVICE.md): SPLIT ORs them onto the
+	// edges each pattern rides, so a short-turned route's tail carries
+	// only the full-length pattern's hours. Best-effort — a feed without
+	// a usable calendar builds a map without acts and the viewer falls
+	// back to route-level masks.
+	if si, err := LoadServiceInfo(o.GTFS); err == nil {
+		pm := si.PatternMasks()
+		acts := make(map[string]gtfs.Mask168, len(pm))
+		for k, m := range pm {
+			acts[k.Route+"\x1f"+k.Shape] = m
+		}
+		stages.SetPatternActs(acts)
+		logf("chart: activity masks for %d patterns", len(pm))
+	} else {
+		stages.SetPatternActs(nil)
+		logf("chart: no activity masks (%v) — time filtering will be route-level", err)
+	}
 	la := map[string]bool{}
 	for _, a := range o.LineAgencies {
 		la[strings.TrimSpace(a)] = true
@@ -502,6 +520,9 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 			"band_min":    s.BandMin, "band_max": s.BandMax,
 			"len_m": int(s.Line.Len()),
 		}, s.Line, frame); ok {
+			if len(s.Acts) > 0 {
+				f.Props["acts"] = strings.Join(s.Acts, ";")
+			}
 			fc.Features = append(fc.Features, f)
 		}
 	}

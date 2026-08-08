@@ -61,6 +61,13 @@ type Edge struct {
 	Routes   []string // route ids riding this segment
 	Tracks   int      // physical track count, if derived
 	Gap      bool     // shape-bridged (no OSM track) — render dashed
+	// Acts: per-route weekly activity ON THIS EDGE — the OR of the masks
+	// of the patterns that actually ride it (docs/DYNAMIC-SERVICE.md).
+	// This is where short-turns live: the tail beyond a short-turn
+	// terminal carries only the full-length pattern's hours, so dynamic
+	// rendering can put the tail to sleep while the core stays lit. Nil
+	// when the pipeline ran without service info.
+	Acts map[string]gtfs.Mask168
 }
 
 // Segment is one emitted ribbon feature (parchment transit_line_segments
@@ -80,5 +87,8 @@ type Segment struct {
 	OffToPx   float64
 	BandMin   int
 	BandMax   int
-	Line      *geo.Line
+	// Acts: hex Mask168 per route, aligned with Routes — the hours each
+	// member actually rides THIS segment (empty when no service info).
+	Acts []string
+	Line *geo.Line
 }

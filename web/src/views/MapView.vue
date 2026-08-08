@@ -6,7 +6,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
-import { applyDynamic, activePredicate } from '@/lib/dynamic'
+import { applyDynamic, activePredicate, maskActive } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
@@ -105,12 +105,18 @@ const activeAt = computed(() => {
   return activePredicate(masks.value, d)
 })
 
-// how much of the network is running right now — the banner's summary
+// how much of the network is running right now — the toolbar's summary.
+// Route-level on purpose: it answers "how many routes run", while the
+// per-segment acts on each feature decide what actually draws.
 const runningCount = computed(() => {
-  const pred = activeAt.value
-  if (!pred) return null
+  if (!when.value) return null
+  const d = new Date(when.value)
+  if (Number.isNaN(d.getTime())) return null
+  const day = (d.getDay() + 6) % 7
+  const hour = d.getHours()
   const ids = Object.keys(masks.value)
-  return { on: ids.filter((r) => pred([r])).length, total: ids.length }
+  if (!ids.length) return null
+  return { on: ids.filter((r) => maskActive(masks.value[r], day, hour)).length, total: ids.length }
 })
 
 async function loadMasks() {

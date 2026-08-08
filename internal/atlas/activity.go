@@ -12,13 +12,10 @@ package atlas
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
 )
 
@@ -48,7 +45,7 @@ func (s *Server) activityAPI(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
 			return
 		}
-		masks := routeMasks(si)
+		masks := si.RouteMasks()
 		s.actMu.Lock()
 		c = &actCache{mod: st.ModTime(), masks: masks}
 		s.activity[feed] = c
@@ -56,39 +53,4 @@ func (s *Server) activityAPI(w http.ResponseWriter, r *http.Request) {
 	masks := c.masks
 	s.actMu.Unlock()
 	json.NewEncoder(w).Encode(map[string]any{"available": true, "masks": masks})
-}
-
-// routeMasks folds per-pattern activity into one mask per route: a bit is
-// set when ANY of the route's patterns has a trip in service that hour.
-// Route-level, not pattern-level, because visibility is a route question —
-// a ribbon shows when the route runs at all, whichever variant is out.
-func routeMasks(si *gtfs.ServiceInfo) map[string]string {
-	sum := map[string]*[7][24]int{}
-	for key, act := range si.Activity {
-		a := sum[key.Route]
-		if a == nil {
-			a = &[7][24]int{}
-			sum[key.Route] = a
-		}
-		for d := 0; d < 7; d++ {
-			for h := 0; h < 24; h++ {
-				a[d][h] += act[d][h]
-			}
-		}
-	}
-	out := make(map[string]string, len(sum))
-	for rid, a := range sum {
-		var b strings.Builder
-		for d := 0; d < 7; d++ {
-			bits := 0
-			for h := 0; h < 24; h++ {
-				if a[d][h] > 0 {
-					bits |= 1 << h
-				}
-			}
-			fmt.Fprintf(&b, "%06x", bits)
-		}
-		out[rid] = b.String()
-	}
-	return out
 }

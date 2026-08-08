@@ -38,6 +38,12 @@ func DirectSegments(paths []Path) []Segment {
 	sty := style.Active()
 	for _, p := range paths {
 		r := p.Pattern.Route
+		var acts []string
+		if patternActs != nil {
+			if m, ok := patternActs[pathActKey(p)]; ok {
+				acts = []string{m.Hex()}
+			}
+		}
 		cls := mode.Of(r.Type)
 		cs := sty.Class(cls.String())
 		hex := cs.Color
@@ -59,6 +65,7 @@ func DirectSegments(paths []Path) []Segment {
 					RouteType: r.Type, Mode: cls.String(),
 					NSlots:  1,
 					BandMin: cs.BandFloor, BandMax: 24,
+					Acts: acts,
 					Line: geo.NewLine(append([]geo.Pt{}, run...)),
 				})
 			}
