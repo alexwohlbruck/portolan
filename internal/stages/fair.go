@@ -146,6 +146,14 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// agency- and route-trunked groups the key is opaque and the members
 	// supply the hex.
 	hexOf := func(ei int, color string) string {
+		// bus corridors paint one NEUTRAL color network-wide
+		// (docs/MODES.md): the first-member color made each corridor a
+		// different borough blue, so one continuous drawn trunk changed
+		// color at every membership seam — chunked noise on the map and
+		// phantom dangling ends in the continuity scan.
+		if color == "bus" {
+			return "888888"
+		}
 		rs := colorRoutes[ei][color]
 		if len(rs) == 0 || routes[rs[0]].Color == "" {
 			return "888888"

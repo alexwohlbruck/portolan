@@ -86,9 +86,24 @@ search endpoint works, `marta` → `17`).
 fetch it (`tools/city.sh streets 29` — the highway extract is 10–50× the
 rail one); bus routes then draw as corridor-trunked ribbons in the top
 zoom band. Without the extract the same feed builds rail-only, unchanged.
-Chicago is the only city wired so far. Feeds like Metra's ship CSV headers
-with spaces after commas — the reader trims both headers and values, a
-whole commuter system vanished silently before that.
+Wired everywhere except London (no bus feed — the UK DfT national feed is
+the only source), Tokyo (GTFS-JP bus feeds ship no shapes) and Berlin
+(same: the gtfs.de feed had no shapes at all, and pfaedle has only been
+run with rail/tram/ferry mots — a bus-mot re-run needs highways in its
+OSM window). Feeds like Metra's ship CSV headers with spaces after
+commas — the reader trims both headers and values, a whole commuter
+system vanished silently before that.
+
+**NYC is the multi-everything city:** subway + Metro-North + LIRR + NYC
+Ferry + Roosevelt Tramway + JFK AirTrain + NYCT/MTA buses, eight feeds in
+one `gtfs` list, all from the local mirror. Two of those taught the
+pipeline lessons: the Roosevelt Tram and the AirTrain are both
+`route_type` 0 in their feeds, but the tramway is an aerial cable and the
+AirTrain a monorail — with their real steel missing from the fixture,
+the no-compatible-track leniency put the tram on the N·R·W's 60th St
+tunnel and the AirTrain on the LIRR mainline. The fixture now carries
+the monorail and aerialway layers, and tram-typed patterns may match
+aerial/monorail steel (feeds mislabel; the steel does not).
 
 **Paris strays.** Feed `762` bundles RER (A–E), Transilien (H/J/L/N/P) and
 TER in with the Metro and trams. Those run hundreds of km past any

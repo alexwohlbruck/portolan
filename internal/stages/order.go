@@ -644,8 +644,22 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 }
 
 // permute calls fn with every permutation of v (v is scratch space; fn must
-// copy if it keeps one).
+// copy if it keeps one) — up to 6 elements (720 candidates). Wider groups
+// enumerate adjacent-pair swaps instead: LIRR funnels 12 distinctly-colored
+// branches through Jamaica, and 12! is half a billion candidates per edge
+// per climb pass — the NYC all-modes build sat in ORDER for 2h40m without
+// finishing. Swap moves compose across climb passes into longer
+// reorderings, the same way the tie-walking plateau steps do.
 func permute(v []string, fn func([]string)) {
+	if len(v) > 6 {
+		fn(v)
+		for i := 0; i+1 < len(v); i++ {
+			v[i], v[i+1] = v[i+1], v[i]
+			fn(v)
+			v[i], v[i+1] = v[i+1], v[i]
+		}
+		return
+	}
 	var rec func(k int)
 	rec = func(k int) {
 		if k == len(v) {

@@ -327,9 +327,16 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		}
 	}
 	setWayRouteIndex(wayRoutes)
+	// street ways NEVER enter the strand pools: they are drawn road
+	// centerlines, not steel. Bus edges skip refinement entirely, tram
+	// edges vote through the class-masked edgeGroup — but the street
+	// directly above a subway runs dead parallel for kilometres, and a
+	// bus-ridden street strand in this pool voted the subway's median
+	// through edgeMates (Culver picked up an 8.9% dup the moment NYC
+	// buses landed).
 	var riddenTracks []bundle.Track
 	for _, t := range tracks {
-		if usedWays[t.ID] {
+		if usedWays[t.ID] && wayRailClass[t.ID] != "street" {
 			riddenTracks = append(riddenTracks, t)
 		}
 	}
@@ -358,7 +365,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// so the South Ferry law holds.
 	var unriddenTracks []bundle.Track
 	for _, t := range tracks {
-		if !usedWays[t.ID] {
+		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" {
 			unriddenTracks = append(unriddenTracks, t)
 		}
 	}

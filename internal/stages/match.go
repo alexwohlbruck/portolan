@@ -118,7 +118,14 @@ func classCompat(routeType int, cls string) bool {
 	case mode.Metro:
 		return cls == "subway"
 	case mode.Tram, mode.Cable: // SF cable cars ride tram-class street track
-		return cls == "light_rail" || cls == "tram"
+		// "aerial" and "monorail" are admissible because feeds mislabel
+		// them as trams (Roosevelt Island Tram and the JFK AirTrain are
+		// both route_type 0): with their real steel barred, the no-compat
+		// leniency put the tramway on the N·R·W's 60th St tunnel and the
+		// AirTrain on the LIRR mainline — contaminated route sets, moved
+		// SPLIT boundaries, four drawn breaks.
+		return cls == "light_rail" || cls == "tram" ||
+			cls == "aerial" || cls == "monorail"
 	case mode.Regional:
 		// light_rail is admissible for rail-typed routes: light metros get
 		// GTFS-typed 2 in the wild (the DLR), and its viaducts share
@@ -279,8 +286,20 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 		d     float64
 		arc   float64
 	}
+	// hard street/rail bucket BEFORE the nearest-N cut: streets and rails
+	// are disjoint layers — a bus never rides steel and a train never
+	// rides asphalt — and in Manhattan the streets above every subway
+	// line flooded the 14 nearest-candidate slots, crowding the actual
+	// track out of the set (the MaxCand saturation failure, this time at
+	// city scale). The soft classPen stays for judgment calls WITHIN the
+	// rail family; the bucket is for layers that never mix.
+	wantStreet := mode.Of(pat.Route.Type) == mode.Bus
 	var near []pc
 	m.g.grid.Near(q, reach, func(piece int) {
+		if wayRailClass != nil &&
+			(wayRailClass[m.g.edges[2*piece].Way] == "street") != wantStreet {
+			return
+		}
 		arc, d := m.g.pieces[piece].ProjectArc(q)
 		near = append(near, pc{piece, d, arc})
 	})

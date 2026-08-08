@@ -288,6 +288,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if err != nil {
 		return fmt.Errorf("ORDER: %w", err)
 	}
+	logf("order: slots on %d edges (%.1fs)", len(slots), time.Since(t0).Seconds())
 	segs, err := stages.Fair(net, slots, feed.Routes, paths)
 	if err != nil {
 		return fmt.Errorf("FAIR: %w", err)
@@ -493,6 +494,17 @@ func LoadBuildFeatures(path string, frame geo.Frame) ([]sketch.BuildFeature, err
 			continue
 		}
 		if bm, ok := f.Props["band_min"].(float64); ok && bm > 15 {
+			continue
+		}
+		// score the modes the sketches actually draw (rapid transit).
+		// The gates are blind to mode and the sketch is subway-only:
+		// a one-way bus couplet carrying one route on two streets fires
+		// the dup lens, LIRR's Atlantic Branch "covers" the green line,
+		// and street corners near corridors read as spikes — a metro-only
+		// subset of the same build scores exactly the rail-only baseline.
+		// When a sketch grows non-rapid lines, its lines need a mode field
+		// and this filter follows it.
+		if md, ok := f.Props["mode"].(string); ok && md != "metro" && md != "tram" {
 			continue
 		}
 		pts := make([]geo.Pt, len(f.Geometry.Coords))
