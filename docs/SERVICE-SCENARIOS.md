@@ -147,9 +147,17 @@ Two consequences worth stating plainly:
   same map. Sub-hour precision would need the activity histogram to be
   finer than the 7x24 grid.
 
+**No time is a value, not a gap:** an empty timestamp means the
+all-service union map — every pattern that ever runs. That is the default
+state, and clearing the field returns to it.
+
 An hour whose scenario has not been laid out yet keeps the current map on
 screen and offers to build it, rather than blanking. An hour with no
 service at all says so.
+
+The moment lives in the URL as `?t=<local ISO>`, so a time is linkable;
+no parameter is the union map. Choosing a map from the list instead drops
+the timestamp, so the two controls never disagree on screen.
 
 ## Storage and transport
 

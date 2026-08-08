@@ -21,7 +21,9 @@ const scenarios = ref<Scenario[]>([])
 // grid[dayOfWeek][hour] -> scenario id. Day 0 = Monday, matching the
 // pipeline's convention, NOT JavaScript's Sunday-first getDay().
 const grid = ref<string[][]>([])
-const when = ref('')          // datetime-local value; empty = all service
+// datetime-local value. EMPTY IS A VALUE: it means the all-service union
+// map. Seeded from ?t= so a moment can be linked.
+const when = ref(new URL(window.location.href).searchParams.get('t') ?? '')
 const building = ref(false)
 const scenario = ref('__all')
 const styleSet = ref<StyleSet | null>(null)
@@ -99,10 +101,33 @@ const localNow = () => {
 // Picking a time selects the map that draws it. An unbuilt scenario keeps
 // the current map on screen rather than blanking it — the banner offers to
 // build it instead.
+// No time set is a meaningful state, not a missing one: it means the
+// all-service union map — every pattern that ever runs. Clearing the
+// field goes back to it.
+watch(when, (v) => {
+  if (!v) scenario.value = ALL
+})
 watch(resolved, (r) => {
   if (!when.value) return
   if (r?.built) scenario.value = r.id
 })
+
+// Choosing a map directly and choosing a time are two ways to say the
+// same thing, so picking from the list drops the timestamp rather than
+// leaving the two controls disagreeing on screen.
+function pickScenario(id: string) {
+  when.value = ''
+  scenario.value = id
+}
+
+// ?t=<local ISO> makes a moment linkable; no parameter is the union map.
+function syncURL(v: string) {
+  const u = new URL(window.location.href)
+  if (v) u.searchParams.set('t', v)
+  else u.searchParams.delete('t')
+  window.history.replaceState({}, '', u)
+}
+watch(when, syncURL)
 
 async function buildResolved() {
   const r = resolved.value
@@ -371,13 +396,29 @@ watch(scenario, reload)
             class="h-8 rounded-md border border-input bg-transparent px-2 text-sm [color-scheme:dark]"
           />
           <Button variant="ghost" size="sm" title="Now" @click="when = localNow()">now</Button>
-          <Button v-if="when" variant="ghost" size="sm" title="Show all service" @click="when = ''; scenario = ALL">
-            clear
+          <Button
+            v-if="when"
+            variant="ghost"
+            size="sm"
+            title="Clear the time — show every service that ever runs"
+            @click="when = ''"
+          >
+            all service
           </Button>
         </div>
 
         <div
-          v-if="when"
+          v-if="!when"
+          class="rounded-xl border border-border bg-card/90 px-3 py-2 text-xs shadow-sm backdrop-blur"
+        >
+          <div class="flex items-center gap-2">
+            <Badge variant="muted">all service</Badge>
+            <span class="text-muted-foreground">every pattern that ever runs — set a time to narrow it</span>
+          </div>
+        </div>
+
+        <div
+          v-else
           class="max-w-sm rounded-xl border border-border bg-card/90 px-3 py-2 text-xs shadow-sm backdrop-blur"
         >
           <template v-if="resolved">
@@ -399,9 +440,10 @@ watch(scenario, reload)
 
         <Select
           v-if="scenarioOptions.length > 1"
-          v-model="scenario"
+          :model-value="scenario"
           :options="scenarioOptions"
           class="w-56 bg-card/90 backdrop-blur"
+          @update:model-value="pickScenario"
         />
       </div>
     </div>
