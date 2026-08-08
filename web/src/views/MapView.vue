@@ -112,6 +112,11 @@ function refreshModes() {
     for (const f of raw.features) if (f.properties?.mode) seen.add(f.properties.mode)
   modesPresent.value = CLASS_ORDER.filter((m) => seen.has(m))
 }
+// every class gets a row, always: the panel is the taxonomy, not a
+// summary of this build. Absent classes render dimmed — their toggle
+// still works and persists, so switching a class off in one city carries
+// to a city that has it.
+const inBuild = (m: string) => modesPresent.value.includes(m)
 const classDot = (m: string) => {
   const hex = styleSet.value?.modes?.[m]?.color
   return { background: hex ? `#${hex}` : 'var(--muted-foreground)' }
@@ -500,7 +505,13 @@ watch(feed, async () => {
       <div class="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         <Layers class="size-3.5" /> Layers
       </div>
-      <label v-for="m in modesPresent" :key="m" class="flex items-center justify-between py-1 text-sm">
+      <label
+        v-for="m in CLASS_ORDER"
+        :key="m"
+        class="flex items-center justify-between py-1 text-sm"
+        :class="inBuild(m) ? '' : 'opacity-45'"
+        :title="inBuild(m) ? '' : 'No ' + m + ' routes in this build'"
+      >
         <span class="flex items-center gap-2">
           <span class="size-2.5 shrink-0 rounded-full" :style="classDot(m)" />
           <span class="capitalize">{{ m }}</span>
