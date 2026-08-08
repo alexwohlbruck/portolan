@@ -96,3 +96,45 @@ First stop for any spike the scorer reports.
   producing stage → fix there. Never add a downstream cleanup.
 - The sketch file mid-edit: score against the committed snapshot
   (`git show <rev>:testdata/sketches/nyc.json`).
+
+## The console *(web/, served at /console)*
+
+The dashboard replaces the hand-rolled workbench pages. It is a Vue 3 SPA
+built with Vite and Tailwind v4, deliberately sharing **barrelman's console
+design system byte for byte** — `web/src/style.css` is copied from
+`barrelman/web/src/style.css`, and the primitives (Button, Badge, Card,
+Dialog, Select, Switch, Tabs, Progress, Toaster) use the same class strings.
+The two are meant to read as one product, and this dashboard is destined to
+be embedded in barrelman, where any divergence would be a visible seam.
+
+```bash
+cd web && npm install && npm run build   # served by the atlas at /console
+cd web && npm run dev                    # port 5180, proxies /api and /vendor
+```
+
+The Go server serves `web/dist` from disk (not embedded), so a rebuild
+shows up on refresh. A missing dist returns the build instructions rather
+than a 404.
+
+**Views.** *Map* is the viewer — ribbons per zoom band, debug layers,
+segment inspector, scenario switcher. *Build* runs the pipeline with a
+live log and a stage bar driven off the pipeline's own stage lines.
+*Service* shows the 7×24 week grid coloured by scenario, with per-scenario
+build buttons. *Cities* is CRUD over the config, flagging inputs that are
+missing before a build wastes time on them. *Style* edits class defaults
+and colour overrides. *Problem areas* manages the review bookmarks.
+
+**MapLibre is not bundled.** Portolan renders on a fork (variable
+line-offset along line-progress); the server exposes it at
+`/vendor/maplibre-gl.js` and the map view reads it off `window`. The npm
+build cannot draw portolan's output.
+
+**Config is the contract.** Every editor writes `portolan.json`, the same
+file the CLI and `tools/city.sh` read, so a dashboard build and a terminal
+build always agree. Writes are atomic and preserve unknown keys, and a
+config that would not parse is rejected rather than written.
+
+Known environment quirk: MapLibre defers style loading through
+`requestAnimationFrame`, so in a hidden or headless tab the map stays
+blank until the tab becomes visible. This affects the old `/map` page
+identically — it is not a console bug.
