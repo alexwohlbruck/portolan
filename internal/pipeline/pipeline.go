@@ -357,6 +357,14 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		logf("direct: %d paths → %d deduped segments", len(busPaths), len(bsegs))
 		segs = append(segs, bsegs...)
 	}
+	// STATIONS: platforms → merged, classed, ranked stations
+	// (docs/STOP-LABELS.md). Built from the same pattern list that drew
+	// the map, so a scenario build's stations are that scenario's too.
+	sts := BuildStations(feed, rail, o.BBox)
+	logf("stations: %d from %d patterns", len(sts), len(rail))
+	if err := writeStations(o.Out+".stations.geojson", sts); err != nil {
+		return err
+	}
 	// the resolved style travels WITH the build: the viewer renders widths,
 	// opacities and floors from this manifest instead of duplicating the
 	// table in JavaScript, so config edits land without touching the UI.
@@ -639,10 +647,23 @@ func loadFeeds(paths string, cover float64, keep func(gtfs.Route) bool) (*gtfs.F
 			if pat.Route.Agency != "" {
 				pat.Route.Agency = pre + pat.Route.Agency
 			}
+			sids := make([]string, len(pat.StopIDs))
+			for j, sid := range pat.StopIDs {
+				sids[j] = pre + sid
+			}
+			pat.StopIDs = sids
 			base.Patterns = append(base.Patterns, pat)
 		}
 		for id, name := range f.Agencies {
 			base.Agencies[pre+id] = name
+		}
+		// stop ids collide across feeds exactly like route ids ("R16" is a
+		// stop in one feed and could be anything in the next)
+		for id, st := range f.Stops {
+			if st.Parent != "" {
+				st.Parent = pre + st.Parent
+			}
+			base.Stops[pre+id] = st
 		}
 	}
 	return base, nil

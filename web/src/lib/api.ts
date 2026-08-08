@@ -131,6 +131,9 @@ export const api = {
     return r.available && r.masks ? r.masks : {}
   },
 
+  // stations are a plain FeatureCollection of Points (docs/STOP-LABELS.md)
+  stations: (feed: string) => req<any>(`/api/stations.geojson?feed=${encodeURIComponent(feed)}`),
+
   routes: (feed: string) =>
     req<{ id: string; short_name: string; long_name: string; color: string; mode: string; agency: string; agency_name: string }[]>(
       `/api/routes?feed=${encodeURIComponent(feed)}`,

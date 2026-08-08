@@ -32,12 +32,23 @@ type Pattern struct {
 	ShapeID string
 	Trips   int      // how many trips ride this shape (for coverage pruning)
 	Shape   []geo.LL // ordered shape points
+	StopIDs []string // every stop this shape serves, sorted (stations stage)
+}
+
+// Stop is one stops.txt record — platform or parent station. Only what
+// the stations stage needs: where it is, what to call it, and how to
+// group platforms under one roof.
+type Stop struct {
+	Name   string
+	LL     geo.LL
+	Parent string // parent_station, "" when the stop stands alone
 }
 
 type Feed struct {
 	Routes   map[string]Route
 	Patterns []Pattern
 	Agencies map[string]string // agency_id → agency_name (labels for agency trunks)
+	Stops    map[string]Stop   // stop_id → stop, platforms AND parent stations
 }
 
 // Load reads a GTFS zip and returns patterns covering ≥ coverFrac of each
@@ -72,7 +83,8 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		return nil, fmt.Errorf("gtfs: %s missing %s", path, name)
 	}
 
-	feed := &Feed{Routes: map[string]Route{}, Agencies: map[string]string{}}
+	feed := &Feed{Routes: map[string]Route{}, Agencies: map[string]string{},
+		Stops: map[string]Stop{}}
 	if af, ok := files["agency.txt"]; ok {
 		if err := eachRowCols(af, []string{"agency_id", "agency_name"},
 			func(v []string) { feed.Agencies[v[0]] = v[1] }); err != nil {
@@ -110,12 +122,15 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			stopsErr = eachRowCols(sf, []string{"stop_id", "stop_lat", "stop_lon"},
+			stopsErr = eachRowCols(sf,
+				[]string{"stop_id", "stop_lat", "stop_lon", "stop_name", "parent_station"},
 				func(v []string) {
 					lat, e1 := strconv.ParseFloat(v[1], 64)
 					lon, e2 := strconv.ParseFloat(v[2], 64)
 					if e1 == nil && e2 == nil {
 						stopLL[v[0]] = geo.LL{Lon: lon, Lat: lat}
+						feed.Stops[v[0]] = Stop{Name: v[3],
+							LL: geo.LL{Lon: lon, Lat: lat}, Parent: v[4]}
 					}
 				})
 		}()
@@ -279,8 +294,13 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		if len(pts) < 2 {
 			continue
 		}
+		var sids []string
+		for sid := range shapeStops[k.shape] {
+			sids = append(sids, sid)
+		}
+		sort.Strings(sids)
 		byRoute[k.route] = append(byRoute[k.route], Pattern{
-			Route: r, ShapeID: k.shape, Trips: n, Shape: pts,
+			Route: r, ShapeID: k.shape, Trips: n, Shape: pts, StopIDs: sids,
 		})
 	}
 	// deterministic route order and trip-count tie-break: map iteration and

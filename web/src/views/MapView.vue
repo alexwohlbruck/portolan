@@ -6,7 +6,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
-import { applyDynamic, activePredicate, maskActive } from '@/lib/dynamic'
+import { applyDynamic, activePredicate, maskActive, stationVisible } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
@@ -260,8 +260,50 @@ function applyBands() {
   for (const key of bandRaw.keys()) applyBand(key)
 }
 
-// time and class changes re-filter the cached bands in memory — no fetch
-watch([activeAt, masks, classesOff], applyBands)
+// ── stations (docs/STOP-LABELS.md) ─────────────────────────────────────
+// Points with per-route metadata; fetched independently of WebGL (the
+// map applies them whenever both are ready). Same dynamic rule as
+// ribbons: time and class toggles hide, via stationVisible.
+const stationsRaw = ref<any | null>(null)
+
+async function loadStations() {
+  const fc = feed.value ? await api.stations(feed.value).catch(() => null) : null
+  if (fc?.features) {
+    for (const f of fc.features) {
+      const p = f.properties
+      // marker rule: one line → a dot in that line's color; several
+      // parallel lines → a white disc (the Apple hub marker)
+      const lines = String(p.line_colors ?? '').split(',').filter(Boolean)
+      p.marker_color = p.nlines > 1 ? '#ffffff' : '#' + (lines[0] || '888888')
+    }
+  }
+  stationsRaw.value = fc
+  applyStations()
+}
+
+function applyStations() {
+  const src = map?.getSource('stations')
+  if (!src) return
+  const raw = stationsRaw.value
+  if (!raw) {
+    src.setData({ type: 'FeatureCollection', features: [] })
+    return
+  }
+  const d = when.value ? new Date(when.value) : null
+  const date = d && !Number.isNaN(d.getTime()) ? d : null
+  const off = classesOff.value
+  const feats =
+    date || off.size
+      ? raw.features.filter((f: any) => stationVisible(f.properties, masks.value, date, off))
+      : raw.features
+  src.setData({ type: 'FeatureCollection', features: feats })
+}
+
+// time and class changes re-filter the cached data in memory — no fetch
+watch([activeAt, masks, classesOff], () => {
+  applyBands()
+  applyStations()
+})
 
 function addLayers() {
   const { w, o } = modeExprs(styleSet.value)
@@ -289,6 +331,67 @@ function addLayers() {
       map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'))
       map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''))
     }
+  }
+
+  // ── stations: markers then labels, above every ribbon ────────────────
+  // Density is gated by rank per zoom (top-level step on zoom — the only
+  // place a filter may read zoom), and the LABEL economy is MapLibre's:
+  // symbol collision never draws overlaps, symbol-sort-key places hubs
+  // first so locals are what drop, and variable anchors let a label take
+  // whichever side of its marker has room.
+  const rankGate = (base: number[]) =>
+    ['step', ['zoom'],
+      ['>=', ['get', 'rank'], base[0]],
+      11, ['>=', ['get', 'rank'], base[1]],
+      12, ['>=', ['get', 'rank'], base[2]],
+      13, ['>=', ['get', 'rank'], base[3]],
+      14, true] as any
+  const multi = ['>', ['get', 'nlines'], 1]
+  map.addLayer({
+    id: 'station-dots', type: 'circle', source: 'stations', minzoom: 10,
+    filter: rankGate([10, 6, 4, 2]),
+    paint: {
+      'circle-color': ['get', 'marker_color'],
+      'circle-radius': ['interpolate', ['linear'], ['zoom'],
+        11, ['case', multi, 2.5, 1.7],
+        14, ['case', multi, 5, 3],
+        17, ['case', multi, 8, 5.5]],
+      // single-line dots ring white; the multi-line disc is white already
+      // and rings dark, which is what reads as "spans the bundle"
+      'circle-stroke-color': ['case', multi, '#26262e', '#ffffff'],
+      'circle-stroke-width': ['interpolate', ['linear'], ['zoom'],
+        11, 0.5, 14, ['case', multi, 1.6, 1]],
+    },
+  })
+  map.addLayer({
+    id: 'station-labels', type: 'symbol', source: 'stations', minzoom: 11,
+    filter: rankGate([10, 6, 4, 2]),
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-font': ['Montserrat Medium'],
+      'symbol-sort-key': ['*', -1, ['get', 'rank']],
+      'text-variable-anchor': ['top', 'bottom', 'left', 'right'],
+      'text-radial-offset': 0.7,
+      'text-justify': 'auto',
+      // rank bump INSIDE the zoom stops: ["zoom"] is only legal as input
+      // to a top-level interpolate/step, so the composite goes this way
+      // around (same shape as zoomScaledOffset)
+      'text-size': ['interpolate', ['linear'], ['zoom'],
+        11, ['+', 10, ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]],
+        16, ['+', 13, ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]]],
+    },
+    paint: {
+      'text-color': '#e8e8ee',
+      'text-halo-color': 'rgba(12,12,16,0.9)',
+      'text-halo-width': 1.4,
+    },
+  })
+  for (const id of ['station-dots', 'station-labels']) {
+    map.on('click', id, (e: any) => {
+      inspect.value = e.features?.[0]?.properties ?? null
+    })
+    map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'))
+    map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''))
   }
 
   map.addLayer({
@@ -329,6 +432,7 @@ async function reload() {
   loading.value = true
   try {
     styleSet.value = await api.style(feed.value)
+    loadStations() // a rebuild may have refreshed the stations artifact
     loadedBands.clear()
     bandRaw.clear()
     for (const b of BANDS) {
@@ -392,6 +496,9 @@ onMounted(async () => {
     preserveDrawingBuffer: true,
     style: {
       version: 8,
+      // labels are text: the style needs a glyph endpoint (ribbons never
+      // did). CARTO's fonts pair with the CARTO raster basemap.
+      glyphs: 'https://tiles.basemaps.cartocdn.com/fonts/{fontstack}/{range}.pbf',
       sources: {
         osm: {
           type: 'raster',
@@ -419,11 +526,12 @@ onMounted(async () => {
     for (const b of BANDS) {
       map.addSource(`build-${b.key}`, { type: 'geojson', data: empty, lineMetrics: true })
     }
-    for (const n of ['rail', 'paths', 'trackcenter', 'nodes']) {
+    for (const n of ['rail', 'paths', 'trackcenter', 'nodes', 'stations']) {
       map.addSource(n, { type: 'geojson', data: empty })
     }
     styleSet.value = feed.value ? await api.style(feed.value).catch(() => null) : null
     addLayers()
+    applyStations() // the fetch may have finished before WebGL did
     // crossing a band boundary pulls that band in the first time
     map.on('zoomend', ensureBand)
     await reload()
@@ -434,6 +542,7 @@ onMounted(async () => {
   loadClassesOff()
   loadScenarios()
   loadMasks()
+  loadStations()
   prefetchModes()
 })
 
@@ -445,6 +554,7 @@ onBeforeUnmount(() => {
 watch(feed, async () => {
   loadClassesOff()
   loadMasks()
+  loadStations()
   prefetchModes()
   await loadScenarios()
   await reload()

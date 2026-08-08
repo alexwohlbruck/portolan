@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { applyDynamic, maskActive } from '../src/lib/dynamic.ts'
+import { applyDynamic, maskActive, stationVisible } from '../src/lib/dynamic.ts'
 
 const repo = path.resolve(process.cwd(), '..')
 let failures = 0
@@ -237,6 +237,59 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     ).length
     check('survivors re-center where the hidden class shared a corridor', changed > 0,
       `${changed} steady ribbons moved`)
+  }
+}
+
+// ── stations (docs/STOP-LABELS.md) ──────────────────────────────────────
+// The station layer rides the same dynamic rule: visible while any
+// member route is class-enabled and awake. Real client code, real build.
+{
+  const stPath = path.join(repo, 'build/nyc.geojson.stations.geojson')
+  if (!fs.existsSync(stPath)) {
+    console.log('note  NYC stations build missing — skipping station checks')
+  } else {
+    const sts = JSON.parse(fs.readFileSync(stPath, 'utf8')).features
+    check('stations exist', sts.length > 300, `${sts.length}`)
+    const aligned = sts.every((f) => {
+      const p = f.properties
+      const n = String(p.routes).split(',').length
+      return (
+        String(p.modes).split(',').length === n &&
+        String(p.route_colors).split(',').length === n &&
+        String(p.labels).split(',').length === n
+      )
+    })
+    check('per-route arrays are aligned on every station', aligned)
+    const named = sts.filter((f) => f.properties.name && String(f.properties.labels).replace(/,/g, '') !== '')
+    check('every station has a name and at least one label',
+      named.length === sts.length, `${sts.length - named.length} missing`)
+
+    // all-service, nothing off → everything visible
+    const allOn = sts.filter((f) => stationVisible(f.properties, {}, null, new Set())).length
+    check('all-service shows every station', allOn === sts.length)
+
+    // switching a class off hides exactly the stations with no other class
+    const off = new Set(['metro'])
+    const hidden = sts.filter((f) => !stationVisible(f.properties, {}, null, off))
+    const wrong = hidden.filter((f) => String(f.properties.modes).split(',').some((m) => m !== 'metro'))
+    check('class toggle hides only single-class stations', wrong.length === 0,
+      `${hidden.length} hidden with metro off, ${wrong.length} wrongly`)
+
+    // the marker rule: single-line stations exist in bulk, hubs exist,
+    // and Hoyt St stays a colored dot while Hoyt-Schermerhorn is a disc
+    const one = sts.filter((f) => f.properties.nlines === 1).length
+    check('marker rule has both kinds', one > 0 && one < sts.length,
+      `${one} single-line, ${sts.length - one} multi`)
+    const hoyt = sts.find((f) => f.properties.name === 'Hoyt St')
+    const hs = sts.find((f) => f.properties.name.startsWith('Hoyt-Schermerhorn'))
+    check('Hoyt St (2,3) is ONE red line; Hoyt-Schermerhorn (A,C,G) is a hub',
+      hoyt?.properties.nlines === 1 && hs?.properties.nlines > 1)
+
+    // ranks: the biggest stations are the famous hubs
+    const top = sts.slice().sort((a, b) => b.properties.rank - a.properties.rank).slice(0, 6)
+      .map((f) => f.properties.name)
+    check('top ranks are the real hubs', top.some((n) => /Times Sq|Atlantic|Grand Central|Fulton/.test(n)),
+      top.join(' | '))
   }
 }
 

@@ -66,6 +66,31 @@ export function activePredicate(masks: Record<string, string>, date: Date) {
   }
 }
 
+/** A station is visible while ANY member route is (a) in an enabled
+ *  class and (b) awake at the given instant. Stations carry no acts of
+ *  their own — the route-level mask is the right grain, because a
+ *  station exists whenever anything calls there. `date` null means the
+ *  all-service map (time never hides). Aligned arrays: routes[i]'s class
+ *  is modes[i]. */
+export function stationVisible(
+  props: Record<string, any>,
+  masks: Record<string, string>,
+  date: Date | null,
+  classesOff: Set<string>,
+): boolean {
+  const routes = routesOf(props)
+  if (routes.length === 0) return true
+  const modes = String(props.modes ?? '').split(',')
+  const day = date ? (date.getDay() + 6) % 7 : 0
+  const hour = date ? date.getHours() : 0
+  return routes.some((r, i) => {
+    if (classesOff.has(modes[i])) return false
+    if (!date) return true
+    const m = masks[r]
+    return !m || maskActive(m, day, hour)
+  })
+}
+
 // ── the dynamic render rule ────────────────────────────────────────────
 
 const endKey = (c: number[]) => c[0].toFixed(6) + ',' + c[1].toFixed(6)
