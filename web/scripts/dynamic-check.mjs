@@ -212,6 +212,34 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
   }
 }
 
+// class filtering rides the same dynamic path as time — hide a class and
+// the surviving bundles re-center into the freed slots
+{
+  const unionP = path.join(repo, 'build/nyc.geojson')
+  if (fs.existsSync(unionP)) {
+    const union = JSON.parse(fs.readFileSync(unionP, 'utf8')).features.filter(
+      (f) => f.properties.band_min === 15,
+    )
+    const fc = {
+      type: 'FeatureCollection',
+      features: union.map((f) => ({ ...f, _g: hash(f.geometry.coordinates) })),
+    }
+    const dyn = applyDynamic(fc, (f) => f.properties.mode !== 'regional')
+    const leaked = dyn.features.filter((f) => f.properties.mode === 'regional').length
+    check('hiding a class removes every feature of it', leaked === 0, `${leaked} regional leaked`)
+    const others = dyn.features.length
+    check('other classes untouched by the class filter',
+      others === fc.features.filter((f) => f.properties.mode !== 'regional').length)
+    const changed = dyn.features.filter(
+      (f, ) => f.properties.kind === 'steady' &&
+        fc.features.find((u) => u._g === f._g && u.properties.color === f.properties.color &&
+          u.properties.slot !== undefined && u.properties.offset_px !== f.properties.offset_px),
+    ).length
+    check('survivors re-center where the hidden class shared a corridor', changed > 0,
+      `${changed} steady ribbons moved`)
+  }
+}
+
 // mask bit layout must match internal/atlas/activity.go: 7×6 hex chars,
 // Monday first, hour 0 = LSB
 {

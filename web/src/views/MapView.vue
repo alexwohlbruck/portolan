@@ -63,6 +63,60 @@ const KINDS: [string, any][] = [
 ]
 const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
 
+// per-class visibility. Stored as the DISABLED set so the default —
+// everything on — is an empty set and new classes appearing in a build
+// are visible without migration. Hiding a class routes through the same
+// dynamic filter as time, so surviving bundles re-center instead of
+// keeping a gap where the hidden class sat. Persisted per city.
+const CLASS_ORDER = ['metro', 'tram', 'regional', 'monorail', 'funicular', 'cable', 'aerial', 'ferry', 'bus']
+const classesOff = ref<Set<string>>(new Set())
+const modesPresent = ref<string[]>([])
+
+const classKey = () => `portolan.classes-off.${feed.value}`
+function loadClassesOff() {
+  try {
+    classesOff.value = new Set(JSON.parse(localStorage.getItem(classKey()) ?? '[]'))
+  } catch {
+    classesOff.value = new Set()
+  }
+}
+function toggleClass(m: string, on: boolean) {
+  const next = new Set(classesOff.value)
+  if (on) next.delete(m)
+  else next.add(m)
+  classesOff.value = next // replace, not mutate — Set contents aren't reactive
+  localStorage.setItem(classKey(), JSON.stringify([...next]))
+}
+// prefetch band 15 without waiting for the map: the Layers panel and the
+// class list are DATA, and coupling them to WebGL coming up is the same
+// mistake the sketch editor and scenario picker already made once. The
+// delta cache makes the map's own later fetch of the same band ~free.
+async function prefetchModes() {
+  if (!feed.value || bandRaw.has(15)) return
+  try {
+    const { data } = await fetchBuild(feed.value, 15)
+    if (!bandRaw.has(15)) {
+      bandRaw.set(15, data)
+      loadedBands.add(15)
+      refreshModes()
+      applyBand(15)
+    }
+  } catch {
+    /* the map's own load path will retry */
+  }
+}
+
+function refreshModes() {
+  const seen = new Set<string>()
+  for (const raw of bandRaw.values())
+    for (const f of raw.features) if (f.properties?.mode) seen.add(f.properties.mode)
+  modesPresent.value = CLASS_ORDER.filter((m) => seen.has(m))
+}
+const classDot = (m: string) => {
+  const hex = styleSet.value?.modes?.[m]?.color
+  return { background: hex ? `#${hex}` : 'var(--muted-foreground)' }
+}
+
 const byId = computed(() => Object.fromEntries(scenarios.value.map((s) => [s.id, s])))
 
 /** The scenario that draws a given instant. Resolution is by weekday and
@@ -174,6 +228,7 @@ async function ensureBand() {
   try {
     const { data, stats } = await fetchBuild(feed.value, key)
     bandRaw.set(key, data)
+    refreshModes()
     applyBand(key)
     transferred.value = stats
   } catch {
@@ -181,11 +236,18 @@ async function ensureBand() {
   }
 }
 
-/** push one band to the map, through the dynamic filter when a time is set */
+/** push one band to the map, through the dynamic filter when a time is
+ *  set or a class is hidden — both are the same operation (hide + the
+ *  survivors re-center), so they compose in one predicate. */
 function applyBand(key: number) {
   const raw = bandRaw.get(key)
   if (!raw || !map) return
-  const pred = activeAt.value
+  const timePred = activeAt.value
+  const off = classesOff.value
+  const pred =
+    timePred || off.size
+      ? (f: any) => !off.has(f.properties.mode) && (!timePred || timePred(f))
+      : null
   map.getSource(`build-${key}`)?.setData(pred ? applyDynamic(raw, pred) : raw)
 }
 
@@ -193,8 +255,8 @@ function applyBands() {
   for (const key of bandRaw.keys()) applyBand(key)
 }
 
-// time changes re-filter the cached bands in memory — instant, no fetch
-watch([activeAt, masks], applyBands)
+// time and class changes re-filter the cached bands in memory — no fetch
+watch([activeAt, masks, classesOff], applyBands)
 
 function addLayers() {
   const { w, o } = modeExprs(styleSet.value)
@@ -364,8 +426,10 @@ onMounted(async () => {
   // the scenario list does not wait on the map: it is a plain API call,
   // and burying it in the load handler meant the picker stayed empty
   // whenever WebGL was slow or unavailable
+  loadClassesOff()
   loadScenarios()
   loadMasks()
+  prefetchModes()
 })
 
 onBeforeUnmount(() => {
@@ -374,7 +438,9 @@ onBeforeUnmount(() => {
 })
 
 watch(feed, async () => {
+  loadClassesOff()
   loadMasks()
+  prefetchModes()
   await loadScenarios()
   await reload()
 })
@@ -432,8 +498,16 @@ watch(feed, async () => {
 
     <div class="pointer-events-auto absolute bottom-4 left-4 z-10 w-56 rounded-xl border border-border bg-card/90 p-3 shadow-sm backdrop-blur">
       <div class="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <Layers class="size-3.5" /> Debug layers
+        <Layers class="size-3.5" /> Layers
       </div>
+      <label v-for="m in modesPresent" :key="m" class="flex items-center justify-between py-1 text-sm">
+        <span class="flex items-center gap-2">
+          <span class="size-2.5 shrink-0 rounded-full" :style="classDot(m)" />
+          <span class="capitalize">{{ m }}</span>
+        </span>
+        <Switch :model-value="!classesOff.has(m)" @update:model-value="(v) => toggleClass(m, v)" />
+      </label>
+      <div class="mb-1 mt-3 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Debug</div>
       <label v-for="(_, k) in debug" :key="k" class="flex items-center justify-between py-1 text-sm">
         <span class="capitalize">{{ k }}</span>
         <Switch :model-value="debug[k]" @update:model-value="(v) => (debug[k] = v)" />
