@@ -6,7 +6,8 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Select from '@/components/ui/Select.vue'
 import Spinner from '@/components/ui/Spinner.vue'
-import { api, fetchBuild, clearGeomCache, type Scenario, type StyleSet } from '@/lib/api'
+import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
+import { applyDynamic, activePredicate } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
@@ -24,7 +25,9 @@ const grid = ref<string[][]>([])
 // datetime-local value. EMPTY IS A VALUE: it means the all-service union
 // map. Seeded from ?t= so a moment can be linked.
 const when = ref(new URL(window.location.href).searchParams.get('t') ?? '')
-const building = ref(false)
+// route id -> 168-bit weekly activity mask (docs/DYNAMIC-SERVICE.md).
+// This is what makes ANY timestamp renderable with no prebuilt layout.
+const masks = ref<Record<string, string>>({})
 const scenario = ref('__all')
 const styleSet = ref<StyleSet | null>(null)
 const inspect = ref<Record<string, any> | null>(null)
@@ -98,19 +101,37 @@ const localNow = () => {
   return d.toISOString().slice(0, 16)
 }
 
-// Picking a time selects the map that draws it. An unbuilt scenario keeps
-// the current map on screen rather than blanking it — the banner offers to
-// build it instead.
+// A timestamp renders DYNAMICALLY from the union layout: hide the
+// ribbons whose routes are dark at that instant, re-center the rest
+// within the fixed union slot order (lib/dynamic.ts). No prebuilt file
+// is involved, so every timestamp works immediately — the prebuilt
+// scenarios remain reachable through the picker as QA references.
+//
 // No time set is a meaningful state, not a missing one: it means the
-// all-service union map — every pattern that ever runs. Clearing the
-// field goes back to it.
+// all-service union map. Clearing the field goes back to it.
 watch(when, (v) => {
-  if (!v) scenario.value = ALL
+  if (v && scenario.value !== ALL) scenario.value = ALL // dynamic runs on the union
+  else applyBands()
 })
-watch(resolved, (r) => {
-  if (!when.value) return
-  if (r?.built) scenario.value = r.id
+
+const activeAt = computed(() => {
+  if (!when.value) return null
+  const d = new Date(when.value)
+  if (Number.isNaN(d.getTime())) return null
+  return activePredicate(masks.value, d)
 })
+
+// how much of the network is running right now — the banner's summary
+const runningCount = computed(() => {
+  const pred = activeAt.value
+  if (!pred) return null
+  const ids = Object.keys(masks.value)
+  return { on: ids.filter((r) => pred([r])).length, total: ids.length }
+})
+
+async function loadMasks() {
+  masks.value = feed.value ? await api.activity(feed.value).catch(() => ({})) : {}
+}
 
 // Choosing a map directly and choosing a time are two ways to say the
 // same thing, so picking from the list drops the timestamp rather than
@@ -129,21 +150,7 @@ function syncURL(v: string) {
 }
 watch(when, syncURL)
 
-async function buildResolved() {
-  const r = resolved.value
-  if (!r || !feed.value) return
-  building.value = true
-  try {
-    await api.run(feed.value, 'chart', r.id)
-    toast({ title: 'Building this service map', description: r.label, variant: 'success' })
-  } catch (e: any) {
-    toast({ title: 'Could not start build', description: e.message, variant: 'error' })
-  } finally {
-    building.value = false
-  }
-}
-
-// a finished run may have produced the scenario we are waiting on
+// a finished run may have produced new scenarios or a new union build
 watch(() => run.value.done, (d) => d && loadScenarios())
 
 function widthExpr(w: any) {
@@ -169,6 +176,9 @@ const ribbonIds: string[] = []
 // the viewport enters it and then kept — flipping back and forth across a
 // boundary should not re-download.
 const loadedBands = new Set<number>()
+// raw (union or explicitly-picked scenario) FCs per band. Dynamic mode
+// re-filters these in memory on every time change — no refetch.
+const bandRaw = new Map<number, any>()
 const transferred = ref<{ geometries_sent: number; geometries_reused: number; bytes: number } | null>(null)
 
 const bandForZoom = (z: number) =>
@@ -181,12 +191,28 @@ async function ensureBand() {
   loadedBands.add(key)
   try {
     const { data, stats } = await fetchBuild(feed.value, key, scenarioId.value)
-    map.getSource(`build-${key}`)?.setData(data)
+    bandRaw.set(key, data)
+    applyBand(key)
     transferred.value = stats
   } catch {
     loadedBands.delete(key) // let a later zoom retry
   }
 }
+
+/** push one band to the map, through the dynamic filter when a time is set */
+function applyBand(key: number) {
+  const raw = bandRaw.get(key)
+  if (!raw || !map) return
+  const pred = activeAt.value
+  map.getSource(`build-${key}`)?.setData(pred && !scenarioId.value ? applyDynamic(raw, pred) : raw)
+}
+
+function applyBands() {
+  for (const key of bandRaw.keys()) applyBand(key)
+}
+
+// time changes re-filter the cached bands in memory — instant, no fetch
+watch([activeAt, masks], applyBands)
 
 function addLayers() {
   const { w, o } = modeExprs(styleSet.value)
@@ -255,6 +281,7 @@ async function reload() {
   try {
     styleSet.value = await api.style(feed.value)
     loadedBands.clear()
+    bandRaw.clear()
     for (const b of BANDS) {
       map.getSource(`build-${b.key}`)?.setData({ type: 'FeatureCollection', features: [] })
     }
@@ -357,6 +384,7 @@ onMounted(async () => {
   // and burying it in the load handler meant the picker stayed empty
   // whenever WebGL was slow or unavailable
   loadScenarios()
+  loadMasks()
 })
 
 onBeforeUnmount(() => {
@@ -365,6 +393,7 @@ onBeforeUnmount(() => {
 })
 
 watch(feed, async () => {
+  loadMasks()
   await loadScenarios()
   await reload()
 })
@@ -421,21 +450,13 @@ watch(scenario, reload)
           v-else
           class="max-w-sm rounded-xl border border-border bg-card/90 px-3 py-2 text-xs shadow-sm backdrop-blur"
         >
-          <template v-if="resolved">
-            <div class="flex items-center gap-2">
-              <Badge :variant="resolved.built ? 'success' : 'warning'">
-                {{ resolved.built ? 'showing' : 'not built' }}
-              </Badge>
-              <span class="truncate font-medium">{{ resolved.label }}</span>
-            </div>
-            <div v-if="!resolved.built" class="mt-1.5 flex items-center gap-2">
-              <span class="text-muted-foreground">This service map has not been laid out yet.</span>
-              <Button size="sm" :disabled="building || run.running" @click="buildResolved">
-                <Spinner v-if="building || run.running" class="size-3" /> Build it
-              </Button>
-            </div>
-          </template>
-          <div v-else class="text-muted-foreground">No service at this hour.</div>
+          <div v-if="runningCount && runningCount.on > 0" class="flex items-center gap-2">
+            <Badge variant="success">dynamic</Badge>
+            <span class="font-medium tabular-nums">{{ runningCount.on }} of {{ runningCount.total }} routes running</span>
+          </div>
+          <div v-else-if="runningCount" class="text-muted-foreground">No service at this hour.</div>
+          <div v-else class="text-muted-foreground">Loading service calendar…</div>
+          <div v-if="resolved" class="mt-1 truncate text-muted-foreground">{{ resolved.label }}</div>
         </div>
 
         <Select

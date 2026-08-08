@@ -88,6 +88,9 @@ type Server struct {
 	scenMu    sync.Mutex
 	scenarios map[string]*scenCache
 
+	actMu    sync.Mutex
+	activity map[string]*actCache
+
 	locMu sync.Mutex
 
 	runMu   sync.Mutex
@@ -116,7 +119,8 @@ type overlayFeat struct {
 
 func NewServer(configPath, maplibreDir string) (*Server, error) {
 	s := &Server{maplibre: maplibreDir, cfgPath: configPath,
-		overlays: map[string]*overlayCache{}, scenarios: map[string]*scenCache{}}
+		overlays: map[string]*overlayCache{}, scenarios: map[string]*scenCache{},
+		activity: map[string]*actCache{}}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("workbench config: %w (see portolan.json in the repo)", err)
@@ -248,6 +252,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/network", s.network)
 	mux.HandleFunc("/api/features", s.features)
 	mux.HandleFunc("/api/scenarios", s.scenariosAPI)
+	mux.HandleFunc("/api/activity", s.activityAPI)
 	mux.HandleFunc("/api/build.geojson", func(w http.ResponseWriter, r *http.Request) {
 		fc, _, ok := s.feedCfg(r)
 		if !ok {

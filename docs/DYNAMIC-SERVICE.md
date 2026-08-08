@@ -111,15 +111,18 @@ divergence is measurable per scenario, continuously.
 
 ## Staging
 
-1. **Emit masks + union order.** FAIR already knows each ribbon's routes
+Stages 1–2 are BUILT (see below). 3 is partially standing (the
+`check:dynamic` harness); 4–5 remain.
+
+1. **Emit masks + union order.** ✅ FAIR already knows each ribbon's routes
    and slots; add per-route activity masks (hex-encoded, 42 chars) to
    segment properties, or as a sidecar `route → mask` table per region
    (smaller — masks repeat per route, not per segment).
-2. **Client dynamic mode.** Timestamp → bit test → filter + re-center +
+2. **Client dynamic mode.** ✅ Timestamp → bit test → filter + re-center +
    ramp rewrite at FeatureCollection assembly. The time picker UI is
    unchanged; "not built yet" states disappear — every timestamp renders
    immediately.
-3. **QA loop.** Score dynamic-at-T against the prebuilt scenario for each
+3. **QA loop.** (first cut exists: `npm run check:dynamic` scores the render rule against the real Saturday re-layout — 96.9% offset match on 843 shared edges, zero sleeping ribbons surviving.) Score dynamic-at-T against the prebuilt scenario for each
    derived scenario; gate on divergence. Keep prebuilds only as test
    references.
 4. **Inert junctions in FAIR** (the drawing-risk item, done with eyes on

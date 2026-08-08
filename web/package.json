@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "check": "esbuild --bundle scripts/sketch-check.mjs --platform=node --format=esm --outfile=node_modules/.cache/sketch-check.mjs --log-level=error && node node_modules/.cache/sketch-check.mjs"
+    "check": "esbuild --bundle scripts/sketch-check.mjs --platform=node --format=esm --outfile=node_modules/.cache/sketch-check.mjs --log-level=error && node node_modules/.cache/sketch-check.mjs && npm run check:dynamic",
+    "check:dynamic": "esbuild --bundle scripts/dynamic-check.mjs --platform=node --format=esm --outfile=node_modules/.cache/dynamic-check.mjs --log-level=error && node node_modules/.cache/dynamic-check.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

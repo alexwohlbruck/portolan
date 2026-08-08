@@ -124,6 +124,13 @@ export const api = {
   areas: () => req<Area[]>('/api/locations'),
   saveAreas: (areas: Area[]) => req<null>('/api/locations', json(areas)),
 
+  activity: async (feed: string) => {
+    const r = await req<{ available: boolean; masks?: Record<string, string> }>(
+      `/api/activity?feed=${encodeURIComponent(feed)}`,
+    )
+    return r.available && r.masks ? r.masks : {}
+  },
+
   routes: (feed: string) =>
     req<{ id: string; short_name: string; long_name: string; color: string; mode: string; agency: string; agency_name: string }[]>(
       `/api/routes?feed=${encodeURIComponent(feed)}`,
@@ -177,7 +184,10 @@ export async function fetchBuild(
     .map((f: any) => {
       const coords = geomCache.get(f.g)
       if (!coords) return null // geometry we claimed to have but dropped
-      return { type: 'Feature', properties: f.p, geometry: { type: 'LineString', coordinates: coords } }
+      // _g rides along: identical hash = identical centerline = one
+      // corridor bundle, which is exactly the grouping dynamic rendering
+      // needs. MapLibre ignores foreign members.
+      return { type: 'Feature', _g: f.g, properties: f.p, geometry: { type: 'LineString', coordinates: coords } }
     })
     .filter(Boolean)
   return {
