@@ -11,6 +11,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/mode"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // FAIR — owner's step 5, the node-front model. Per zoom band each edge is
@@ -187,20 +188,52 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			agencyHex[ag] = best
 		}
 	}
-	// ferries paint one canonical color network-wide, like Apple: a
-	// harbor of per-route brand colors reads as seven unrelated lines.
-	// Placeholder hue pending the observation pass (docs/MODES.md).
-	const ferryHex = "4A9EDB"
+	// display color, in precedence order: an explicit config override, the
+	// class's canonical color (Apple paints every ferry one blue — a harbor
+	// of per-route brand colors reads as seven unrelated lines), the
+	// agency's majority color, then the route's own.
+	sty := style.Active()
 	hexOf := func(ei int, color string) string {
-		if mode.Of(routeType(ei, color)) == mode.Ferry {
-			return ferryHex
+		rs := colorRoutes[ei][color]
+		if sty.Any() {
+			// An AGENCY trunk is the agency's line, so the agency override
+			// owns it — a route override applied inside one would repaint
+			// whichever member happened to sort first, and the shared
+			// ribbon would change color at every membership seam.
+			if ag, isAgency := strings.CutPrefix(color, "agency:"); isAgency {
+				if h, ok := sty.AgencyColor(ag, mode.AgencyName(ag)); ok {
+					return h
+				}
+			} else {
+				// deterministic: of the routes carrying an override, the
+				// lowest id wins — never map or slice order.
+				bestID, bestHex := "", ""
+				for _, rid := range rs {
+					r := routes[rid]
+					h, ok := sty.RouteColor(r.ID, r.ShortName, r.LongName)
+					if ok && (bestID == "" || r.ID < bestID) {
+						bestID, bestHex = r.ID, h
+					}
+				}
+				if bestHex != "" {
+					return bestHex
+				}
+			}
+			for _, rid := range rs {
+				r := routes[rid]
+				if h, ok := sty.AgencyColor(r.Agency, mode.AgencyName(r.Agency)); ok {
+					return h
+				}
+			}
+		}
+		if h := sty.Class(mode.Of(routeType(ei, color)).String()).Color; h != "" {
+			return h
 		}
 		if ag, ok := strings.CutPrefix(color, "agency:"); ok {
 			if h := agencyHex[ag]; h != "" {
 				return h
 			}
 		}
-		rs := colorRoutes[ei][color]
 		if len(rs) == 0 || routes[rs[0]].Color == "" {
 			return "888888"
 		}

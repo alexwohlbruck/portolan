@@ -21,6 +21,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/osm"
 	"github.com/alexwohlbruck/portolan/internal/sketch"
 	"github.com/alexwohlbruck/portolan/internal/stages"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // Dials — tuning parameters surfaced in the atlas UI. Stage authors: add
@@ -110,7 +111,10 @@ type ChartOpts struct {
 	// BBox [w,s,e,n]: clip pattern shapes to the city window. A national
 	// feed's Amtrak shape would otherwise leave the extract and draw a
 	// gap chord across the continent.
-	BBox  []float64
+	BBox []float64
+	// Style: class defaults and color overrides, already merged
+	// global-then-city. Nil means the shipped defaults.
+	Style *style.Set
 	Out   string
 	Dials *Dials
 	// Scenario: build the layout for one service scenario (gtfs.Scenario
@@ -127,6 +131,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		d = *o.Dials
 	}
 	stages.SetTuning(d.tuning())
+	style.Set_(o.Style)
 	t0 := time.Now()
 
 	ways, err := osm.Load(o.Rail)
@@ -207,6 +212,9 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	// below on what used to be the full set.
 	drawable := func(r gtfs.Route) bool {
 		c := mode.Of(r.Type)
+		if c.Hidden() {
+			return false
+		}
 		if c == mode.Bus {
 			return o.Streets != ""
 		}
@@ -277,6 +285,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	mode.SetLineAgencies(la)
 	stages.SetAgencyNames(feed.Agencies)
+	mode.SetAgencyNames(feed.Agencies)
 	matchTracks := tracks
 	if len(streetTracks) > 0 {
 		matchTracks = append(append([]bundle.Track{}, tracks...), streetTracks...)
@@ -290,15 +299,16 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if err := writePaths(o.Out+".paths.geojson", paths, frame); err != nil {
 		return err
 	}
-	// buses stop here: a matched bus path IS the deliverable (street
-	// centerline walk), so bus paths skip SPLIT/ORDER/FAIR entirely and
-	// emit directly — path matching and nothing more.
+	// classes with trunk policy "none" stop here: their matched path IS the
+	// deliverable (a street centerline walk), so they skip SPLIT/ORDER/FAIR
+	// entirely and emit directly — path matching and nothing more. Buses by
+	// default; config can move any class either way.
 	var busPaths, railPaths []stages.Path
 	for _, p := range paths {
-		if mode.Of(p.Pattern.Route.Type) == mode.Bus {
-			busPaths = append(busPaths, p)
-		} else {
+		if mode.Of(p.Pattern.Route.Type).Trunked() {
 			railPaths = append(railPaths, p)
+		} else {
+			busPaths = append(busPaths, p)
 		}
 	}
 	// SPLIT must see the SAME track slice as MATCH: path steps index into
@@ -325,9 +335,17 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	logf("fair: %d segments (%.1fs)", len(segs), time.Since(t0).Seconds())
 	if len(busPaths) > 0 {
-		bsegs := stages.BusSegments(busPaths)
-		logf("bus: %d paths → %d deduped segments", len(busPaths), len(bsegs))
+		bsegs := stages.DirectSegments(busPaths)
+		logf("direct: %d paths → %d deduped segments", len(busPaths), len(bsegs))
 		segs = append(segs, bsegs...)
+	}
+	// the resolved style travels WITH the build: the viewer renders widths,
+	// opacities and floors from this manifest instead of duplicating the
+	// table in JavaScript, so config edits land without touching the UI.
+	if raw, err := style.Active().MarshalManifest(); err == nil {
+		if err := os.WriteFile(o.Out+".style.json", raw, 0o644); err != nil {
+			return err
+		}
 	}
 	return WriteSegmentsGeoJSON(o.Out, segs, frame)
 }

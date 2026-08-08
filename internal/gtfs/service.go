@@ -181,9 +181,17 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 		}
 	}
 	if cd, ok := files["calendar_dates.txt"]; ok {
+		// snapshot FIRST: the guard below must mean "calendar.txt owns
+		// this service", not "some earlier dated row already created it" —
+		// checking the live map stopped accumulation after one date and
+		// flattened every weekday weight to 1.
+		fromCalendar := make(map[string]bool, len(svcDays))
+		for sid := range svcDays {
+			fromCalendar[sid] = true
+		}
 		if err := eachRow(cd, func(get func(string) string) {
 			sid := get("service_id")
-			if _, have := svcDays[sid]; have {
+			if fromCalendar[sid] {
 				return // calendar.txt owns this service; exceptions are holidays
 			}
 			if get("exception_type") != "1" {

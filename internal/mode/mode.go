@@ -6,7 +6,10 @@
 // routes trunk into ribbons.
 package mode
 
-import "github.com/alexwohlbruck/portolan/internal/gtfs"
+import (
+	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/style"
+)
 
 type Class int
 
@@ -86,6 +89,8 @@ func (c Class) Drawable() bool {
 
 // BandFloor is the lowest FAIR zoom band this class draws in (fair.go
 // emits one segment copy per band; bands below the floor skip the class).
+// The value comes from internal/style, so a city can raise or lower it in
+// config; the defaults below are what style ships with.
 // Tram sits at 0 despite the docs/MODES.md inference of 13: GTFS type 0
 // covers both streetcars AND light-rail backbones, and a floor of 13
 // erased Charlotte's Lynx and LA's A/C/E/K below the default zoom — for
@@ -94,13 +99,19 @@ func (c Class) Drawable() bool {
 // remaining floors are still inferences — change them there first,
 // then here.
 func (c Class) BandFloor() int {
-	switch c {
-	case Ferry:
-		return 13
-	case Aerial, Funicular, Cable, Bus:
-		return 15
-	}
-	return 0
+	return style.Active().Class(c.String()).BandFloor
+}
+
+// Trunked reports whether this class goes through the junction pipeline at
+// all. A class with trunk policy "none" (bus, by default) emits its matched
+// paths directly — the path IS the drawn geometry.
+func (c Class) Trunked() bool {
+	return style.Active().Class(c.String()).Trunk != style.TrunkNone
+}
+
+// Hidden reports whether config drops this class from the build.
+func (c Class) Hidden() bool {
+	return style.Active().Class(c.String()).Hidden
 }
 
 // lineAgencies: regional agencies whose routes keep PER-LINE identity
@@ -127,23 +138,53 @@ func SetLineAgencies(m map[string]bool) { lineAgencies = m }
 // (stages.BusSegments) — path matching and nothing more.
 func TrunkKey(r gtfs.Route) string {
 	c := Of(r.Type)
-	switch c {
-	case Ferry, Aerial, Funicular, Cable:
+	trunk := style.Active().Class(c.String()).Trunk
+	// line_agencies is a per-AGENCY escape from agency trunking: the
+	// agency's own colors are its line identities (RER A–E), so it falls
+	// back to color trunking however its class is configured.
+	if trunk == style.TrunkAgency && (lineAgencies[r.Agency] || r.Agency == "") {
+		trunk = style.TrunkColor
+	}
+	switch trunk {
+	case style.TrunkRoute, style.TrunkNone:
 		return "route:" + r.ID
-	case Regional:
-		if lineAgencies[r.Agency] || r.Agency == "" {
-			if r.Color != "" {
-				return r.Color
-			}
-			if r.Agency != "" {
-				return "agency:" + r.Agency
-			}
-			return "route:" + r.ID
+	case style.TrunkAgency:
+		if r.Agency != "" {
+			return "agency:" + r.Agency
 		}
-		return "agency:" + r.Agency
+		return "route:" + r.ID
 	}
-	if r.Color == "" {
-		return "888888"
+	// color trunking (law 5): the key IS the color string, byte for byte.
+	if hex, ok := colorOverride(r); ok {
+		return hex
 	}
-	return r.Color
+	if r.Color != "" {
+		return r.Color
+	}
+	if r.Agency != "" {
+		return "agency:" + r.Agency // colorless operators must not all merge
+	}
+	return "route:" + r.ID
 }
+
+// colorOverride resolves a config color override for a route, by route id
+// or name first, then by its agency. Overrides beat the feed because the
+// feed is what got it wrong.
+func colorOverride(r gtfs.Route) (string, bool) {
+	s := style.Active()
+	if !s.Any() {
+		return "", false
+	}
+	if hex, ok := s.RouteColor(r.ID, r.ShortName, r.LongName); ok {
+		return hex, true
+	}
+	return s.AgencyColor(r.Agency, AgencyName(r.Agency))
+}
+
+// agencyNames lets color overrides name an agency the way a human would
+// ("Metro-North Railroad") instead of a feed-local id ("f2:1").
+var agencyNames map[string]string
+
+func SetAgencyNames(m map[string]string) { agencyNames = m }
+
+func AgencyName(id string) string { return agencyNames[id] }

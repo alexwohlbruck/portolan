@@ -5,21 +5,22 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/mode"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
-// BusSegments: buses are PATH MATCHING AND NOTHING MORE (owner call,
-// 2026-08-08). A matched bus path is already a street centerline walk —
-// the drawn geometry — so it goes straight to segments: no junction
-// graph, no strand refinement, no corridor merging, no slots, no
-// smoothing. One thin neutral line per street, visible from the bus band
-// floor up.
+// DirectSegments: classes whose trunk policy is "none" are PATH MATCHING
+// AND NOTHING MORE (owner call, 2026-08-08, for buses). A matched path of
+// such a class is already a street centerline walk — the drawn geometry —
+// so it goes straight to segments: no junction graph, no strand
+// refinement, no corridor merging, no slots, no smoothing. One thin line
+// per street, visible from the class's band floor up.
 //
 // The only processing is overlap dedup: forty routes down Fifth Avenue
 // must not stack forty ribbons. Paths share graph-piece geometry
 // verbatim, so identical drawn segments dedupe on their quantized
 // endpoint pair (first path wins, later paths keep only their unseen
 // stretches). The emit stays linear in ridden street km, not route count.
-func BusSegments(paths []Path) []Segment {
+func DirectSegments(paths []Path) []Segment {
 	const q = 1.0 // metres — piece geometry is shared, so exact-ish is fine
 	type segKey [4]int32
 	keyOf := func(a, b geo.Pt) segKey {
@@ -34,17 +35,30 @@ func BusSegments(paths []Path) []Segment {
 	}
 	seen := map[segKey]bool{}
 	var out []Segment
+	sty := style.Active()
 	for _, p := range paths {
 		r := p.Pattern.Route
+		cls := mode.Of(r.Type)
+		cs := sty.Class(cls.String())
+		hex := cs.Color
+		if h, ok := sty.RouteColor(r.ID, r.ShortName, r.LongName); ok {
+			hex = h
+		} else if h, ok := sty.AgencyColor(r.Agency, mode.AgencyName(r.Agency)); ok {
+			hex = h
+		} else if hex == "" {
+			if hex = r.Color; hex == "" {
+				hex = "888888"
+			}
+		}
 		var run []geo.Pt
 		flush := func() {
 			if len(run) >= 2 {
 				out = append(out, Segment{
-					Kind: "steady", Color: "888888",
+					Kind: "steady", Color: hex,
 					Routes: []string{r.ID}, Label: r.ShortName,
-					RouteType: r.Type, Mode: mode.Bus.String(),
+					RouteType: r.Type, Mode: cls.String(),
 					NSlots:  1,
-					BandMin: mode.Bus.BandFloor(), BandMax: 24,
+					BandMin: cs.BandFloor, BandMax: 24,
 					Line: geo.NewLine(append([]geo.Pt{}, run...)),
 				})
 			}

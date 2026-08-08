@@ -165,6 +165,19 @@ build() { # $1 = feed key
   set -- --gtfs "$gtfs" --rail "$rail" --out "$out"
   [ -n "$bboxarg" ] && set -- "$@" --bbox "$bboxarg"
   [ -n "$lineag" ] && set -- "$@" --line-agencies "$lineag"
+  # style: config-wide block with the city's own layered on top (deep merge
+  # for modes so a city naming one field keeps the rest). The atlas does the
+  # same merge in Go — both paths must agree or a CLI build looks different
+  # from the same build launched from the dashboard.
+  local stylefile
+  stylefile=$(mktemp -t portolan-style)
+  jq --arg f "$feed" '{
+        modes:  ((.style.modes  // {}) * (.feeds[$f].modes  // {})),
+        colors: ((.style.colors // {}) + (.feeds[$f].colors // {}))
+      }' "$CFG" > "$stylefile"
+  if [ -s "$stylefile" ] && [ "$(jq -r 'if (.modes|length)==0 and (.colors|length)==0 then "empty" else "set" end' "$stylefile")" = set ]; then
+    set -- "$@" --style "$stylefile"
+  fi
   if [ -n "$streets" ]; then
     if [ -s "$streets" ]; then set -- "$@" --streets "$streets"
     else echo "$feed: streets configured but missing at $streets — tools/city.sh streets $feed (building rail-only)"; fi

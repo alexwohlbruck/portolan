@@ -44,6 +44,52 @@ genuinely add ink (Rockaway Park branch, rush-only routes). Chicago
 (feed 29) yields 5. Route lists confirm real structure: overnight drops
 B·C·W·Z·GS and the expresses; weekends drop B·W·Z·6X·7X but keep C.
 
+## Derivation vs selection — they are NOT the same set
+
+Scenarios are **derived** from the primary feed's rail and **select**
+every drawable pattern. The split is load-bearing in both directions.
+
+Deriving from more than the backbone shatters the week: the MTA
+railroads issue a `service_id` per date, so their pattern mix churns from
+Tuesday to Wednesday without the drawn map changing, and folding them
+into derivation turned NYC's clean 15 scenarios into 36 ragged ones
+(`Tue 10–16,20–22; Wed 10–15; Fri 20–21`). Bus timetables would be
+worse. The rail backbone is also what a rider reads a service change off.
+
+Selecting only the derived set is the mirror bug, and it shipped: a
+scenario derived from the primary feed named patterns by unprefixed route
+id, while every overlay route carries an `f<i>:` prefix — so NYC's
+Saturday map came out **subway-only**, no LIRR, no ferries, no buses.
+Selection therefore runs over all feeds and all drawable classes, keyed
+on the scenario's hour cells: buses and ferries now appear and vanish on
+the backbone's boundaries. (Late night correctly draws no ferry at all —
+NYC Ferry does not run 00:00–05:00.)
+
+## Feed shapes that broke this
+
+Three feed conventions each emptied the feature on their own:
+
+- **No `calendar.txt`.** LIRR and Metro-North ship `calendar_dates.txt`
+  only, one `service_id` per date, and derivation errored out. Weekly
+  masks now fall back to the dates themselves, each weekday weighted by
+  how often it recurs, so a ten-Wednesday service reads as Wednesday
+  service while a holiday one-off carries weight 1 and dies against the
+  per-route floor. Feeds that DO have `calendar.txt` still ignore
+  `calendar_dates` — the map shows regular service, not holidays.
+- **Frequency-based feeds.** JFK's AirTrain templates every trip at
+  `00:00:00` and states the real window in `frequencies.txt`. Read
+  literally, a 24-hour service appeared in the late-night scenario and
+  nowhere else. `frequencies.txt` now sets the span (first start to last
+  end, plus one trip's running time — the final departure still finishes).
+- **Clip order.** `clipPatterns` rewrites `ShapeID` to `<shape>#clipN`,
+  so a scenario filter running after it can never match a pattern that
+  touched the window edge. Scenario selection runs **before** the bbox
+  clip.
+
+`portolan scenarios --gtfs <list> [--routes]` lists the ids and, with
+`--routes`, each scenario's routes — the fastest way to check a city's
+service logic without building anything.
+
 ## Builds
 
 `pipeline.ChartOpts.Scenario = <id>` restricts the rail patterns to the

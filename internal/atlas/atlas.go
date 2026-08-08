@@ -23,6 +23,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
 	"github.com/alexwohlbruck/portolan/internal/sketch"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 //go:embed editor.html
@@ -44,6 +45,10 @@ type FeedCfg struct {
 	Out          string    `json:"out"`
 	Network      string    `json:"network"` // drawn ground truth for scoring
 	BBox         []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
+	// embedded so "modes" and "colors" sit directly on the feed row: this
+	// city's class overrides and color fixes, layered over the config-wide
+	// style block.
+	style.Config
 }
 
 // primaryGTFS: the first feed of the comma list — scenarios and mtime
@@ -58,6 +63,15 @@ func (f FeedCfg) primaryGTFS() string {
 type Config struct {
 	Feeds    map[string]FeedCfg `json:"feeds"`
 	Sketches string             `json:"sketches"`
+	// Style: config-wide class defaults and color overrides. A city's own
+	// block layers on top, field by field.
+	Style style.Config `json:"style"`
+}
+
+// styleFor resolves the effective style for one city: shipped defaults,
+// then the config-wide block, then the city's own.
+func (c Config) styleFor(f FeedCfg) *style.Set {
+	return style.New(c.Style, f.Config)
 }
 
 type Server struct {
@@ -280,6 +294,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/params", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(pipeline.DefaultDials())
+	})
+	// the resolved style for a city: class defaults merged with the city's
+	// overrides. The viewer renders widths, opacities and floors from this
+	// rather than keeping its own copy of the table.
+	mux.HandleFunc("/api/style", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fc, _, ok := s.feedCfg(r)
+		if !ok {
+			http.Error(w, "unknown feed", 404)
+			return
+		}
+		json.NewEncoder(w).Encode(s.config().styleFor(fc))
 	})
 	mux.HandleFunc("/api/run", s.run)
 	mux.HandleFunc("/api/run/status", s.runStatus)
@@ -641,6 +667,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 				GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
 				LineAgencies: fc.LineAgencies,
 				BBox:         fc.BBox, Out: out, Dials: dials,
+				Style:    s.config().styleFor(fc),
 				Scenario: scen,
 			}, logf)
 		case "sound":

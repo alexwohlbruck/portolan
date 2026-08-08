@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/atlas"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 func main() {
@@ -84,6 +86,7 @@ func chart(args []string) {
 	out := fs.String("out", "build.geojson", "output GeoJSON")
 	cover := fs.Float64("cover", 0.99, "pattern trip-coverage fraction")
 	scenario := fs.String("scenario", "", "service scenario id (see `portolan scenarios`)")
+	stylePath := fs.String("style", "", `style JSON: {"modes":{…},"colors":{…}} (already merged)`)
 	fs.Parse(args)
 	if *railPath == "" {
 		fs.Usage()
@@ -106,12 +109,20 @@ func chart(args []string) {
 	if *lineAg != "" {
 		las = strings.Split(*lineAg, ",")
 	}
+	var sty *style.Set
+	if *stylePath != "" {
+		raw, err := os.ReadFile(*stylePath)
+		die(err)
+		var c style.Config
+		die(json.Unmarshal(raw, &c))
+		sty = style.New(c)
+	}
 	d := pipeline.DefaultDials()
 	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
 		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, BBox: bbox,
-		LineAgencies: las, Scenario: *scenario,
-		Out:          *out, Dials: &d,
+		LineAgencies: las, Scenario: *scenario, Style: sty,
+		Out: *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 	die(err)
 }

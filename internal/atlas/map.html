@@ -219,11 +219,15 @@ const COLOR = ['concat','#',['get','route_color']];
 // ribbons — dasharray routes through lineSDF and bypasses the fork's
 // variable line-offset — so ferries read by weight and opacity instead.
 // Old builds without a mode prop fall through to the default 1.
-const MODEW = ['match',['coalesce',['get','mode'],''],
+// These are the shipped defaults; /api/style serves the resolved config
+// (internal/style) and applyStyle() below overwrites the paint properties
+// once it arrives, so a config edit needs no change here.
+let MODEW = ['match',['coalesce',['get','mode'],''],
   'tram',0.75,'cable',0.75,'monorail',0.85,'ferry',0.7,'aerial',0.6,'funicular',0.7,1];
-const MODEOP = ['match',['coalesce',['get','mode'],''],'ferry',0.65,'aerial',0.75,1];
-const WIDTH = ['interpolate',['linear'],['zoom'],
-  10,['*',1.0,MODEW],13,['*',2.0,MODEW],15,['*',3.0,MODEW],16,['*',3.6,MODEW]];
+let MODEOP = ['match',['coalesce',['get','mode'],''],'ferry',0.65,'aerial',0.75,1];
+const widthExpr = w => ['interpolate',['linear'],['zoom'],
+  10,['*',1.0,w],13,['*',2.0,w],15,['*',3.0,w],16,['*',3.6,w]];
+const WIDTH = widthExpr(MODEW);
 const CASING_W = ['interpolate',['linear'],['zoom'],10,1.9,13,3.2,15,4.4,16,5.2];
 const BANDS = [{min:15,max:24,key:15},{min:14,max:15,key:14},{min:13,max:14,key:13},{min:0,max:13,key:0}];
 
@@ -710,6 +714,25 @@ function buildDataURL() {
   const scen = a && a.sc && a.sc.built ? `&scenario=${a.id}` : '';
   return `/api/build.geojson?feed=${FEED}${scen}&t=${Date.now()}`;
 }
+// class styling comes from config (internal/style): rebuild the width and
+// opacity match-expressions from the resolved manifest and repaint every
+// ribbon layer. Falls back silently to the constants above.
+fetch('/api/style?feed='+FEED).then(r=>r.json()).then(st => {
+  if (!st || !st.modes) return;
+  const w = ['match',['coalesce',['get','mode'],'']], o = ['match',['coalesce',['get','mode'],'']];
+  for (const [name, m] of Object.entries(st.modes)) {
+    if (name === 'unknown') continue;
+    w.push(name, m.width ?? 1);
+    o.push(name, m.opacity ?? 1);
+  }
+  w.push(1); o.push(1);
+  MODEW = w; MODEOP = o;
+  for (const id of ribbonIds) {
+    if (!map.getLayer(id)) continue;
+    map.setPaintProperty(id, 'line-width', widthExpr(MODEW));
+    map.setPaintProperty(id, 'line-opacity', MODEOP);
+  }
+}).catch(()=>{});
 fetch('/api/scenarios?feed='+FEED).then(r=>r.json()).then(s => {
   if (!s.available) return;
   SVC = s;

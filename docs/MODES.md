@@ -261,3 +261,58 @@ Recording permission, so it is a hands-on step:
 
 Zoom in and out on each and record where lines appear and disappear. Every
 row in the zoom-floor table is a hypothesis until that is done.
+
+## Style config *(internal/style)*
+
+Class look and merge policy are **config**, not code. `internal/style`
+owns them, the pipeline emits the resolved answer next to every build
+(`<out>.style.json`), and the viewer renders from that manifest — so
+changing how ferries look no longer means editing Go *and* JavaScript
+and hoping the two tables agree.
+
+The block may appear config-wide and per city; the city's own layers on
+top **field by field**, so naming one field keeps every other default:
+
+```json
+{
+  "style": {
+    "modes": {
+      "ferry": { "color": "4A9EDB", "width": 0.7, "opacity": 0.65,
+                 "band_floor": 13, "trunk": "route" },
+      "bus":   { "color": "888888", "trunk": "none", "band_floor": 15 }
+    },
+    "colors": {
+      "agency:Metro-North Railroad": "#00A1DE",
+      "route:BNSF": "#FFD100"
+    }
+  },
+  "feeds": {
+    "29": { "…": "…", "colors": { "agency:Metra": "#0033A0" } }
+  }
+}
+```
+
+**Class fields.** `color` paints the whole class one hue (empty = keep
+each route's `route_color`); `width`/`opacity` are ribbon rendering
+relative to a metro's 1.0; `band_floor` is the lowest zoom band the class
+draws in; `hidden` drops it from the build; `trunk` is the merge policy —
+`color` (law 5), `agency`, `route` (never merge), or `none` (skip the
+junction pipeline entirely and emit matched paths directly, the bus
+default). `line_agencies` still overrides `agency` trunking per agency,
+because that call is per-operator, not per-class.
+
+**Color overrides** beat everything — the feed, the canonical class
+color, the agency majority — because the feed is what got it wrong.
+Keys are `agency:<id or name>` and `route:<id, short name, or long
+name>`; names are accepted because ids are feed bookkeeping (`f2:1`) and
+nobody wants to look one up to recolor Metro-North. Precedence inside a
+trunk is deliberate: an **agency trunk takes the agency override**, never
+a member route's — the ribbon IS the agency, and a route override applied
+inside one repaints whichever member sorted first, so the shared line
+changes color at every membership seam. Where several routes in a
+non-agency group carry overrides, the lowest route id wins (deterministic,
+never map order).
+
+The shipped defaults reproduce exactly what was hardcoded before the
+package existed, locked by `internal/style` tests plus a byte-identical
+Chicago rebuild.
