@@ -61,18 +61,10 @@ func defaultSplitParams() splitParams {
 // Split detects junctions where matched paths intersect or diverge,
 // divides the paths into segments at each junction, and assigns each
 // segment the set of routes riding it.
-// busRoutes: route ids of Bus-class routes (SetBusRoutes, from the
-// pipeline). Bus edges ride street centerlines that ARE the drawn
-// geometry: they skip strand refinement and twins, and never merge with
-// rail-family edges — a bus street directly under an el is two maps'
-// worth of separation, not one corridor.
-var busRoutes map[string]bool
-
-func SetBusRoutes(m map[string]bool) { busRoutes = m }
-
-// ferryRoutes: same contract for the seaway layer — ferry edges ride OSM
-// ferry-lane geometry verbatim (no strand refinement, no twins) and never
-// merge with rail or bus edges.
+// ferryRoutes: route ids of Ferry-class routes (SetFerryRoutes, from the
+// pipeline). Ferry edges ride OSM ferry-lane geometry verbatim (no strand
+// refinement, no twins) and never merge with rail edges. (Buses never
+// reach SPLIT at all — the pipeline emits matched bus paths directly.)
 var ferryRoutes map[string]bool
 
 func SetFerryRoutes(m map[string]bool) { ferryRoutes = m }
@@ -89,15 +81,10 @@ func edgeAll(e *Edge, set map[string]bool) bool {
 	return true
 }
 
-func edgeIsBus(e *Edge) bool { return edgeAll(e, busRoutes) }
-
 // edgeFamily: the merge/refine family — edges only ever merge within one
 func edgeFamily(e *Edge) int {
-	switch {
-	case edgeAll(e, busRoutes):
+	if edgeAll(e, ferryRoutes) {
 		return 1
-	case edgeAll(e, ferryRoutes):
-		return 2
 	}
 	return 0
 }
@@ -1127,7 +1114,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 			continue
 		}
 		if edgeFamily(e) != 0 {
-			continue // street/seaway ways are already the drawn centerline
+			continue // seaway ways are already the drawn centerline
 		}
 		if geo.NewLine(e.Pts).Len() < p.MinRefine {
 			continue

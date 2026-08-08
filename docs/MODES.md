@@ -88,7 +88,7 @@ the slot unit:
 |---|---|---|
 | `metro`, `tram`, `monorail` | `color` (law 5, unchanged) | NYC/Chicago behaviour is bit-for-bit preserved |
 | `regional` | **`agency`** by default; `color` for configured `line_agencies` | LIRR's twelve branch-diagram colours draw as ONE line, the way Apple draws them |
-| `bus` | **`corridor`** — the edge id | any number of bus routes on a street render as exactly one ribbon |
+| `bus` | *(none — never trunked)* | matched bus paths bypass SPLIT/ORDER/FAIR entirely; see below |
 | `ferry`, `aerial`, `funicular`, `cable` | `route` | too few to bundle; never merge them |
 
 The regional rule was settled by evidence, not the original inference
@@ -111,9 +111,15 @@ backfills it from the feed's sole agency.) Collapsing the LIRR to one
 group also erased the three Jamaica drawn-breaks outright: no
 inter-branch transitions to miss when the branches are one ribbon.
 
-Corridor trunking for buses is what caps complexity globally: a street's
-ribbon count stops depending on how many routes ride it. Route identity
-moves to the label and to selection, which is where Apple puts it.
+Buses are simpler still (owner call, 2026-08-08): **path matching and
+nothing more**. A matched bus path is already a street-centerline walk —
+the drawn geometry — so bus paths skip SPLIT/ORDER/FAIR entirely and
+emit directly (`stages.BusSegments`): one thin neutral line per street,
+overlap deduped at the drawn-segment level so forty routes down Fifth
+Avenue draw once. No junction graph, no corridor merging, no slots, no
+smoothing. The earlier corridor-trunking machinery (constant "bus" trunk
+key, bus merge family in SPLIT) was removed with it — the dedup gives
+the same complexity cap with far less machinery.
 
 The fallback rule matters as much as the key. `regional` keyed on colour
 alone would put every colourless commuter operator in one trunk — the
@@ -154,10 +160,10 @@ from `route_type`:
   observation pass) — a harbor of per-route brand colours reads as seven
   unrelated lines
 - `aerial`/`funicular`/`cable` — thin, dotted
-- `bus` corridor — thinnest, neutral colour, no per-route colouring
+- `bus` — thinnest, neutral colour, no per-route colouring
 
 Display colours are canonical per GROUP kind, like Apple: every ferry the
-ferry colour, every bus corridor `888888`, and each regional AGENCY one
+ferry colour, every bus line `888888`, and each regional AGENCY one
 stable colour everywhere — the majority `route_color` of its routes, tie
 broken lexicographically. The per-edge first-member colour painted Amtrak
 a different hue on every corridor; per-agency majority makes intercity
@@ -196,22 +202,22 @@ it until a second casualty shows up.
    today: London's Overground and Paris's Transilien are both in feeds we
    already build.
 4. **Aerial** — needs `aerialway` in the extract; small and self-contained.
-5. **Bus** — done, with three load-bearing choices. (a) Streets are a
-   SEPARATE opt-in extract: they join the match graph and the class maps
-   but never the strand pool — a street way already IS the drawn road
-   centerline, so bus edges skip strand refinement and twins entirely.
-   (b) Corridor trunking costs one line of code: ORDER and FAIR group
-   within each edge already, so a constant trunk key ("bus") collapses
-   every route on an edge into exactly one ribbon. (c) A family gate in
-   the SPLIT merge rules keeps bus edges from ever merging with rail —
-   Lake St buses run directly under the el, and one corridor there would
-   weld two maps together. MATCH needs no new machinery: streets carry a
-   synthetic class "street", classCompat pins buses to it and everything
-   else off it, and the gap gate already requires class compatibility so
-   streets cannot close a train's gap. Chicago (125 CTA bus routes + 8 L
-   + Metra + Amtrak): ~40 s, 2130 edges, 5512 segments. Still open: the
-   BRT promotion rule (needs the headway signal), and bus labels are a
-   sample ("77·80·92 +9"), not a roster.
+5. **Bus** — done, then SIMPLIFIED (2026-08-08) to path matching and
+   nothing more. What remains: (a) Streets are a SEPARATE opt-in
+   extract: they join the match graph and the class maps but never the
+   strand pool — a street way already IS the drawn road centerline.
+   (b) MATCH needs no new machinery: streets carry a synthetic class
+   "street", classCompat pins buses to it and everything else off it,
+   and the gap gate already requires class compatibility so streets
+   cannot close a train's gap. (c) After MATCH, bus paths leave the
+   pipeline: `stages.BusSegments` emits them directly with drawn-segment
+   dedup (first path wins a shared street piece). What was REMOVED with
+   the simplification: the constant "bus" trunk key, the bus merge
+   family in SPLIT, and bus edges in ORDER/FAIR — the Lake-St-under-
+   the-el hazard is gone by construction because buses never enter the
+   junction graph at all. Still open: the BRT promotion rule (a
+   frequent-trunkline bus that DESERVES rail treatment would re-enter
+   the full pipeline as a promoted class, not as a bus).
 
 **Multi-feed cities.** `gtfs` in portolan.json takes a comma list —
 primary feed first (scenarios stay a primary-feed concept), overlay feeds

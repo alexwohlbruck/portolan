@@ -121,8 +121,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				return n
 			}
 		}
-		// a bus corridor can carry dozens of routes — the label is a
-		// sample, not a roster
+		// a trunk can carry many routes — the label is a sample, not a
+		// roster
 		const maxNames = 4
 		out := ""
 		for i, r := range rs {
@@ -192,14 +192,6 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// Placeholder hue pending the observation pass (docs/MODES.md).
 	const ferryHex = "4A9EDB"
 	hexOf := func(ei int, color string) string {
-		// bus corridors paint one NEUTRAL color network-wide
-		// (docs/MODES.md): the first-member color made each corridor a
-		// different borough blue, so one continuous drawn trunk changed
-		// color at every membership seam — chunked noise on the map and
-		// phantom dangling ends in the continuity scan.
-		if color == "bus" {
-			return "888888"
-		}
 		if mode.Of(routeType(ei, color)) == mode.Ferry {
 			return ferryHex
 		}
@@ -885,9 +877,9 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, connLayer string) 
 	var bestFit *fit
 	lvlGrid.Near(near, 25, func(ti int) {
 		t := lvlLines[ti]
-		// layer discipline: a bus movement connects over streets, a ferry
-		// over seaways, a rail movement over neither — an el corner with a
-		// street below would otherwise offer the road as its "connector"
+		// layer discipline: a ferry movement connects over seaways, a
+		// rail movement over rail only — an el corner with a street
+		// below would otherwise offer the road as its "connector"
 		if wayLayer(wayRailClass[lvlWays[ti]]) != connLayer {
 			return
 		}
@@ -1045,7 +1037,7 @@ func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
 	lvlGrid.Near(apex, 25, func(ti int) {
 		t := lvlLines[ti]
 		if wayRailClass[lvlWays[ti]] == "street" || wayRailClass[lvlWays[ti]] == "seaway" {
-			return // bus/ferry edges are layer geometry already; rail never borrows either
+			return // streets/seaways are foreign layers; rail never borrows either
 		}
 		da := t.DistTo(a)
 		db := t.DistTo(b)

@@ -261,7 +261,6 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		fmt.Sscanf(v, "%f,%f", &la, &lo)
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
-	stages.SetBusRoutes(routeSetOf(feed.Routes, mode.Bus))
 	stages.SetFerryRoutes(routeSetOf(feed.Routes, mode.Ferry))
 	la := map[string]bool{}
 	for _, a := range o.LineAgencies {
@@ -282,11 +281,22 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if err := writePaths(o.Out+".paths.geojson", paths, frame); err != nil {
 		return err
 	}
+	// buses stop here: a matched bus path IS the deliverable (street
+	// centerline walk), so bus paths skip SPLIT/ORDER/FAIR entirely and
+	// emit directly — path matching and nothing more.
+	var busPaths, railPaths []stages.Path
+	for _, p := range paths {
+		if mode.Of(p.Pattern.Route.Type) == mode.Bus {
+			busPaths = append(busPaths, p)
+		} else {
+			railPaths = append(railPaths, p)
+		}
+	}
 	// SPLIT must see the SAME track slice as MATCH: path steps index into
 	// the match graph's pieces, and buildTrackGraphCached only returns that
 	// graph for the identical slice. (A rail+used-streets subset here
 	// panicked on piece ids past the smaller graph's range.)
-	net, err := stages.Split(paths, matchTracks)
+	net, err := stages.Split(railPaths, matchTracks)
 	if err != nil {
 		return fmt.Errorf("SPLIT: %w", err)
 	}
@@ -300,11 +310,16 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		return fmt.Errorf("ORDER: %w", err)
 	}
 	logf("order: slots on %d edges (%.1fs)", len(slots), time.Since(t0).Seconds())
-	segs, err := stages.Fair(net, slots, feed.Routes, paths)
+	segs, err := stages.Fair(net, slots, feed.Routes, railPaths)
 	if err != nil {
 		return fmt.Errorf("FAIR: %w", err)
 	}
 	logf("fair: %d segments (%.1fs)", len(segs), time.Since(t0).Seconds())
+	if len(busPaths) > 0 {
+		bsegs := stages.BusSegments(busPaths)
+		logf("bus: %d paths → %d deduped segments", len(busPaths), len(bsegs))
+		segs = append(segs, bsegs...)
+	}
 	return WriteSegmentsGeoJSON(o.Out, segs, frame)
 }
 

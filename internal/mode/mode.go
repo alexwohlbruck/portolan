@@ -122,16 +122,12 @@ func SetLineAgencies(m map[string]bool) { lineAgencies = m }
 // Chicago's subways are unchanged. Regional trunks by AGENCY unless the
 // agency is configured as a line agency; class-level collapse (European
 // intercity, TER) falls out for free where the feed colors a class
-// uniformly. The singleton classes never merge; bus is the corridor.
+// uniformly. The singleton classes never merge. Bus never gets here:
+// matched bus paths bypass SPLIT/ORDER/FAIR and emit directly
+// (stages.BusSegments) — path matching and nothing more.
 func TrunkKey(r gtfs.Route) string {
 	c := Of(r.Type)
 	switch c {
-	case Bus:
-		// corridor trunking: grouping is per edge already (ORDER and FAIR
-		// group within each edge), so a constant key collapses every bus
-		// route on an edge into exactly one ribbon — the street's ribbon
-		// count stops depending on how many routes ride it.
-		return "bus"
 	case Ferry, Aerial, Funicular, Cable:
 		return "route:" + r.ID
 	case Regional:
