@@ -365,6 +365,29 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       /^A,C,.*1/.test(String(cc?.properties.labels)) && !/^1/.test(String(cc?.properties.labels)),
       `got ${cc?.properties.labels}`)
 
+    // station bullets follow per-STATION hours: at 3am the M's bullet
+    // stays at Myrtle Av (the shuttle calls there) and drops at Flushing
+    // Av (it doesn't) — acts precedence over the route-level mask, which
+    // would keep the M everywhere because the shuttle runs somewhere
+    {
+      const { activeRouteIdx } = await import('../src/lib/dynamic.ts')
+      const night = new Date('2026-08-11T03:30')
+      // the J/M pair — the G's own 'Flushing Av' is a different station
+      const at = (name) => sts.find((f) => f.properties.name === name &&
+        String(f.properties.labels).split(',').includes('J'))
+      const bullets = (f) => {
+        const idx = activeRouteIdx(f.properties, {}, night, new Set())
+        const labels = String(f.properties.labels).split(',')
+        return (idx ? idx.map((i) => labels[i]) : labels).join(',')
+      }
+      const fl = at('Flushing Av')
+      const my = at('Myrtle Av')
+      check('night bullets at Flushing Av drop the M (J only)',
+        fl && bullets(fl) === 'J', `got ${fl && bullets(fl)}`)
+      check('night bullets at Myrtle Av keep the M (shuttle calls there)',
+        my && bullets(my).includes('M') && bullets(my).includes('J'), `got ${my && bullets(my)}`)
+    }
+
     // ranks: the biggest stations are the famous hubs
     const top = sts.slice().sort((a, b) => b.properties.rank - a.properties.rank).slice(0, 6)
       .map((f) => f.properties.name)

@@ -285,13 +285,14 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	// only the full-length pattern's hours. Best-effort — a feed without
 	// a usable calendar builds a map without acts and the viewer falls
 	// back to route-level masks.
+	var patActs map[string]gtfs.Mask168
 	if si, err := LoadServiceInfo(o.GTFS); err == nil {
 		pm := si.PatternMasks()
-		acts := make(map[string]gtfs.Mask168, len(pm))
+		patActs = make(map[string]gtfs.Mask168, len(pm))
 		for k, m := range pm {
-			acts[k.Route+"\x1f"+k.Shape] = m
+			patActs[k.Route+"\x1f"+k.Shape] = m
 		}
-		stages.SetPatternActs(acts)
+		stages.SetPatternActs(patActs)
 		logf("chart: activity masks for %d patterns", len(pm))
 	} else {
 		stages.SetPatternActs(nil)
@@ -377,7 +378,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	// onto the drawn ribbons (docs/STOP-LABELS.md). Built from the same
 	// pattern list that drew the map, so a scenario build's stations are
 	// that scenario's too.
-	sts := BuildStations(feed, rail, o.BBox)
+	sts := BuildStations(feed, rail, o.BBox, patActs)
 	SnapStations(sts, segs, frame, d.FairGapPx, feed.Routes, o.BBox)
 	nm := 0
 	for i := range sts {

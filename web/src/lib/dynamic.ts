@@ -67,11 +67,11 @@ export function activePredicate(masks: Record<string, string>, date: Date) {
 }
 
 /** A station is visible while ANY member route is (a) in an enabled
- *  class and (b) awake at the given instant. Stations carry no acts of
- *  their own — the route-level mask is the right grain, because a
- *  station exists whenever anything calls there. `date` null means the
- *  all-service map (time never hides). Aligned arrays: routes[i]'s class
- *  is modes[i]. */
+ *  class and (b) awake AT THIS STATION at the given instant. Stations
+ *  carry per-route `acts` sampled from their snapped segments (stop-
+ *  granular after terminal cuts); the route-level mask is the fallback
+ *  for entries without one. `date` null means the all-service map
+ *  (time never hides). Aligned arrays: routes[i] ↔ modes[i] ↔ acts[i]. */
 export function stationVisible(
   props: Record<string, any>,
   masks: Record<string, string>,
@@ -81,11 +81,14 @@ export function stationVisible(
   const routes = routesOf(props)
   if (routes.length === 0) return true
   const modes = String(props.modes ?? '').split(',')
+  const acts = String(props.acts ?? '').split(';')
   const day = date ? (date.getDay() + 6) % 7 : 0
   const hour = date ? date.getHours() : 0
   return routes.some((r, i) => {
     if (classesOff.has(modes[i])) return false
     if (!date) return true
+    const a = acts[i]
+    if (a && a.length === 42) return maskActive(a, day, hour)
     const m = masks[r]
     return !m || maskActive(m, day, hour)
   })
@@ -94,10 +97,10 @@ export function stationVisible(
 /** Indices of a feature's routes that are awake at `date` AND in an
  *  enabled class — the subset a bullet strip should show. A station
  *  that stays open at 2am must not advertise routes that stopped
- *  running at midnight. Returns null when nothing is filtered (reuse
- *  the original feature; no churn). Route-level masks on purpose:
- *  bullets answer "does this route serve this station", not "does it
- *  ride this exact segment". */
+ *  calling there at midnight: per-station `acts` decide first (the
+ *  night M keeps its bullet at Myrtle Av, loses it at Flushing Av),
+ *  the route-level mask is the fallback. Returns null when nothing is
+ *  filtered (reuse the original feature; no churn). */
 export function activeRouteIdx(
   props: Record<string, any>,
   masks: Record<string, string>,
@@ -107,14 +110,20 @@ export function activeRouteIdx(
   const routes = routesOf(props)
   if (!routes.length || (!date && !classesOff.size)) return null
   const modes = String(props.modes ?? '').split(',')
+  const acts = String(props.acts ?? '').split(';')
   const day = date ? (date.getDay() + 6) % 7 : 0
   const hour = date ? date.getHours() : 0
   const idx: number[] = []
   routes.forEach((r, i) => {
     if (classesOff.has(modes[i])) return
     if (date) {
-      const m = masks[r]
-      if (m && !maskActive(m, day, hour)) return
+      const a = acts[i]
+      if (a && a.length === 42) {
+        if (!maskActive(a, day, hour)) return
+      } else {
+        const m = masks[r]
+        if (m && !maskActive(m, day, hour)) return
+      }
     }
     idx.push(i)
   })

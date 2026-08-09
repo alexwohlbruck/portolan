@@ -41,6 +41,12 @@ type Station struct {
 	Agencies []string // distinct agency display names
 	Lines    int      // distinct trunk keys — the marker rule (dot vs disc)
 	LineHex  []string // display color per line, distinct, sorted
+	// Acts: per-route weekly activity AT THIS STATION (hex Mask168,
+	// aligned with Routes; "" = unknown, fall back to the route mask).
+	// Sampled from the snapped segment, which post terminal-cuts carries
+	// stop-granular hours — the night M keeps its bullet at Myrtle Av
+	// but loses it at Flushing Av, exactly like the ribbons.
+	Acts []string
 
 	// Set by SnapStations: where the label anchors (the busiest marker),
 	// and one marker per ribbon bundle the station's lines snap to — a
@@ -61,6 +67,7 @@ type Marker struct {
 	Labels   []string // aligned with Routes — this corridor's own bullets
 	RouteHex []string // aligned with Routes
 	Modes    []string // aligned with Routes
+	Acts     []string // aligned with Routes — hours at this marker ("" unknown)
 	Lines    int      // distinct trunks at THIS marker
 	Bearing  float64  // corridor direction at the snap, deg cw from north
 	// The marker draws as EITHER a white pill spanning the bundle (the
@@ -85,7 +92,14 @@ type Dot struct {
 // (bus poles are a different rendering problem); bbox, when present,
 // drops stops outside the city window the same way clipPatterns drops
 // geometry.
-func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Station {
+//
+// pacts (route+"\x1f"+shape → weekly mask, nil ok) makes station acts
+// EXACT: route r is active at a station at hour h iff one of r's
+// patterns that STOPS THERE is active then — the night M keeps Myrtle
+// Av (the shuttle calls) and loses Flushing Av (it doesn't), straight
+// from stop membership, no geometry involved.
+func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
+	pacts map[string]gtfs.Mask168) []Station {
 	inWindow := func(ll geo.LL) bool { return true }
 	if len(bbox) == 4 {
 		const margin = 0.02 // ~2 km, matches clipPatterns
@@ -95,15 +109,25 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 		}
 	}
 
-	// stop → set of route ids that call there
+	// stop → set of route ids that call there; per pattern, mask lookup
+	// key sans the bbox-clip suffix (a clip piece IS its parent pattern)
+	maskKey := func(p gtfs.Pattern) string {
+		sid := p.ShapeID
+		if i := strings.Index(sid, "#clip"); i >= 0 {
+			sid = sid[:i]
+		}
+		return p.Route.ID + "\x1f" + sid
+	}
 	stopRoutes := map[string]map[string]bool{}
 	routeByID := map[string]gtfs.Route{}
-	for _, p := range pats {
+	routePats := map[string][]int{}
+	for pi, p := range pats {
 		c := mode.Of(p.Route.Type)
 		if c == mode.Bus || c.Hidden() {
 			continue
 		}
 		routeByID[p.Route.ID] = p.Route
+		routePats[p.Route.ID] = append(routePats[p.Route.ID], pi)
 		for _, sid := range p.StopIDs {
 			st, ok := feed.Stops[sid]
 			if !ok || !inWindow(st.LL) {
@@ -121,6 +145,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 		key    string
 		names  map[string]int // member name → votes
 		lls    []geo.LL
+		stops  []string
 		routes map[string]bool
 	}
 	groups := map[string]*group{}
@@ -137,6 +162,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 		}
 		g.names[st.Name]++
 		g.lls = append(g.lls, st.LL)
+		g.stops = append(g.stops, sid)
 		for r := range rts {
 			g.routes[r] = true
 		}
@@ -349,6 +375,38 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 			st.Agencies = append(st.Agencies, a)
 		}
 		sort.Strings(st.Agencies)
+		// station acts from stop membership: OR the masks of exactly the
+		// patterns that STOP at one of this station's platforms
+		if pacts != nil {
+			stopSet := map[string]bool{}
+			for _, i := range members {
+				for _, sid := range nodes[i].g.stops {
+					stopSet[sid] = true
+				}
+			}
+			st.Acts = make([]string, len(st.Routes))
+			for i, rid := range st.Routes {
+				var m gtfs.Mask168
+				found := false
+				for _, pi := range routePats[rid] {
+					p := &pats[pi]
+					pm, ok := pacts[maskKey(*p)]
+					if !ok {
+						continue
+					}
+					for _, sid := range p.StopIDs {
+						if stopSet[sid] {
+							m = m.Or(pm)
+							found = true
+							break
+						}
+					}
+				}
+				if found {
+					st.Acts[i] = m.Hex()
+				}
+			}
+		}
 		out = append(out, st)
 	}
 	return out
@@ -470,6 +528,16 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 		for i, r := range st.Routes {
 			modeOf[r] = st.Modes[i]
 		}
+		// per-route hours AT this station, from stop membership
+		// (BuildStations); markers inherit their routes' entries
+		actOf := func(r string) string {
+			for i, rr := range st.Routes {
+				if rr == r && i < len(st.Acts) {
+					return st.Acts[i]
+				}
+			}
+			return ""
+		}
 
 		bestN := 0
 		for _, key := range order {
@@ -479,6 +547,7 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 				m.Modes = append(m.Modes, modeOf[r])
 				m.Labels = append(m.Labels, displayLabel(routes[r]))
 				m.RouteHex = append(m.RouteHex, routeHex(routes[r]))
+				m.Acts = append(m.Acts, actOf(r))
 			}
 			trunks := map[string]bool{}
 			for _, r := range rts {
@@ -821,6 +890,7 @@ func writeStations(path string, sts []Station) error {
 				"line_colors":  strings.Join(s.LineHex, ","),
 				"rank":         len(s.Routes),
 				"nmarkers":     len(s.Markers),
+				"acts":         strings.Join(s.Acts, ";"),
 			},
 			Geom: geomJSON{Type: "Point", Coords: pt(label)},
 		})
@@ -832,6 +902,7 @@ func writeStations(path string, sts []Station) error {
 				"labels":       strings.Join(m.Labels, ","),
 				"route_colors": strings.Join(m.RouteHex, ","),
 				"modes":        strings.Join(m.Modes, ","),
+				"acts":         strings.Join(m.Acts, ";"),
 				"nlines":       m.Lines,
 				"bearing":      math.Round(m.Bearing*10) / 10,
 				"rank":         len(s.Routes),

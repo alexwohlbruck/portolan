@@ -969,6 +969,23 @@ func (m Mask168) Hex() string {
 	return b.String()
 }
 
+// ParseMask168 is Hex's inverse; ok is false for anything but 42 hex
+// chars. Lives here so the bit layout has exactly one home.
+func ParseMask168(s string) (Mask168, bool) {
+	var m Mask168
+	if len(s) != 42 {
+		return m, false
+	}
+	for d := 0; d < 7; d++ {
+		v, err := strconv.ParseUint(s[d*6:d*6+6], 16, 32)
+		if err != nil {
+			return Mask168{}, false
+		}
+		m[d] = uint32(v)
+	}
+	return m, true
+}
+
 // PatternMasks: one mask per (route, shape) pattern — the granularity
 // short-turns live at. A route's full-length pattern and its late-night
 // short-turn are different shapes with different hours, and only

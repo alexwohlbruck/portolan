@@ -54,7 +54,7 @@ func testFeed() (*gtfs.Feed, []gtfs.Pattern) {
 
 func TestBuildStationsGroupsAndRanks(t *testing.T) {
 	feed, pats := testFeed()
-	sts := BuildStations(feed, pats, nil)
+	sts := BuildStations(feed, pats, nil, nil)
 	// Grand Central merged (parent + cross-feed name match), 5 Av alone,
 	// and the two same-feed "23 St" twins stay two stations
 	if len(sts) != 4 {
@@ -108,9 +108,9 @@ func TestBuildStationsGroupsAndRanks(t *testing.T) {
 
 func TestBuildStationsDeterministic(t *testing.T) {
 	feed, pats := testFeed()
-	a := BuildStations(feed, pats, nil)
+	a := BuildStations(feed, pats, nil, nil)
 	for i := 0; i < 5; i++ {
-		b := BuildStations(feed, pats, nil)
+		b := BuildStations(feed, pats, nil, nil)
 		if !reflect.DeepEqual(a, b) {
 			t.Fatalf("run %d differs:\n%+v\n%+v", i, a, b)
 		}
@@ -119,7 +119,7 @@ func TestBuildStationsDeterministic(t *testing.T) {
 
 func TestSnapStations(t *testing.T) {
 	feed, pats := testFeed()
-	sts := BuildStations(feed, pats, nil)
+	sts := BuildStations(feed, pats, nil, nil)
 	var gc *Station
 	for i := range sts {
 		if sts[i].Name == "Grand Central" {
@@ -216,21 +216,21 @@ func TestTransfersControlMerging(t *testing.T) {
 		gtfs.Pattern{Route: feed.Routes["B"], StopIDs: []string{"RB"}})
 
 	// no transfers.txt → the 150 m name fallback merges them
-	if n := countName(BuildStations(feed, pats, nil), "Rector St"); n != 1 {
+	if n := countName(BuildStations(feed, pats, nil, nil), "Rector St"); n != 1 {
 		t.Fatalf("no transfers.txt: proximity should merge, got %d stations", n)
 	}
 	// the feed ships transfers and does NOT link them → two stations
 	feed.Transfers = [][2]string{{"GCn", "GCs"}}
-	if n := countName(BuildStations(feed, pats, nil), "Rector St"); n != 2 {
+	if n := countName(BuildStations(feed, pats, nil, nil), "Rector St"); n != 2 {
 		t.Fatalf("transfers authoritative: want 2 Rector St, got %d", n)
 	}
 	// a link folds them into one complex again
 	feed.Transfers = append(feed.Transfers, [2]string{"RA", "RB"})
-	if n := countName(BuildStations(feed, pats, nil), "Rector St"); n != 1 {
+	if n := countName(BuildStations(feed, pats, nil, nil), "Rector St"); n != 1 {
 		t.Fatalf("linked complex: want 1 Rector St, got %d", n)
 	}
 	// cross-feed name merging is untouched by same-feed transfers
-	if n := countName(BuildStations(feed, pats, nil), "Grand Central"); n != 1 {
+	if n := countName(BuildStations(feed, pats, nil, nil), "Grand Central"); n != 1 {
 		t.Fatalf("cross-feed Grand Central merge broke: %d", n)
 	}
 }
@@ -258,7 +258,7 @@ func TestTerminalClamp(t *testing.T) {
 			"MID": {Name: "Dyckman St", LL: geo.LL{Lon: -73.9200, Lat: 40.8600}},
 		}}
 	pats := []gtfs.Pattern{{Route: rA, StopIDs: []string{"IN", "MID"}}}
-	sts := BuildStations(feed, pats, nil)
+	sts := BuildStations(feed, pats, nil, nil)
 	// north seg ends at 40.8687 (the drawn tip, past the IN platform);
 	// south seg continues from the cut at 40.8607 heading further south
 	north := mk(geo.LL{Lon: -73.9200, Lat: 40.8607}, geo.LL{Lon: -73.9200, Lat: 40.8687})
