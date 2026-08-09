@@ -241,36 +241,12 @@ async function ensureBand() {
   }
 }
 
-/** stamp inline-bullet image ids onto band-15 ribbons (idempotent) —
- *  the trunk-bullets layer reads ib0..ib3. Waits for routeMeta; when it
- *  lands, loadStations re-applies the bands. */
-function decorateBand(raw: any) {
-  const meta = routeMeta.value
-  if (!Object.keys(meta).length) return
-  for (const f of raw.features) {
-    const p = f.properties
-    if (p.ibrow !== undefined || p.kind !== 'steady' || p.band_min !== 15) continue
-    if (p.mode !== 'metro' && p.mode !== 'tram' && p.mode !== 'monorail') continue
-    const ids = String(p.routes ?? '').split(',')
-    const all = ids.map((r: string) => meta[r]?.label ?? '')
-    const blts = ids
-      .filter((r: string) => {
-        const m = meta[r]
-        return m && m.label && m.label.length <= 8 && !isVariantLabel(m.label, all)
-      })
-      .slice(0, 4)
-      .map((r: string) => bulletId(meta[r].label, meta[r].hex))
-    if (blts.length) p.ibrow = 'row-' + blts.join('|')
-  }
-}
-
 /** push one band to the map, through the dynamic filter when a time is
  *  set or a class is hidden — both are the same operation (hide + the
  *  survivors re-center), so they compose in one predicate. */
 function applyBand(key: number) {
   const raw = bandRaw.get(key)
   if (!raw || !map) return
-  if (key === 15) decorateBand(raw)
   const timePred = activeAt.value
   const off = classesOff.value
   const pred =
@@ -289,9 +265,6 @@ function applyBands() {
 // map applies them whenever both are ready). Same dynamic rule as
 // ribbons: time and class toggles hide, via stationVisible.
 const stationsRaw = ref<any | null>(null)
-// route id → {label, hex} for bullets, from /api/routes — shared by
-// station labels and the inline trunk bullets
-const routeMeta = ref<Record<string, { label: string; hex: string }>>({})
 
 // bullet image id for one route. The image itself is generated on demand
 // by the styleimagemissing handler (drawMarkerImage), so any city's
@@ -325,15 +298,7 @@ const isVariantLabel = (l: string, all: string[]) =>
   l.length >= 2 && l.endsWith('X') && all.includes(l.slice(0, -1))
 
 async function loadStations() {
-  const [fc, routes] = await Promise.all([
-    feed.value ? api.stations(feed.value).catch(() => null) : null,
-    feed.value ? api.routes(feed.value).catch(() => []) : [],
-  ])
-  const meta: Record<string, { label: string; hex: string }> = {}
-  for (const r of routes as any[]) {
-    meta[r.id] = { label: r.short_name || r.long_name || '', hex: (r.color || '888888').replace('#', '') }
-  }
-  routeMeta.value = meta
+  const fc = feed.value ? await api.stations(feed.value).catch(() => null) : null
   if (fc?.features) {
     for (const f of fc.features) {
       const p = f.properties
@@ -371,7 +336,6 @@ async function loadStations() {
   }
   stationsRaw.value = fc
   applyStations()
-  applyBands() // routeMeta just landed — band 15 can take its bullets now
 }
 
 // ── marker + bullet images, drawn on demand ────────────────────────────
@@ -523,28 +487,6 @@ function addLayers() {
       map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''))
     }
   }
-
-  // ── inline bullets on the lines (z15+): the 1·2·3 along the red trunk.
-  // The strip is ONE composed icon (never images-in-text: the fork
-  // corrupts the tile glyph atlas mixing the two), placed along the line
-  // and kept upright via viewport alignment. Only ribbons at the bundle
-  // center get them — a symbol layer cannot follow a ribbon's
-  // line-offset, so offset ribbons would show bullets floating between
-  // lines.
-  map.addLayer({
-    id: 'trunk-bullets', type: 'symbol', source: 'build-15', minzoom: 15,
-    filter: ['all',
-      ['==', ['get', 'band_min'], 15], ['==', ['get', 'kind'], 'steady'],
-      ['has', 'ibrow'],
-      ['<', ['*', ['get', 'offset_px'], ['get', 'offset_px']], 1]],
-    layout: {
-      'symbol-placement': 'line',
-      'symbol-spacing': 400,
-      'icon-image': ['get', 'ibrow'],
-      'icon-rotation-alignment': 'viewport',
-      'icon-pitch-alignment': 'viewport',
-    },
-  })
 
   // ── stations: markers then labels, above every ribbon ────────────────
   // Density is gated by rank per zoom (a top-level step on zoom — the

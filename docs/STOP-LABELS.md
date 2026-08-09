@@ -118,10 +118,12 @@ size, render precedence and zoom-of-first-appearance all derive from it.
    glyphs by luminance. Express variants (7X, FX) fold into their
    parent. The strip is ONE composed canvas image per station rendered
    as the symbol's icon below the name.
-6. ✅ **Inline bullets on trunks** (req 6): the same composed strips,
-   `symbol-placement: line`, upright via viewport alignment, z15+, on
-   ribbons at the bundle center only (a symbol cannot follow a ribbon's
-   line-offset).
+6. ~~Inline bullets on trunks~~ (req 6) — **removed, owner call
+   2026-08-08.** Every shape of it compromises: a strip icon can't
+   follow curves and tilts or garbles digits; per-point placement in
+   meters can't hold constant screen pitch across zoom; per-zoom
+   rebuilds churn during pinch. Revisit only if the fork grows
+   line-following icon placement with upright glyphs.
 7. ✅ **Complexes split by zoom.** Below z15 a complex is one merged
    label with merged bullets; at z15+ each corridor marker gets its own
    label with ITS bullets (Fulton St becomes 4·5 / A·C·J·Z / 2·3), and
