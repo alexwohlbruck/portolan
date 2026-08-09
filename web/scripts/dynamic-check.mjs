@@ -387,6 +387,20 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       /^A,C,.*1/.test(String(cc?.properties.labels)) && !/^1/.test(String(cc?.properties.labels)),
       `got ${cc?.properties.labels}`)
 
+    // no strip truncation: the merged Atlantic Av-Barclays label carries
+    // ALL TEN lines — a former 8-bullet cap silently dropped the 4 and 5
+    // (color ordering puts the green group last, so the cap always ate
+    // exactly them). Big sets wrap into rows client-side instead.
+    {
+      const { bulletIdsOf } = await import('../src/lib/dynamic.ts')
+      const atl = sts.find((f) => f.properties.name === 'Atlantic Av-Barclays Ctr')
+      const ids = atl ? bulletIdsOf(atl.properties) : []
+      const shown = ids.map((id) => id.split('-').slice(2).join('-'))
+      check('Atlantic Av-Barclays merged bullets keep all 10 incl. 4 and 5',
+        ids.length === 10 && shown.includes('4') && shown.includes('5'),
+        `got ${shown.join(',')}`)
+    }
+
     // station bullets follow per-STATION hours: at 3am the M's bullet
     // stays at Myrtle Av (the shuttle calls there) and drops at Flushing
     // Av (it doesn't) — acts precedence over the route-level mask, which
