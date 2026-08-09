@@ -346,6 +346,25 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
         String(f.properties.labels).split(',').length === String(f.properties.routes).split(',').length),
       cmk.map((f) => f.properties.labels).join(' | '))
 
+    // bullet ordering: color groups over alphabetical (NYC convention) —
+    // W 4 St reads A,C,E then B,D,F,M; Columbus Circle's letter groups
+    // come before the numbers
+    // (the raw prop still carries FX; the client folds X-variants)
+    const noVariants = (s) => {
+      const all = String(s).split(',')
+      return all.filter((l) => !(l.endsWith('X') && all.includes(l.slice(0, -1)))).join(',')
+    }
+    const w4 = sts.find((f) => f.properties.name.startsWith('W 4 St'))
+    check('W 4 St bullets group by color: A,C,E then B,D,F,M',
+      noVariants(w4?.properties.labels) === 'A,C,E,B,D,F,M', `got ${w4?.properties.labels}`)
+    const tsq = sts.find((f) => f.properties.name === 'Times Sq-42 St')
+    check('Times Sq letter groups precede number groups',
+      noVariants(tsq?.properties.labels) === 'N,Q,R,W,S,1,2,3,7', `got ${tsq?.properties.labels}`)
+    const cc = sts.find((f) => f.properties.name === '59 St-Columbus Circle')
+    check('Columbus Circle letter groups precede the 1',
+      /^A,C,.*1/.test(String(cc?.properties.labels)) && !/^1/.test(String(cc?.properties.labels)),
+      `got ${cc?.properties.labels}`)
+
     // ranks: the biggest stations are the famous hubs
     const top = sts.slice().sort((a, b) => b.properties.rank - a.properties.rank).slice(0, 6)
       .map((f) => f.properties.name)

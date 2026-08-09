@@ -298,13 +298,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 		for rid := range routes {
 			rids = append(rids, rid)
 		}
-		sort.Slice(rids, func(i, j int) bool {
-			a, b := routeByID[rids[i]], routeByID[rids[j]]
-			if c := naturalCmp(a.ShortName, b.ShortName); c != 0 {
-				return c < 0
-			}
-			return a.ID < b.ID
-		})
+		sortBullets(rids, routeByID)
 
 		st := Station{Name: name, LL: geo.LL{Lon: cx / float64(np), Lat: cy / float64(np)}}
 		trunkHexes := map[string]map[string]int{} // trunk key → hex votes
@@ -611,6 +605,92 @@ func distM(a, b geo.LL) float64 {
 	dx := (a.Lon - b.Lon) * kx
 	dy := (a.Lat - b.Lat) * 111320
 	return math.Hypot(dx, dy)
+}
+
+// sortBullets orders a station's routes for display — the order every
+// aligned array (labels, colors, modes) and every bullet strip follows.
+// Policies (docs/STOP-LABELS.md, "Bullet ordering"):
+//
+//   - color (default): group by resolved bullet color — a shared trunk
+//     reads as one run, NYC-style (A·C·E then B·D·F·M); natural order
+//     within a group; letter groups before number groups, matching the
+//     MTA's own service listing (…N,Q,R,W before 1,2,3). Systems where
+//     every line has its own color collapse to plain natural order.
+//   - feed: the feed's route_sort_order where present, natural fallback.
+//   - natural: plain numeric-aware sort.
+func sortBullets(rids []string, routeByID map[string]gtfs.Route) {
+	policy := style.Active().BulletOrder
+	label := func(rid string) string { return displayLabel(routeByID[rid]) }
+	switch policy {
+	case style.BulletsFeed:
+		sort.Slice(rids, func(i, j int) bool {
+			a, b := routeByID[rids[i]], routeByID[rids[j]]
+			sa, sb := a.SortOrder, b.SortOrder
+			if sa < 0 {
+				sa = math.MaxInt32
+			}
+			if sb < 0 {
+				sb = math.MaxInt32
+			}
+			if sa != sb {
+				return sa < sb
+			}
+			if c := naturalCmp(label(rids[i]), label(rids[j])); c != 0 {
+				return c < 0
+			}
+			return a.ID < b.ID
+		})
+	case style.BulletsNatural:
+		sort.Slice(rids, func(i, j int) bool {
+			if c := naturalCmp(label(rids[i]), label(rids[j])); c != 0 {
+				return c < 0
+			}
+			return rids[i] < rids[j]
+		})
+	default: // style.BulletsColor
+		// each color group is ranked by its first member's label —
+		// the NATURAL first, so "7,7X" is represented by "7" and stays
+		// a number group — letters before numbers between groups
+		rep := map[string]string{}
+		for _, rid := range rids {
+			hx := routeHex(routeByID[rid])
+			l := label(rid)
+			if cur, ok := rep[hx]; !ok || naturalCmp(l, cur) < 0 {
+				rep[hx] = l
+			}
+		}
+		sort.Slice(rids, func(i, j int) bool {
+			ha, hb := routeHex(routeByID[rids[i]]), routeHex(routeByID[rids[j]])
+			if ha != hb {
+				if c := lettersFirstCmp(rep[ha], rep[hb]); c != 0 {
+					return c < 0
+				}
+				return ha < hb
+			}
+			if c := naturalCmp(label(rids[i]), label(rids[j])); c != 0 {
+				return c < 0
+			}
+			return rids[i] < rids[j]
+		})
+	}
+}
+
+// lettersFirstCmp ranks color GROUPS: numeric labels sort numerically,
+// but letter groups come before number groups — the MTA's service
+// listing runs A,C,E … N,Q,R,W then 1,2,3 … 7, and Apple renders
+// Columbus Circle as A·C B·D 1.
+func lettersFirstCmp(a, b string) int {
+	_, ea := strconv.Atoi(a)
+	_, eb := strconv.Atoi(b)
+	switch {
+	case ea == nil && eb == nil:
+		return naturalCmp(a, b)
+	case ea == nil:
+		return 1 // a is a number → after letters
+	case eb == nil:
+		return -1
+	}
+	return strings.Compare(a, b)
 }
 
 // naturalCmp orders route labels the way a rider reads them: "2" before

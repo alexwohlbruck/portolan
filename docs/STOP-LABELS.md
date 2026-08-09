@@ -135,6 +135,37 @@ size, render precedence and zoom-of-first-appearance all derive from it.
    ribbons (docs/DYNAMIC-SERVICE.md stage 5); rank thresholds per zoom
    keep tile size sane.
 
+### Bullet ordering
+
+Systems have local conventions for the order bullets read in, and no
+single sort satisfies them all. What the world actually does:
+
+- **NYC (MTA)**: bullets group by trunk color — the 1979 color scheme
+  groups services by their Manhattan trunk — and the service listing
+  runs letter groups before number groups (A,C,E / B,D,F,M / … /
+  N,Q,R,W / 1,2,3 / 4,5,6 / 7). Apple renders W 4 St as A·C·E B·D·F·M
+  and Columbus Circle as A·C B·D 1.
+- **GTFS itself**: `route_sort_order` is the spec's own presentation
+  order; MBTA, TriMet and PATH ship it, the Transit app consumes it.
+  When an operator says what order its routes read in, believe them.
+- **London, Chicago**: named lines, listed alphabetically.
+- **Paris, Berlin, Mexico City**: numbered lines, listed ascending.
+
+Portolan's policy knob is `bullet_order` in style config (global or
+per city), one of:
+
+- **`color`** (default): group by resolved bullet color, natural order
+  within a group, letter groups before number groups. Where every line
+  has its own color — London, Paris, Chicago, CDMX — this degrades to
+  exactly the natural order those systems expect, which is why it can
+  be the default everywhere.
+- **`feed`**: obey `route_sort_order`, absentees last, natural
+  fallback.
+- **`natural`**: plain numeric-aware sort (1 2 10 A B).
+
+The order is decided once, in `sortBullets` (pipeline), and every
+aligned array, label strip and marker inherits it.
+
 ### Fork bug, worked around
 
 Images inside `text-field` `format` expressions corrupt the fork's

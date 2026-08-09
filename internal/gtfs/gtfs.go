@@ -24,6 +24,9 @@ type Route struct {
 	Color     string // hex without '#', GTFS convention
 	Type      int    // GTFS route_type
 	Agency    string // agency_id — trunk-key fallback for colorless regional
+	// SortOrder: route_sort_order, the feed's own presentation order
+	// (MBTA, TriMet and PATH ship it); -1 when absent.
+	SortOrder int
 }
 
 // Pattern is one distinct (route, shape) service pattern.
@@ -109,12 +112,19 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	go func() {
 		defer wg.Done()
 		routesErr = eachRowCols(rf, []string{"route_id", "route_type",
-			"route_short_name", "route_long_name", "route_color", "agency_id"},
+			"route_short_name", "route_long_name", "route_color", "agency_id",
+			"route_sort_order"},
 			func(v []string) {
 				t, _ := strconv.Atoi(v[1])
+				so := -1
+				if v[6] != "" {
+					if n, err := strconv.Atoi(v[6]); err == nil {
+						so = n
+					}
+				}
 				feed.Routes[v[0]] = Route{
 					ID: v[0], ShortName: v[2], LongName: v[3],
-					Color: v[4], Type: t, Agency: v[5],
+					Color: v[4], Type: t, Agency: v[5], SortOrder: so,
 				}
 			})
 	}()

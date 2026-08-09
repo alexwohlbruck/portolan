@@ -44,8 +44,8 @@ async function load() {
   try {
     const [res, cfg] = await Promise.all([api.style(feed.value), api.styleConfig(feed.value)])
     resolved.value = res
-    city.value = { modes: cfg.city?.modes ?? {}, colors: cfg.city?.colors ?? {} }
-    globalCfg.value = { modes: cfg.global?.modes ?? {}, colors: cfg.global?.colors ?? {} }
+    city.value = { modes: cfg.city?.modes ?? {}, colors: cfg.city?.colors ?? {}, bullet_order: cfg.city?.bullet_order }
+    globalCfg.value = { modes: cfg.global?.modes ?? {}, colors: cfg.global?.colors ?? {}, bullet_order: cfg.global?.bullet_order }
   } catch (e: any) {
     toast({ title: 'Could not load style', description: e.message, variant: 'error' })
   } finally {

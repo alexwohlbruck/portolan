@@ -57,6 +57,22 @@ type Class struct {
 	Hidden *bool `json:"hidden,omitempty"`
 }
 
+// Bullet ordering policies — how a station's route bullets sort
+// (docs/STOP-LABELS.md, "Bullet ordering").
+const (
+	// BulletsColor groups bullets by their color — one trunk reads as one
+	// run (NYC's A·C·E then B·D·F·M) — natural order within a group,
+	// letter groups before number groups. Systems where every line has
+	// its own color degrade to plain natural order, so this is the
+	// default everywhere.
+	BulletsColor = "color"
+	// BulletsFeed obeys the feed's own route_sort_order where present
+	// (MBTA, TriMet, PATH ship it), falling back to natural order.
+	BulletsFeed = "feed"
+	// BulletsNatural is the plain numeric-aware sort: 1 2 10 A B.
+	BulletsNatural = "natural"
+)
+
 // Config is the style block, global or per-city.
 type Config struct {
 	// Modes: class name (internal/mode's String()) → overrides.
@@ -67,6 +83,9 @@ type Config struct {
 	// bookkeeping ("f1:1") and nobody wants to look those up to recolor
 	// Metro-North.
 	Colors map[string]string `json:"colors,omitempty"`
+	// BulletOrder: one of the Bullets* policies above. Empty inherits
+	// (default BulletsColor).
+	BulletOrder string `json:"bullet_order,omitempty"`
 }
 
 // defaults are the shipped behaviour: change these and every city moves.
@@ -102,6 +121,8 @@ type Resolved struct {
 type Set struct {
 	Modes  map[string]Resolved `json:"modes"`
 	Colors map[string]string   `json:"colors,omitempty"`
+	// BulletOrder: resolved Bullets* policy, never empty.
+	BulletOrder string `json:"bullet_order"`
 
 	// lookup tables for overrides, lowercased; built by New.
 	byAgency map[string]string
@@ -127,9 +148,13 @@ func New(layers ...Config) *Set {
 			Hidden: merged.Hidden != nil && *merged.Hidden,
 		}
 	}
+	s.BulletOrder = BulletsColor
 	for _, l := range layers {
 		for k, v := range l.Colors {
 			s.Colors[k] = v
+		}
+		if l.BulletOrder != "" {
+			s.BulletOrder = l.BulletOrder
 		}
 	}
 	for k, v := range s.Colors {

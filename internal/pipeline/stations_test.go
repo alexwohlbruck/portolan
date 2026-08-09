@@ -8,6 +8,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/stages"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // A synthetic two-feed city: the subway's two platforms share a parent,
@@ -80,10 +81,10 @@ func TestBuildStationsGroupsAndRanks(t *testing.T) {
 	if gc == nil || av == nil {
 		t.Fatalf("missing station: %+v", sts)
 	}
-	// parent grouping + cross-feed name merge: 4, 10, Hudson all at GC,
-	// natural label order (2-digit 10 after 4? no: numeric 4 < 10),
-	// letters after numbers
-	if !reflect.DeepEqual(gc.Routes, []string{"4", "10", "f1:hudson"}) {
+	// parent grouping + cross-feed name merge: 4, 10, Hudson all at GC.
+	// Default color policy: the Hudson's letter group sorts before the
+	// numeric 4/10 group, numeric order within a group (4 before 10)
+	if !reflect.DeepEqual(gc.Routes, []string{"f1:hudson", "4", "10"}) {
 		t.Fatalf("GC routes = %v", gc.Routes)
 	}
 	// 4 and 10 share a color → one line; MNR agency trunk → second line
@@ -93,7 +94,7 @@ func TestBuildStationsGroupsAndRanks(t *testing.T) {
 	if len(gc.Routes) != 3 {
 		t.Fatalf("GC rank should count routes: %v", gc.Routes)
 	}
-	if !reflect.DeepEqual(gc.Modes, []string{"metro", "metro", "regional"}) {
+	if !reflect.DeepEqual(gc.Modes, []string{"regional", "metro", "metro"}) {
 		t.Fatalf("GC modes = %v", gc.Modes)
 	}
 	// the bus never contributes: 5 Av carries only the B
@@ -152,7 +153,8 @@ func TestSnapStations(t *testing.T) {
 	if len(gc.Markers) != 2 {
 		t.Fatalf("GC should have 2 markers (subway bundle + commuter), got %+v", gc.Markers)
 	}
-	sub := gc.Markers[0]
+	// marker order follows route order: the Hudson's group first
+	sub := gc.Markers[1]
 	if !reflect.DeepEqual(sub.Routes, []string{"4", "10"}) {
 		t.Fatalf("subway marker routes = %v", sub.Routes)
 	}
@@ -172,7 +174,7 @@ func TestSnapStations(t *testing.T) {
 		t.Fatalf("subway marker = %+v", sub)
 	}
 	// the commuter dot takes the DRAWN trunk color, not the branch's own
-	com := gc.Markers[1]
+	com := gc.Markers[0]
 	if com.Pill || len(com.Dots) != 1 || com.Dots[0].Hex != "5D2B90" {
 		t.Fatalf("commuter marker should wear the ribbon's color: %+v", com)
 	}
@@ -230,6 +232,55 @@ func TestTransfersControlMerging(t *testing.T) {
 	// cross-feed name merging is untouched by same-feed transfers
 	if n := countName(BuildStations(feed, pats, nil), "Grand Central"); n != 1 {
 		t.Fatalf("cross-feed Grand Central merge broke: %d", n)
+	}
+}
+
+// The NYC ordering the user pointed at Apple for: color groups over
+// alphabetical order — W 4 St reads A·C·E then B·D·F·M, and Columbus
+// Circle's letter groups come before the 1 (docs/STOP-LABELS.md).
+func TestBulletOrdering(t *testing.T) {
+	mk := func(id, color string, ty int) gtfs.Route {
+		return gtfs.Route{ID: id, ShortName: id, Color: color, Type: ty}
+	}
+	byID := map[string]gtfs.Route{}
+	for _, r := range []gtfs.Route{
+		mk("A", "0062CF", 1), mk("C", "0062CF", 1), mk("E", "0062CF", 1),
+		mk("B", "EB6800", 1), mk("D", "EB6800", 1), mk("F", "EB6800", 1), mk("M", "EB6800", 1),
+		mk("1", "D82233", 1), mk("2", "D82233", 1),
+	} {
+		byID[r.ID] = r
+	}
+	w4 := []string{"A", "B", "C", "D", "E", "F", "M"}
+	sortBullets(w4, byID)
+	if !reflect.DeepEqual(w4, []string{"A", "C", "E", "B", "D", "F", "M"}) {
+		t.Fatalf("W 4 St order = %v", w4)
+	}
+	cc := []string{"1", "2", "A", "B", "C", "D"}
+	sortBullets(cc, byID)
+	if !reflect.DeepEqual(cc, []string{"A", "C", "B", "D", "1", "2"}) {
+		t.Fatalf("Columbus Circle order = %v", cc)
+	}
+
+	// feed policy: route_sort_order wins, absentees fall to the back
+	style.Set_(style.New(style.Config{BulletOrder: style.BulletsFeed}))
+	defer style.Set_(nil)
+	so := map[string]gtfs.Route{
+		"X": {ID: "X", ShortName: "X", SortOrder: 20, Type: 1},
+		"Y": {ID: "Y", ShortName: "Y", SortOrder: 10, Type: 1},
+		"Z": {ID: "Z", ShortName: "Z", SortOrder: -1, Type: 1},
+	}
+	fp := []string{"X", "Y", "Z"}
+	sortBullets(fp, so)
+	if !reflect.DeepEqual(fp, []string{"Y", "X", "Z"}) {
+		t.Fatalf("feed order = %v", fp)
+	}
+
+	// natural policy: numbers before letters, plain and simple
+	style.Set_(style.New(style.Config{BulletOrder: style.BulletsNatural}))
+	nat := []string{"A", "1", "B", "2"}
+	sortBullets(nat, byID)
+	if !reflect.DeepEqual(nat, []string{"1", "2", "A", "B"}) {
+		t.Fatalf("natural order = %v", nat)
 	}
 }
 

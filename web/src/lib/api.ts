@@ -23,6 +23,8 @@ export interface StyleSet {
 export interface StyleConfig {
   modes?: Record<string, Partial<Omit<ModeStyle, 'hidden'>> & { hidden?: boolean }>
   colors?: Record<string, string>
+  /** bullet ordering policy: 'color' (default) | 'feed' | 'natural' */
+  bullet_order?: string
 }
 
 export interface City {
