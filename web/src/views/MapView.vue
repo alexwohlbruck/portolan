@@ -297,6 +297,35 @@ function bulletIdsOf(p: any): string[] {
 const isVariantLabel = (l: string, all: string[]) =>
   l.length >= 2 && l.endsWith('X') && all.includes(l.slice(0, -1))
 
+// how many lines a name wraps to: simulate the wrap instead of counting
+// characters (length/20 called "Bedford-Nostrand Avs" one line and the
+// bullets overlapped the wrapped text). Greedy-pack the words — plus
+// hyphen break points, which MapLibre also uses — against the layer's
+// 10 em text-max-width, measured with canvas at 1 em = font size.
+let measureCtx: CanvasRenderingContext2D | null = null
+function estRows(name: string): number {
+  if (!measureCtx) {
+    measureCtx = document.createElement('canvas').getContext('2d')!
+    measureCtx.font = '500 100px Montserrat, system-ui, sans-serif'
+  }
+  const maxW = 10 * 100 // 10 em
+  const tokens = name.split(/\s+/).flatMap((w) => w.split(/(?<=-)/))
+  const space = measureCtx.measureText(' ').width
+  let rows = 1
+  let line = 0
+  tokens.forEach((t, i) => {
+    const w = measureCtx!.measureText(t).width
+    const glue = i > 0 && !tokens[i - 1].endsWith('-') ? space : 0
+    if (line > 0 && line + glue + w > maxW) {
+      rows++
+      line = w
+    } else {
+      line += glue + w
+    }
+  })
+  return Math.min(3, rows)
+}
+
 async function loadStations() {
   const fc = feed.value ? await api.stations(feed.value).catch(() => null) : null
   if (fc?.features) {
@@ -317,7 +346,7 @@ async function loadStations() {
         if (p.nmarkers > 1) {
           const ids = bulletIdsOf(p)
           if (ids.length) p.brow = 'row-' + ids.join('|')
-          p.nrows = Math.min(3, Math.ceil(String(p.name ?? '').length / 20))
+          p.nrows = estRows(String(p.name ?? ''))
         }
       } else {
         // the whole bullet strip is ONE composed image rendered as the
@@ -330,7 +359,7 @@ async function loadStations() {
         if (ids.length) p.brow = 'row-' + ids.join('|')
         // wrapped-name estimate drives how far below the anchor the
         // bullet strip sits (MapLibre wraps at ~10em ≈ 20 chars)
-        p.nrows = Math.min(3, Math.ceil(String(p.name ?? '').length / 20))
+        p.nrows = estRows(String(p.name ?? ''))
       }
     }
   }
@@ -525,6 +554,13 @@ function addLayers() {
   // stations with one marker keep their label at every zoom (coalesce:
   // builds predating nmarkers read as solo)
   const rk = ['get', 'rank']
+  // the strip sits just under the name, so its offset tracks the same
+  // rank tiers text-size uses — a fixed offset reads as a hole under
+  // small labels while looking right under hub-sized ones
+  const off = (a: number, b: number, c: number) =>
+    ['case', ['>=', rk, 8], ['literal', [0, c]], ['>=', rk, 4], ['literal', [0, b]], ['literal', [0, a]]]
+  const bulletOffset = ['match', ['get', 'nrows'],
+    2, off(36, 39, 43), 3, off(50, 54, 60), off(21, 23, 26)] as any
   const labelGate = ['step', ['zoom'],
     ['all', isStation, ['>=', rk, 10]],
     11, ['all', isStation, ['>=', rk, 6]],
@@ -553,8 +589,7 @@ function addLayers() {
       // below the anchor follows the name's estimated wrap count
       'icon-image': ['step', ['zoom'], '', 13.5, ['coalesce', ['get', 'brow'], '']],
       'icon-anchor': 'top',
-      'icon-offset': ['match', ['get', 'nrows'],
-        2, ['literal', [0, 43]], 3, ['literal', [0, 59]], ['literal', [0, 27]]],
+      'icon-offset': bulletOffset,
       'icon-optional': true,
     },
     paint: {
@@ -579,8 +614,7 @@ function addLayers() {
         11, ['+', 10, rankBump], 16, ['+', 13, rankBump]],
       'icon-image': ['coalesce', ['get', 'brow'], ''],
       'icon-anchor': 'top',
-      'icon-offset': ['match', ['get', 'nrows'],
-        2, ['literal', [0, 43]], 3, ['literal', [0, 59]], ['literal', [0, 27]]],
+      'icon-offset': bulletOffset,
       'icon-optional': true,
     },
     paint: {
