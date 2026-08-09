@@ -125,6 +125,22 @@ export function activeRouteIdx(
 
 const endKey = (c: number[]) => c[0].toFixed(6) + ',' + c[1].toFixed(6)
 
+/** Travel direction along coordinate order at a feature end (lon-scaled
+ *  unit vector). offset_px is SIGNED relative to this direction — the
+ *  renderer offsets to the right of travel — so two features meeting at
+ *  a point with opposite directions carry opposite signs for the same
+ *  screen position. Anything that copies an offset across features must
+ *  compare directions and flip. */
+function endDir(cs: number[][], atStart: boolean): [number, number] {
+  const a = atStart ? cs[0] : cs[cs.length - 1]
+  const b = atStart ? cs[1] : cs[cs.length - 2]
+  const kx = Math.cos((a[1] * Math.PI) / 180)
+  const dx = (atStart ? b[0] - a[0] : a[0] - b[0]) * kx
+  const dy = atStart ? b[1] - a[1] : a[1] - b[1]
+  const n = Math.hypot(dx, dy) || 1
+  return [dx / n, dy / n]
+}
+
 /**
  * applyDynamic filters a union-band FeatureCollection to one instant and
  * re-centers what survives. Pure: the input FC and its features are not
@@ -167,7 +183,10 @@ export function applyDynamic(fc: FCLike, isActive: (f: FeatureLike) => boolean):
   }
 
   const newProps = new Map<FeatureLike, Record<string, any>>()
-  const moved = new Map<string, number>() // "endpoint|color" → new offset
+  // "endpoint|color" → the moved steady's new offset AND its travel
+  // direction at that end: the sign of an offset is direction-relative,
+  // so a transition attaching against the steady's grain takes -off
+  const moved = new Map<string, { off: number; dir: [number, number] }>()
 
   for (const rows of groups.values()) {
     if (rows.length < 2) continue // singletons keep their offset (twin edges)
@@ -189,8 +208,8 @@ export function applyDynamic(fc: FCLike, isActive: (f: FeatureLike) => boolean):
       newProps.set(f, { ...f.properties, offset_px: off, slot: i, nslots: vis.length })
       if (Math.abs(off - f.properties.offset_px) > 0.01) {
         const cs = f.geometry.coordinates
-        moved.set(endKey(cs[0]) + '|' + f.properties.color, off)
-        moved.set(endKey(cs[cs.length - 1]) + '|' + f.properties.color, off)
+        moved.set(endKey(cs[0]) + '|' + f.properties.color, { off, dir: endDir(cs, true) })
+        moved.set(endKey(cs[cs.length - 1]) + '|' + f.properties.color, { off, dir: endDir(cs, false) })
       }
     })
   }
@@ -204,10 +223,16 @@ export function applyDynamic(fc: FCLike, isActive: (f: FeatureLike) => boolean):
       const from = moved.get(endKey(cs[0]) + '|' + f.properties.color)
       const to = moved.get(endKey(cs[cs.length - 1]) + '|' + f.properties.color)
       if (from !== undefined || to !== undefined) {
+        // copy the offset in the TRANSITION's frame: flip the sign when
+        // the ramp runs against the steady's direction at the joint
+        const signed = (m: { off: number; dir: [number, number] }, atStart: boolean) => {
+          const d = endDir(cs, atStart)
+          return (m.dir[0] * d[0] + m.dir[1] * d[1] >= 0 ? 1 : -1) * m.off
+        }
         props = {
           ...f.properties,
-          off_from_px: from ?? f.properties.off_from_px,
-          off_to_px: to ?? f.properties.off_to_px,
+          off_from_px: from ? signed(from, true) : f.properties.off_from_px,
+          off_to_px: to ? signed(to, false) : f.properties.off_to_px,
         }
       }
     }

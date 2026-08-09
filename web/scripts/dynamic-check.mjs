@@ -373,6 +373,69 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
   }
 }
 
+// ── transitions stay connected under dynamic re-centering ─────────────
+// Every ramp end must land on a same-color steady at the same coordinate
+// and the same SCREEN position. offset_px is signed relative to each
+// feature's own coordinate direction, so the comparison is direction-
+// aware — the exact trap that had re-pointed ramps crossing their
+// bundles at Grand Army Plaza. The rule: dynamic must never add
+// mis-connections beyond what the union build itself carries.
+{
+  const unionP = path.join(repo, 'build/nyc.geojson')
+  if (!fs.existsSync(unionP)) {
+    console.log('note  union build missing — skipping connectivity check')
+  } else {
+    const { applyDynamic: apDyn, activePredicate: apPred } = await import('../src/lib/dynamic.ts')
+    const band = JSON.parse(fs.readFileSync(unionP, 'utf8')).features.filter(
+      (f) => f.properties.band_min === 15,
+    )
+    const fc = { type: 'FeatureCollection', features: band.map((f) => ({ ...f, _g: hash(f.geometry.coordinates) })) }
+    const ek = (c) => c[0].toFixed(6) + ',' + c[1].toFixed(6)
+    const endDir = (cs, atStart) => {
+      const a = atStart ? cs[0] : cs[cs.length - 1]
+      const b = atStart ? cs[1] : cs[cs.length - 2]
+      const kx = Math.cos((a[1] * Math.PI) / 180)
+      const dx = (atStart ? b[0] - a[0] : a[0] - b[0]) * kx
+      const dy = atStart ? b[1] - a[1] : a[1] - b[1]
+      const n = Math.hypot(dx, dy) || 1
+      return [dx / n, dy / n]
+    }
+    const misconnected = (dyn) => {
+      const steady = new Map()
+      for (const f of dyn.features) {
+        const p = f.properties
+        if (p.kind !== 'steady' && p.kind !== 'bridge') continue
+        const cs = f.geometry.coordinates
+        for (const atStart of [true, false]) {
+          const k = ek(atStart ? cs[0] : cs[cs.length - 1]) + '|' + p.color
+          if (!steady.has(k)) steady.set(k, [])
+          steady.get(k).push({ off: p.offset_px, dir: endDir(cs, atStart) })
+        }
+      }
+      let bad = 0
+      for (const f of dyn.features) {
+        const p = f.properties
+        if (p.kind !== 'transition') continue
+        const cs = f.geometry.coordinates
+        for (const atStart of [true, false]) {
+          const want = atStart ? p.off_from_px : p.off_to_px
+          const list = steady.get(ek(atStart ? cs[0] : cs[cs.length - 1]) + '|' + p.color)
+          if (!list) continue
+          const d = endDir(cs, atStart)
+          if (!list.some((s) => Math.abs((s.dir[0] * d[0] + s.dir[1] * d[1] >= 0 ? 1 : -1) * s.off - want) < 0.11)) bad++
+        }
+      }
+      return bad
+    }
+    const unionBad = misconnected(fc)
+    check('union transition connectivity is (near) clean', unionBad <= 1, `${unionBad} loose ends`)
+    for (const iso of ['2026-08-08T14:00', '2026-08-11T03:30']) {
+      const bad = misconnected(apDyn(fc, apPred({}, new Date(iso))))
+      check(`dynamic at ${iso} adds no mis-connected ramps`, bad <= unionBad, `${bad} vs union ${unionBad}`)
+    }
+  }
+}
+
 // ── bullets respect the timestamp ──────────────────────────────────────
 // A station open at 2am must not advertise routes that stopped at
 // midnight: activeRouteIdx picks the awake subset the strip rebuilds
