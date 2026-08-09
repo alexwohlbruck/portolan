@@ -72,13 +72,17 @@ AND of their two sides — a movement runs only when the route rides both.
 Route-level masks (/api/activity) remain as the toolbar summary and the
 fallback for builds that predate acts.
 
-Known residual: a short-turn terminal that sits mid-edge (no junction to
-break at) keeps its whole edge lit whenever any covering pattern runs —
-acts are OR'd along an edge. Splitting edges at mask-change boundaries
-would fix it but changes drawn geometry (new degree-2 seams through
-ORDER and FAIR), so it belongs with the eyes-on-map work in stage 4.
-Most short-turn terminals coincide with junctions, where SPLIT already
-breaks the edge.
+The mid-edge short-turn residual is RESOLVED by terminal cuts
+(stages.CutSegmentsAtTerminals, a post-FAIR pass): emitted segments are
+cut at mid-segment pattern terminals — anchored at the pattern's
+terminal STOP, since shapes overrun terminals with tail trackage — and
+every piece recomputes each route's activity from actual pattern
+coverage. No ORDER/FAIR decision changes; seams are same-offset
+endpoint joins under round caps. This is what makes the M's weekend
+map end at Delancey/Essex and its late-night map at Myrtle Av, matching
+the MTA's own service maps (checked invariants in check:dynamic). A
+pattern that merely tip-touches an edge's last metres no longer donates
+its hours to the whole edge (the overnight shuttle at Myrtle).
 
 **3. Render time = filter + re-center.** At timestamp T the client:
    - hides ribbons whose routes are all inactive at T,

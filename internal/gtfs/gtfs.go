@@ -36,6 +36,10 @@ type Pattern struct {
 	Trips   int      // how many trips ride this shape (for coverage pruning)
 	Shape   []geo.LL // ordered shape points
 	StopIDs []string // every stop this shape serves, sorted (stations stage)
+	// TermA/TermB: the pattern's first/last STOP locations. Shapes (and
+	// the trim margin) overrun the terminal by tail trackage; these are
+	// where service actually ends — the terminal-cut pass cuts here.
+	TermA, TermB geo.LL
 }
 
 // Stop is one stops.txt record — platform or parent station. Only what
@@ -325,9 +329,13 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 			sids = append(sids, sid)
 		}
 		sort.Strings(sids)
-		byRoute[k.route] = append(byRoute[k.route], Pattern{
+		pat := Pattern{
 			Route: r, ShapeID: k.shape, Trips: n, Shape: pts, StopIDs: sids,
-		})
+		}
+		if e := shapeEnds[k.shape]; e != nil && e.ok {
+			pat.TermA, pat.TermB = stopLL[e.firstStop], stopLL[e.lastStop]
+		}
+		byRoute[k.route] = append(byRoute[k.route], pat)
 	}
 	// deterministic route order and trip-count tie-break: map iteration and
 	// an unstable sort let equal-trip patterns swap runs, flipping which

@@ -373,6 +373,46 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
   }
 }
 
+// ── terminal cuts: the M ends where the MTA says it ends ───────────────
+// Late nights the M runs Metropolitan–Myrtle Av only; weekends it runs
+// through to Delancey/Essex. Terminal cuts give segments stop-granular
+// activity, so the drawn M tail must stop at the right place at each
+// hour — measured against the real build with the real client predicate.
+{
+  const unionP = path.join(repo, 'build/nyc.geojson')
+  if (fs.existsSync(unionP)) {
+    const { maskActive: mAct } = await import('../src/lib/dynamic.ts')
+    const feats = JSON.parse(fs.readFileSync(unionP, 'utf8')).features.filter(
+      (f) => f.properties.band_min === 15 && f.properties.kind !== 'transition' &&
+        String(f.properties.routes).split(',').includes('M'),
+    )
+    // westmost point where the M ITSELF is lit (its own per-segment act),
+    // not where a trunk survives via other members
+    const westmostM = (iso) => {
+      const d = new Date(iso)
+      const day = (d.getDay() + 6) % 7
+      const hour = d.getHours()
+      let w = Infinity
+      for (const f of feats) {
+        const rts = String(f.properties.routes).split(',')
+        const acts = String(f.properties.acts ?? '').split(';')
+        const i = rts.indexOf('M')
+        const a = acts[i]
+        if (!a || a.length !== 42 || !mAct(a, day, hour)) continue
+        for (const c of f.geometry.coordinates) w = Math.min(w, c[0])
+      }
+      return w
+    }
+    const night = westmostM('2026-08-11T03:30')
+    const wknd = westmostM('2026-08-08T14:00')
+    // Myrtle Av junction ≈ -73.935; Essex St ≈ -73.987; Chrystie fork ≈ -73.992
+    check('night M ends at Myrtle Av (nothing drawn west of it)',
+      night > -73.94, `westmost M lon ${night.toFixed(4)}`)
+    check('weekend M ends at Delancey/Essex (not the Chrystie fork)',
+      wknd > -73.9895 && wknd < -73.985, `westmost M lon ${wknd.toFixed(4)}`)
+  }
+}
+
 // ── transitions stay connected under dynamic re-centering ─────────────
 // Every ramp end must land on a same-color steady at the same coordinate
 // and the same SCREEN position. offset_px is signed relative to each

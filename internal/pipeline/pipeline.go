@@ -352,6 +352,22 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		return fmt.Errorf("FAIR: %w", err)
 	}
 	logf("fair: %d segments (%.1fs)", len(segs), time.Since(t0).Seconds())
+	// terminal cuts: per-piece activity at short-turn terminals, so the
+	// M's weekend map ends at Essex St and its night map at Myrtle Av —
+	// geometry-only post-pass, no ORDER/FAIR decisions change
+	nb := len(segs)
+	terms := make([][2]geo.Pt, len(railPaths))
+	for i := range railPaths {
+		pat := railPaths[i].Pattern
+		if pat.TermA != (geo.LL{}) {
+			terms[i][0] = frame.ToXY(pat.TermA)
+		}
+		if pat.TermB != (geo.LL{}) {
+			terms[i][1] = frame.ToXY(pat.TermB)
+		}
+	}
+	segs = stages.CutSegmentsAtTerminals(segs, railPaths, terms)
+	logf("terminal cuts: %d segments → %d (%.1fs)", nb, len(segs), time.Since(t0).Seconds())
 	if len(busPaths) > 0 {
 		bsegs := stages.DirectSegments(busPaths)
 		logf("direct: %d paths → %d deduped segments", len(busPaths), len(bsegs))
