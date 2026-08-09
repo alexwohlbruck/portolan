@@ -6,7 +6,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
-import { applyDynamic, activePredicate, activeRouteIdx, markerIconAt, maskActive, stationVisible, type BundleRow } from '@/lib/dynamic'
+import { applyDynamic, activePredicate, activeRouteIdx, bulletIdsOf, markerIconAt, maskActive, stationVisible, type BundleRow } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
 import { basemapTiles, isDark } from '@/lib/theme'
 import { toast } from '@/lib/toast'
@@ -311,37 +311,6 @@ function applyBands() {
 // ribbons: time and class toggles hide, via stationVisible.
 const stationsRaw = ref<any | null>(null)
 
-// bullet image id for one route. The image itself is generated on demand
-// by the styleimagemissing handler (drawMarkerImage), so any city's
-// bullets exist the moment a label asks for them.
-const bulletId = (label: string, hex: string) => `blt-${hex || '888888'}-${label}`
-
-/** bullets a station label shows: distinct (label, color) pairs, capped,
- *  and only for classes where a bullet means something — a commuter
- *  branch's identity is its agency, not a 20-character pill. */
-function bulletIdsOf(p: any): string[] {
-  const labels = String(p.labels ?? '').split(',')
-  const colors = String(p.route_colors ?? '').split(',')
-  const modes = String(p.modes ?? '').split(',')
-  const seen = new Set<string>()
-  const out: string[] = []
-  labels.forEach((l, i) => {
-    if (!l || l.length > 8) return
-    if (modes[i] === 'regional' || modes[i] === 'bus') return
-    if (isVariantLabel(l, labels)) return
-    const id = bulletId(l, colors[i])
-    if (seen.has(id)) return
-    seen.add(id)
-    if (out.length < 8) out.push(id)
-  })
-  return out
-}
-
-// "FX"/"6X"/"7X" are express variants of a line the set already shows —
-// Apple never bullets them separately, and neither do we
-const isVariantLabel = (l: string, all: string[]) =>
-  l.length >= 2 && l.endsWith('X') && all.includes(l.slice(0, -1))
-
 // how many lines a name wraps to: simulate the wrap instead of counting
 // characters (length/20 called "Bedford-Nostrand Avs" one line and the
 // bullets overlapped the wrapped text). Greedy-pack the words — plus
@@ -491,21 +460,36 @@ function drawMarkerImage(id: string): ImageData | null {
     return ctx.getImageData(0, 0, cv.width, cv.height)
   }
   if ((m = id.match(/^row-(.+)$/))) {
-    // a whole bullet strip composed into one image (see loadStations)
+    // a whole bullet strip composed into one image (see loadStations).
+    // Past 8 bullets the strip wraps into balanced centered rows —
+    // Atlantic Av-Barclays' ten lines all appear (never truncate a
+    // strip; that lies about who stops here) without out-spanning the
+    // name. The icon anchors 'top', so extra rows grow downward.
     const parts = m[1].split('|').map(bulletCanvas).filter(Boolean) as HTMLCanvasElement[]
     if (!parts.length) return null
     const gap = 3 * 2
-    const w = parts.reduce((a, c) => a + c.width, 0) + gap * (parts.length - 1)
-    const h = Math.max(...parts.map((c) => c.height))
+    const nrows = Math.ceil(parts.length / 8)
+    const per = Math.ceil(parts.length / nrows)
+    const rows: HTMLCanvasElement[][] = []
+    for (let i = 0; i < parts.length; i += per) rows.push(parts.slice(i, i + per))
+    const rowW = (r: HTMLCanvasElement[]) =>
+      r.reduce((a, c) => a + c.width, 0) + gap * (r.length - 1)
+    const w = Math.max(...rows.map(rowW))
+    const rowH = Math.max(...parts.map((c) => c.height))
+    const vgap = 2 * 2
     cv.width = w
-    cv.height = h
+    cv.height = rowH * rows.length + vgap * (rows.length - 1)
     const ctx = cv.getContext('2d')!
-    let x = 0
-    for (const c of parts) {
-      ctx.drawImage(c, x, 0)
-      x += c.width + gap
+    let y = 0
+    for (const r of rows) {
+      let x = Math.round((w - rowW(r)) / 2)
+      for (const c of r) {
+        ctx.drawImage(c, x, y)
+        x += c.width + gap
+      }
+      y += rowH + vgap
     }
-    return ctx.getImageData(0, 0, w, h)
+    return ctx.getImageData(0, 0, cv.width, cv.height)
   }
   const single = bulletCanvas(id)
   return single ? single.getContext('2d')!.getImageData(0, 0, single.width, single.height) : null

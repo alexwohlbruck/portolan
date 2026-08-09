@@ -130,6 +130,42 @@ export function activeRouteIdx(
   return idx.length === routes.length ? null : idx
 }
 
+// ── bullet strips ──────────────────────────────────────────────────────
+
+/** bullet image id for one route; the image itself is generated on
+ *  demand by the styleimagemissing handler, so any city's bullets exist
+ *  the moment a label asks for them. */
+export const bulletId = (label: string, hex: string) => `blt-${hex || '888888'}-${label}`
+
+// "FX"/"6X"/"7X" are express variants of a line the set already shows —
+// Apple never bullets them separately, and neither do we
+export const isVariantLabel = (l: string, all: string[]) =>
+  l.length >= 2 && l.endsWith('X') && all.includes(l.slice(0, -1))
+
+/** bullets a station label shows: EVERY distinct (label, color) pair,
+ *  and only for classes where a bullet means something — a commuter
+ *  branch's identity is its agency, not a 20-character pill. No count
+ *  cap: Atlantic Av-Barclays' merged label owns all ten of its lines
+ *  (the strip renderer wraps long sets into rows instead of lying by
+ *  truncation — a cap here silently dropped the 4 and 5). */
+export function bulletIdsOf(p: any): string[] {
+  const labels = String(p.labels ?? '').split(',')
+  const colors = String(p.route_colors ?? '').split(',')
+  const modes = String(p.modes ?? '').split(',')
+  const seen = new Set<string>()
+  const out: string[] = []
+  labels.forEach((l, i) => {
+    if (!l || l.length > 8) return
+    if (modes[i] === 'regional' || modes[i] === 'bus') return
+    if (isVariantLabel(l, labels)) return
+    const id = bulletId(l, colors[i])
+    if (seen.has(id)) return
+    seen.add(id)
+    out.push(id)
+  })
+  return out
+}
+
 /** One ribbon of a marker's bundle, in union terms. `g` is the
  *  centerline hash the ribbon re-centers within (applyDynamic's
  *  grouping) — offsets here must move exactly as the ribbons move,

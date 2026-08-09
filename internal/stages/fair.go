@@ -289,18 +289,39 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	}
 	const probeArc = 60.0 // how far down a leg to probe
 	const probeTol = 28.0 // walk counts as passing within this of the probe
-	probePt := func(ei, ni int) (geo.Pt, float64) {
+	ptAt := func(ei, ni int, want float64) (geo.Pt, float64) {
 		l := elines[ei]
-		d := math.Min(probeArc, l.Len()/2)
+		d := math.Min(want, l.Len()/2)
 		if n.Edges[ei].To == ni {
 			return l.AtArc(l.Len() - d), d
 		}
 		return l.AtArc(d), d
 	}
-	// arcs along pattern pi where the walk passes the probe of (edge, node)
-	passCache := map[[3]int][]float64{}
-	passesNear := func(pi, ei, ni int, probe geo.Pt) []float64 {
-		key := [3]int{pi, ei, ni}
+	// probes for one PAIR of legs: start at the standard arc, but while
+	// the two legs are still within 2×probeTol of each other walk both
+	// probes farther out. At a gentle fork (Flatbush/Willoughby: the
+	// Montague legs leave the bridge trunk at ~9 m per 60 m) the 60 m
+	// probes sit closer together than the tolerance, so a walk riding ONE
+	// leg "passes" both and attests a movement no train makes — the gate
+	// can only discriminate where the legs have genuinely separated.
+	// Welded legs that never separate keep today's benefit of the doubt.
+	pairProbes := func(a, b, ni int) (geo.Pt, float64, geo.Pt, float64) {
+		want := probeArc
+		pa, da := ptAt(a, ni, want)
+		pb, db := ptAt(b, ni, want)
+		for want < 400 && pa.Dist(pb) < 2*probeTol && (da == want || db == want) {
+			want += 40
+			pa, da = ptAt(a, ni, want)
+			pb, db = ptAt(b, ni, want)
+		}
+		return pa, da, pb, db
+	}
+	// arcs along pattern pi where the walk passes the probe of (edge,
+	// node, probe-arc) — the arc is in the key because pairProbes moves
+	// the probe per pairing
+	passCache := map[[4]int][]float64{}
+	passesNear := func(pi, ei, ni int, probe geo.Pt, d float64) []float64 {
+		key := [4]int{pi, ei, ni, int(d)}
 		if arcs, ok := passCache[key]; ok {
 			return arcs
 		}
@@ -333,8 +354,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// yet never consecutively — a walk that misses a probe entirely is a
 	// geometry mismatch (merged medians drift), not evidence of a phantom.
 	ridesPair := func(shared []string, a, b, ni int) bool {
-		pa, da := probePt(a, ni)
-		pb, db := probePt(b, ni)
+		pa, da, pb, db := pairProbes(a, b, ni)
 		// slack covers the junction interior between the probe passes —
 		// welded legs and station throats stretch it to ~300 m at DeKalb.
 		// A phantom pairing (a circulator crossing its own path) separates
@@ -348,8 +368,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			}
 			sawA, sawB := false, false
 			for _, pi := range pis {
-				aArcs := passesNear(pi, a, ni, pa)
-				bArcs := passesNear(pi, b, ni, pb)
+				aArcs := passesNear(pi, a, ni, pa, da)
+				bArcs := passesNear(pi, b, ni, pb, db)
 				sawA = sawA || len(aArcs) > 0
 				sawB = sawB || len(bArcs) > 0
 				if dbg {

@@ -444,14 +444,27 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 			maxBand = segs[i].BandMin
 		}
 	}
-	routeSegs := map[string][]int{} // route id → candidate seg indices
+	routeSegs := map[string][]int{} // route id → snap candidates (steady/bridge)
+	routeCont := map[string][]int{} // route id → continuation candidates (+transitions)
 	for i := range segs {
 		s := &segs[i]
-		if s.BandMin != maxBand || (s.Kind != "steady" && s.Kind != "bridge") || s.Line == nil {
+		if s.BandMin != maxBand || s.Line == nil {
 			continue
 		}
-		for _, r := range s.Routes {
-			routeSegs[r] = append(routeSegs[r], i)
+		if s.Kind == "steady" || s.Kind == "bridge" {
+			for _, r := range s.Routes {
+				routeSegs[r] = append(routeSegs[r], i)
+				routeCont[r] = append(routeCont[r], i)
+			}
+		} else if s.Kind == "transition" {
+			// consecutive steady pieces do NOT touch at junctions — a
+			// transition bridges the cut-back gap. The terminal clamp's
+			// continuation test must see them, or every junction seam
+			// reads as a dead end and markers get dragged onto it
+			// (Atlantic Av-Barclays' 2/3/4/5 landed 200 m south).
+			for _, r := range s.Routes {
+				routeCont[r] = append(routeCont[r], i)
+			}
 		}
 	}
 	const maxSnapM = 150.0
@@ -563,66 +576,108 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 					}
 				}
 				sg := &segs[bh.seg]
-				// terminal clamp: the drawn ribbon overshoots its last
-				// station a little (shape-trim margin + smoothing), so the
-				// end-of-line marker would sit shy of the tip with a tail
-				// sticking past it. If the snap lands near a ribbon end
-				// and none of the marker's routes CONTINUE past that end
-				// (nothing else of theirs touches it — that distinction
-				// keeps stations near junction cuts unclamped), the
-				// station IS the end of the line: put the marker there.
-				const termM = 250.0 // how far shy of the tip a terminal snaps
-				const touchM = 25.0 // endpoint coincidence tolerance
-				const probeM = 60.0 // how far along a toucher to look
-				const asideM = 30.0 // beyond this, the toucher LEAVES us
+				// terminus clamp, chain-walking edition. A terminal's
+				// drawn line overshoots its stop point (the platforms
+				// themselves at Atlantic Terminal, the shape-trim margin
+				// elsewhere), and terminal cuts may have seamed it — so
+				// from the end nearest the snap, FOLLOW straight-ahead
+				// same-route pieces through seams. Chain dead-ends
+				// within reach → that far tip is the terminus, put the
+				// marker there. Chain diverges at a junction or keeps
+				// going → an inline stop, never moved.
+				const termM = 250.0    // how far shy of an end the walk may start
+				const touchM = 25.0    // endpoint coincidence tolerance
+				const probeM = 60.0    // how far along a toucher to look
+				const asideM = 30.0    // within this, a toucher is a sibling
+				const walkMaxM = 500.0 // chains longer than this are inline track
 				L := sg.Line.Len()
 				ends := []float64{0, L}
 				if bh.arc > L/2 {
 					ends = []float64{L, 0} // try the nearer end first
 				}
 				for _, endArc := range ends {
-					if math.Abs(bh.arc-endArc) > termM || math.Abs(bh.arc-endArc) < 1e-9 {
+					if math.Abs(bh.arc-endArc) > termM {
 						continue
 					}
-					endPt := sg.Line.AtArc(endArc)
-					if nearClip(endPt) {
-						continue // a line running off the map, not a terminus
-					}
-					continues := false
-					for _, r := range rts {
-						for _, si2 := range routeSegs[r] {
-							if si2 == bh.seg {
-								continue
+					cur, curEnd := bh.seg, endArc
+					prev := -1
+					walked := 0.0
+					tipSeg, tipArc := -1, 0.0
+					for hops := 0; hops < 5; hops++ {
+						sgc := &segs[cur]
+						Lc := sgc.Line.Len()
+						endPt := sgc.Line.AtArc(curEnd)
+						if nearClip(endPt) {
+							break // running off the map, not a terminus
+						}
+						var tan geo.Pt // outgoing direction at this end
+						if curEnd < 1 {
+							tan = sgc.Line.TangentAtArc(0, 20).Scale(-1)
+						} else {
+							tan = sgc.Line.TangentAtArc(Lc, 20)
+						}
+						next, nextEnter := -1, 0.0
+						diverges := false
+						for _, r := range rts {
+							for _, si2 := range routeCont[r] {
+								if si2 == cur || si2 == prev {
+									continue
+								}
+								o := segs[si2].Line
+								var tArc float64 = -1
+								if o.Pts[0].Dist(endPt) < touchM {
+									tArc = 0
+								} else if o.Pts[len(o.Pts)-1].Dist(endPt) < touchM {
+									tArc = o.Len()
+								}
+								if tArc < 0 {
+									continue
+								}
+								probeArc := math.Min(probeM, o.Len())
+								if tArc > 0 {
+									probeArc = math.Max(0, o.Len()-probeM)
+								}
+								probe := o.AtArc(probeArc)
+								if _, d := sgc.Line.ProjectArc(probe); d < asideM {
+									continue // sibling ribbon ending alongside
+								}
+								dir := probe.Sub(endPt)
+								if dir.Dot(dir) < 1 {
+									continue
+								}
+								if dir.Unit().Dot(tan) > 0.5 {
+									if next < 0 {
+										next, nextEnter = si2, tArc
+									}
+								} else {
+									diverges = true
+								}
 							}
-							o := segs[si2].Line
-							var tArc float64 = -1
-							if o.Pts[0].Dist(endPt) < touchM {
-								tArc = 0
-							} else if o.Pts[len(o.Pts)-1].Dist(endPt) < touchM {
-								tArc = o.Len()
-							}
-							if tArc < 0 {
-								continue
-							}
-							// a parallel sibling ribbon also ENDS here — its
-							// probe stays alongside us. A real continuation
-							// (or a diverging branch at a junction) walks
-							// away from this line.
-							probeArc := math.Min(probeM, o.Len())
-							if tArc > 0 {
-								probeArc = math.Max(0, o.Len()-probeM)
-							}
-							if _, d := sg.Line.ProjectArc(o.AtArc(probeArc)); d > asideM {
-								continues = true
+							if diverges {
 								break
 							}
 						}
-						if continues {
+						if diverges {
+							break // a junction — inline stop, leave it alone
+						}
+						if next < 0 {
+							tipSeg, tipArc = cur, curEnd // true dead end
 							break
 						}
+						walked += segs[next].Line.Len()
+						if walked > walkMaxM {
+							break // long continuation — inline track
+						}
+						prev, cur = cur, next
+						if nextEnter < 1 {
+							curEnd = segs[next].Line.Len()
+						} else {
+							curEnd = 0
+						}
 					}
-					if !continues {
-						bh.arc = endArc
+					if tipSeg >= 0 {
+						sg = &segs[tipSeg]
+						bh.seg, bh.arc = tipSeg, tipArc
 						break
 					}
 				}

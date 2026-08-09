@@ -273,6 +273,28 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     check('partial-coverage stops draw per-line dots (Grand Army Plaza)',
       gap && gap.properties.dots && gap.properties.dots.split(';').length === 2 && gap.properties.span_px === undefined,
       `dots: ${gap?.properties.dots}`)
+    // terminal caps: relay tails past a terminal are dropped entirely,
+    // so the drawn line ENDS at the station and the marker sits on the
+    // tip — Atlantic Terminal is the canary (its tail once ran 180 m
+    // past the bumper, then survived as a 137 m stub lit by platforms
+    // inside the cut margin)
+    {
+      const at = mks.find((f) => f.properties.name === 'Atlantic Terminal')
+      const lirr = JSON.parse(fs.readFileSync(path.join(repo, 'build/nyc.geojson'), 'utf8'))
+        .features.filter((f) => f.properties.band_min === 15 && f.properties.kind !== 'transition' &&
+          String(f.properties.routes).split(',').every((r) => r.startsWith('f2:')))
+      const [mx, my] = at.geometry.coordinates
+      const kx = 111320 * Math.cos((my * Math.PI) / 180)
+      const dm = (c) => Math.hypot((c[0] - mx) * kx, (c[1] - my) * 111320)
+      const capped = lirr.some((f) => {
+        const cs = f.geometry.coordinates
+        return dm(cs[0]) < 2 || dm(cs[cs.length - 1]) < 2
+      })
+      const past = lirr.some((f) => f.geometry.coordinates.some((c) => dm(c) < 400 && c[0] < mx - 0.0003))
+      check('Atlantic Terminal marker caps the very end of the LIRR line', capped && !past,
+        `capped=${capped} tail-past-bumper=${past}`)
+    }
+
     // the dot wears the DRAWN ribbon color: Penn Station's LIRR dot must
     // match the color FAIR painted the LIRR trunk, not a branch color
     const penn = mks.find((f) => f.properties.name === 'Penn Station')
@@ -364,6 +386,20 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     check('Columbus Circle letter groups precede the 1',
       /^A,C,.*1/.test(String(cc?.properties.labels)) && !/^1/.test(String(cc?.properties.labels)),
       `got ${cc?.properties.labels}`)
+
+    // no strip truncation: the merged Atlantic Av-Barclays label carries
+    // ALL TEN lines — a former 8-bullet cap silently dropped the 4 and 5
+    // (color ordering puts the green group last, so the cap always ate
+    // exactly them). Big sets wrap into rows client-side instead.
+    {
+      const { bulletIdsOf } = await import('../src/lib/dynamic.ts')
+      const atl = sts.find((f) => f.properties.name === 'Atlantic Av-Barclays Ctr')
+      const ids = atl ? bulletIdsOf(atl.properties) : []
+      const shown = ids.map((id) => id.split('-').slice(2).join('-'))
+      check('Atlantic Av-Barclays merged bullets keep all 10 incl. 4 and 5',
+        ids.length === 10 && shown.includes('4') && shown.includes('5'),
+        `got ${shown.join(',')}`)
+    }
 
     // station bullets follow per-STATION hours: at 3am the M's bullet
     // stays at Myrtle Av (the shuttle calls there) and drops at Flushing
@@ -457,6 +493,26 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     }
     check('the H relay tail west of Rockaway Blvd is never lit', tailLit === 0, `${tailLit} lit`)
     check('the H extension IS lit east of Rockaway Blvd on Sat 14:00', east321)
+
+    // flatbush_willoughby: no tunnel→bridge phantom. At the fork where
+    // the Montague legs leave the bridge trunk, the legs separate slower
+    // than the ride-gate's probe tolerance, and a fixed 60 m probe let
+    // the night N's tunnel walk attest an N,R,W transition onto the
+    // BRIDGE steady — a movement no train makes, drawn as a little eye.
+    // pairProbes walks the probes out until the legs separate. Every
+    // N,R,W transition at this junction must head SOUTH (to the DeKalb
+    // trunk), never north onto the bridge.
+    const box = [-73.98356, 40.69108, -73.98168, 40.69256]
+    const phantom = JSON.parse(fs.readFileSync(unionP, 'utf8')).features.filter((f) => {
+      const p = f.properties
+      if (p.kind !== 'transition' || p.routes !== 'N,R,W') return false
+      const cs = f.geometry.coordinates
+      if (!cs.some((c) => c[0] >= box[0] && c[0] <= box[2] && c[1] >= box[1] && c[1] <= box[3]))
+        return false
+      return cs[cs.length - 1][1] > cs[0][1] // ends north of where it starts
+    })
+    check('no tunnel→bridge phantom at Flatbush/Willoughby (all bands)',
+      phantom.length === 0, `${phantom.length} northbound N,R,W ramps`)
   }
 }
 

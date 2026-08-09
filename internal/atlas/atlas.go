@@ -422,6 +422,10 @@ func (s *Server) fileFor(pick func(FeedCfg) string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		// stale cached artifacts have masqueraded as pipeline bugs
+		// repeatedly (same rule as /api/build.geojson) — stations from a
+		// mid-debug build once put Atlantic Av's markers at Dean St
+		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, r, p)
 	}
 }
