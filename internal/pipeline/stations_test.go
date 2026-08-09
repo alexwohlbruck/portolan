@@ -235,6 +235,59 @@ func TestTransfersControlMerging(t *testing.T) {
 	}
 }
 
+// End-of-line stations sit ON the tip: the drawn ribbon overshoots its
+// last stop, and the marker must clamp to the endpoint — but only at a
+// true terminus, never at a junction cut where the line continues.
+func TestTerminalClamp(t *testing.T) {
+	frame := geo.NewFrame(geo.LL{Lon: -73.92, Lat: 40.86})
+	mk := func(lls ...geo.LL) *geo.Line {
+		pts := make([]geo.Pt, len(lls))
+		for i, ll := range lls {
+			pts[i] = frame.ToXY(ll)
+		}
+		return geo.NewLine(pts)
+	}
+	rA := gtfs.Route{ID: "A", ShortName: "A", Color: "0062CF", Type: 1}
+	feed := &gtfs.Feed{Routes: map[string]gtfs.Route{"A": rA},
+		Agencies: map[string]string{},
+		Stops: map[string]gtfs.Stop{
+			// the terminal platform, ~80 m short of the drawn tip
+			"IN": {Name: "Inwood-207 St", LL: geo.LL{Lon: -73.9200, Lat: 40.8680}},
+			// a mid-line platform the same distance from a segment END
+			// that another segment continues from (a junction cut)
+			"MID": {Name: "Dyckman St", LL: geo.LL{Lon: -73.9200, Lat: 40.8600}},
+		}}
+	pats := []gtfs.Pattern{{Route: rA, StopIDs: []string{"IN", "MID"}}}
+	sts := BuildStations(feed, pats, nil)
+	// north seg ends at 40.8687 (the drawn tip, past the IN platform);
+	// south seg continues from the cut at 40.8607 heading further south
+	north := mk(geo.LL{Lon: -73.9200, Lat: 40.8607}, geo.LL{Lon: -73.9200, Lat: 40.8687})
+	south := mk(geo.LL{Lon: -73.9200, Lat: 40.8500}, geo.LL{Lon: -73.9200, Lat: 40.8607})
+	segs := []stages.Segment{
+		{Kind: "steady", Routes: []string{"A"}, NSlots: 1, Color: "0062CF", BandMin: 15, Line: north},
+		{Kind: "steady", Routes: []string{"A"}, NSlots: 1, Color: "0062CF", BandMin: 15, Line: south},
+	}
+	SnapStations(sts, segs, frame, 6, feed.Routes)
+	var in, mid *Station
+	for i := range sts {
+		switch sts[i].Name {
+		case "Inwood-207 St":
+			in = &sts[i]
+		case "Dyckman St":
+			mid = &sts[i]
+		}
+	}
+	// the terminal marker sits exactly on the tip
+	if d := math.Abs(in.Markers[0].LL.Lat - 40.8687); d > 1e-4 {
+		t.Fatalf("terminal not clamped to the tip: lat %v", in.Markers[0].LL.Lat)
+	}
+	// the junction-adjacent marker stays at its own projection — the A
+	// continues south past the cut, so no clamp
+	if d := math.Abs(mid.Markers[0].LL.Lat - 40.8600); d > 1e-4 {
+		t.Fatalf("junction cut wrongly clamped: lat %v", mid.Markers[0].LL.Lat)
+	}
+}
+
 // The NYC ordering the user pointed at Apple for: color groups over
 // alphabetical order — W 4 St reads A·C·E then B·D·F·M, and Columbus
 // Circle's letter groups come before the 1 (docs/STOP-LABELS.md).

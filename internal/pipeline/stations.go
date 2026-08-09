@@ -482,6 +482,66 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 					}
 				}
 				sg := &segs[bh.seg]
+				// terminal clamp: the drawn ribbon overshoots its last
+				// station a little (shape-trim margin + smoothing), so the
+				// end-of-line marker would sit shy of the tip with a tail
+				// sticking past it. If the snap lands near a ribbon end
+				// and none of the marker's routes CONTINUE past that end
+				// (nothing else of theirs touches it — that distinction
+				// keeps stations near junction cuts unclamped), the
+				// station IS the end of the line: put the marker there.
+				const termM = 150.0 // how far shy of the tip a terminal snaps
+				const touchM = 25.0 // endpoint coincidence tolerance
+				const probeM = 60.0 // how far along a toucher to look
+				const asideM = 30.0 // beyond this, the toucher LEAVES us
+				L := sg.Line.Len()
+				ends := []float64{0, L}
+				if bh.arc > L/2 {
+					ends = []float64{L, 0} // try the nearer end first
+				}
+				for _, endArc := range ends {
+					if math.Abs(bh.arc-endArc) > termM || math.Abs(bh.arc-endArc) < 1e-9 {
+						continue
+					}
+					endPt := sg.Line.AtArc(endArc)
+					continues := false
+					for _, r := range rts {
+						for _, si2 := range routeSegs[r] {
+							if si2 == bh.seg {
+								continue
+							}
+							o := segs[si2].Line
+							var tArc float64 = -1
+							if o.Pts[0].Dist(endPt) < touchM {
+								tArc = 0
+							} else if o.Pts[len(o.Pts)-1].Dist(endPt) < touchM {
+								tArc = o.Len()
+							}
+							if tArc < 0 {
+								continue
+							}
+							// a parallel sibling ribbon also ENDS here — its
+							// probe stays alongside us. A real continuation
+							// (or a diverging branch at a junction) walks
+							// away from this line.
+							probeArc := math.Min(probeM, o.Len())
+							if tArc > 0 {
+								probeArc = math.Max(0, o.Len()-probeM)
+							}
+							if _, d := sg.Line.ProjectArc(o.AtArc(probeArc)); d > asideM {
+								continues = true
+								break
+							}
+						}
+						if continues {
+							break
+						}
+					}
+					if !continues {
+						bh.arc = endArc
+						break
+					}
+				}
 				xy := sg.Line.AtArc(bh.arc)
 				m.LL = frame.ToLL(xy)
 				t := sg.Line.TangentAtArc(bh.arc, 20)
