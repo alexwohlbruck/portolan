@@ -158,6 +158,13 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				if ri < len(s.Acts) {
 					acts = s.Acts[ri]
 				}
+				// a zero-hours route never rides this piece (the E kept on
+				// the union past its WTC terminal for geometry bookkeeping)
+				// — its bullet here would advertise a phantom. Unknown
+				// masks keep the benefit of the doubt.
+				if m, ok := gtfs.ParseMask168(acts); ok && m.Empty() {
+					continue
+				}
 				roster = append(roster, bullet{route: rid, label: label, hex: routeHex(rt), acts: acts, mode: s.Mode, lat: lat})
 				labelSet[label] = true
 			}
