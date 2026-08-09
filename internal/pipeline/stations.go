@@ -444,14 +444,27 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 			maxBand = segs[i].BandMin
 		}
 	}
-	routeSegs := map[string][]int{} // route id → candidate seg indices
+	routeSegs := map[string][]int{} // route id → snap candidates (steady/bridge)
+	routeCont := map[string][]int{} // route id → continuation candidates (+transitions)
 	for i := range segs {
 		s := &segs[i]
-		if s.BandMin != maxBand || (s.Kind != "steady" && s.Kind != "bridge") || s.Line == nil {
+		if s.BandMin != maxBand || s.Line == nil {
 			continue
 		}
-		for _, r := range s.Routes {
-			routeSegs[r] = append(routeSegs[r], i)
+		if s.Kind == "steady" || s.Kind == "bridge" {
+			for _, r := range s.Routes {
+				routeSegs[r] = append(routeSegs[r], i)
+				routeCont[r] = append(routeCont[r], i)
+			}
+		} else if s.Kind == "transition" {
+			// consecutive steady pieces do NOT touch at junctions — a
+			// transition bridges the cut-back gap. The terminal clamp's
+			// continuation test must see them, or every junction seam
+			// reads as a dead end and markers get dragged onto it
+			// (Atlantic Av-Barclays' 2/3/4/5 landed 200 m south).
+			for _, r := range s.Routes {
+				routeCont[r] = append(routeCont[r], i)
+			}
 		}
 	}
 	const maxSnapM = 150.0
@@ -590,7 +603,7 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 					}
 					continues := false
 					for _, r := range rts {
-						for _, si2 := range routeSegs[r] {
+						for _, si2 := range routeCont[r] {
 							if si2 == bh.seg {
 								continue
 							}

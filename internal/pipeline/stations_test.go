@@ -288,6 +288,46 @@ func TestTerminalClamp(t *testing.T) {
 	}
 }
 
+// Junction seams where consecutive steady pieces DON'T touch — a
+// transition bridges the cut-back gap — must not read as dead ends:
+// Atlantic Av-Barclays' 2/3/4/5 marker was dragged 200 m onto such a
+// seam because the continuation test only saw steady segments.
+func TestClampSeesTransitionsAsContinuation(t *testing.T) {
+	frame := geo.NewFrame(geo.LL{Lon: -73.977, Lat: 40.684})
+	mk := func(lls ...geo.LL) *geo.Line {
+		pts := make([]geo.Pt, len(lls))
+		for i, ll := range lls {
+			pts[i] = frame.ToXY(ll)
+		}
+		return geo.NewLine(pts)
+	}
+	r2 := gtfs.Route{ID: "2", ShortName: "2", Color: "D82233", Type: 1}
+	feed := &gtfs.Feed{Routes: map[string]gtfs.Route{"2": r2},
+		Agencies: map[string]string{},
+		Stops: map[string]gtfs.Stop{
+			// platform ~170 m north of the seam at 40.6828
+			"AT": {Name: "Atlantic Av", LL: geo.LL{Lon: -73.9776, Lat: 40.6843}},
+		}}
+	pats := []gtfs.Pattern{{Route: r2, StopIDs: []string{"AT"}}}
+	sts := BuildStations(feed, pats, nil, nil)
+	// steady N ends at the seam; steady S starts 35 m away (cut-back
+	// gap); a transition bridges them and continues south
+	north := mk(geo.LL{Lon: -73.9776, Lat: 40.6890}, geo.LL{Lon: -73.9766, Lat: 40.68285})
+	south := mk(geo.LL{Lon: -73.97635, Lat: 40.68254}, geo.LL{Lon: -73.9758, Lat: 40.6790})
+	bridge := mk(geo.LL{Lon: -73.9766, Lat: 40.68285}, geo.LL{Lon: -73.97635, Lat: 40.68254})
+	segs := []stages.Segment{
+		{Kind: "steady", Routes: []string{"2"}, NSlots: 1, Color: "D82233", BandMin: 15, Line: north},
+		{Kind: "steady", Routes: []string{"2"}, NSlots: 1, Color: "D82233", BandMin: 15, Line: south},
+		{Kind: "transition", Routes: []string{"2"}, Color: "D82233", BandMin: 15, Line: bridge},
+	}
+	SnapStations(sts, segs, frame, 6, feed.Routes, nil)
+	m := sts[0].Markers[0]
+	// must stay at its own projection (~40.6843), NOT the seam (40.68285)
+	if math.Abs(m.LL.Lat-40.6843) > 5e-4 {
+		t.Fatalf("marker dragged to the junction seam: lat %v", m.LL.Lat)
+	}
+}
+
 // The NYC ordering the user pointed at Apple for: color groups over
 // alphabetical order — W 4 St reads A·C·E then B·D·F·M, and Columbus
 // Circle's letter groups come before the 1 (docs/STOP-LABELS.md).
