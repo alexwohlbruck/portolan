@@ -84,6 +84,45 @@ func MedianStrand(centers []float64) float64 {
 	return (centers[k/2-1] + centers[k/2]) / 2
 }
 
+// strandVote is one cross-section crossing: its signed offset and the
+// length of the member strand that cast it (kept alongside the offset
+// so future vote-weighing experiments have the data at the median).
+type strandVote struct{ off, ln float64 }
+
+// strandVotes clusters votes into distinct tracks exactly like Strands
+// and returns each cluster's center plus the LONGEST member length that
+// voted in it, both sorted by center.
+func strandVotes(votes []strandVote, strandGap float64) ([]float64, []float64) {
+	if len(votes) == 0 {
+		return nil, nil
+	}
+	sort.Slice(votes, func(i, j int) bool { return votes[i].off < votes[j].off })
+	var centers, lens []float64
+	sum, n, maxLn := 0.0, 0, 0.0
+	flush := func() {
+		if n > 0 {
+			centers = append(centers, sum/float64(n))
+			lens = append(lens, maxLn)
+		}
+	}
+	prev := votes[0].off
+	sum, n, maxLn = votes[0].off, 1, votes[0].ln
+	for _, v := range votes[1:] {
+		if v.off-prev > strandGap {
+			flush()
+			sum, n, maxLn = 0, 0, 0
+		}
+		sum += v.off
+		n++
+		if v.ln > maxLn {
+			maxLn = v.ln
+		}
+		prev = v.off
+	}
+	flush()
+	return centers, lens
+}
+
 // Strands clusters sorted signed offsets into distinct tracks (gap > strandGap
 // starts a new strand) and returns each strand's center, sorted.
 func Strands(offsets []float64, strandGap float64) []float64 {
@@ -141,6 +180,102 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		}
 		fmt.Println()
 	}
+	// corridor steel that BREATHES: a through member can drift past Reach
+	// for a stretch (the LIRR's Woodside bend spreads its two track
+	// groups to ~31 m between converged ends) — with a fixed gate its
+	// vote flickers in and out along that stretch and the median weaves
+	// between "one group" and "pair midpoint" regimes, drawn as
+	// track-switching wobble. Where a member holds a SUSTAINED run
+	// alongside (≥breatheRun within 2×Reach, half of it within Reach)
+	// its gate widens to the run's measured envelope so it votes through
+	// the whole swell and the median settles on one smooth group center.
+	// Divergers (fork ramps, loop limbs, corridors that only kiss) never
+	// build such a run past 2×Reach and keep the tight gate.
+	type breathe struct{ a0, a1, r float64 }
+	widened := make([][]breathe, len(members))
+	maxReach := p.Reach
+	if !p.SwitchTolerant {
+		const breatheDS = 24.0
+		const breatheRun = 150.0 // min bracketed-swell span worth widening
+		base := cl.Resample(breatheDS)
+		if len(base) >= 3 {
+			for mi, m := range members {
+				capD := 2 * p.Reach
+				// distance profile of this member along the edge, then
+				// swells = spans BRACKETED BY CONVERGENCE: from one
+				// within-Reach sample to the next, drifting past Reach
+				// (but under the cap) in between. A lens converges at
+				// both former junctions so its swell is bracketed; a
+				// concentric loop (South Ferry) holds a sustained band
+				// that never closes, and widening for those dragged the
+				// loop medians into 28-34° kinks.
+				prof := make([]float64, len(base))
+				for bi, q := range base {
+					if d, ok := m.DistToCapped(q, capD); ok {
+						prof[bi] = d
+					} else {
+						prof[bi] = capD + 1
+					}
+				}
+				last := -1 // previous within-Reach sample
+				swell0, swellMax := -1, 0.0
+				for bi, d := range prof {
+					if d > capD {
+						last, swell0, swellMax = -1, -1, 0
+						continue
+					}
+					if d > p.Reach {
+						if last >= 0 && swell0 < 0 {
+							swell0, swellMax = last, 0
+						}
+						if d > swellMax {
+							swellMax = d
+						}
+						continue
+					}
+					if swell0 >= 0 && swellMax > p.Reach-5 {
+						span := float64(bi-swell0) * breatheDS
+						if span >= breatheRun {
+							r := math.Min(capD, swellMax+5)
+							widened[mi] = append(widened[mi], breathe{
+								a0: float64(swell0) * breatheDS,
+								a1: float64(bi) * breatheDS,
+								r:  r,
+							})
+							if r > maxReach {
+								maxReach = r
+							}
+						}
+					}
+					last, swell0, swellMax = bi, -1, 0
+				}
+			}
+		}
+	}
+	// interval edges TAPER over breatheTaper of arc — a hard boundary
+	// flips the member's vote set in one sample and prints a kink where
+	// the regimes meet (an 8° elbow at the Sunnyside throat).
+	const breatheTaper = 150.0
+	reachAt := func(mi int, arc float64) float64 {
+		r := p.Reach
+		for _, b := range widened[mi] {
+			if arc >= b.a0 && arc <= b.a1 {
+				return b.r
+			}
+			if arc < b.a0 && b.a0-arc < breatheTaper {
+				t := (b.a0 - arc) / breatheTaper
+				if v := b.r + t*(p.Reach-b.r); v > r {
+					r = v
+				}
+			} else if arc > b.a1 && arc-b.a1 < breatheTaper {
+				t := (arc - b.a1) / breatheTaper
+				if v := b.r + t*(p.Reach-b.r); v > r {
+					r = v
+				}
+			}
+		}
+		return r
+	}
 	cur := cl
 	for it := 0; it < p.Iters; it++ {
 		line := geo.NewLine(cur.Densify(p.Step))
@@ -190,21 +325,22 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			pa := line.AtArc(arcOf[i] - da)
 			pb := line.AtArc(arcOf[i] + db)
-			var offs []float64
+			var offs []strandVote
 			if v := offsPool.Get(); v != nil {
-				offs = (*v.(*[]float64))[:0]
+				offs = (*v.(*[]strandVote))[:0]
 			}
 			dbgHere := dbgCPt != nil && pts[i].Dist(*dbgCPt) < 40 && it == 0
 			for mi, m := range members {
-				if !m.Within(pts[i], p.Reach) {
+				mr := reachAt(mi, arcOf[i])
+				if !m.Within(pts[i], mr) {
 					if dbgHere {
 						fmt.Printf("REFC3 i=%d member %d len=%.0f SKIP not-within\n", i, mi, m.Len())
 					}
 					continue
 				}
-				if !m.Within(pa, p.Reach) || !m.Within(pb, p.Reach) {
+				if !m.Within(pa, mr) || !m.Within(pb, mr) {
 					if dbgHere {
-						fmt.Printf("REFC3 i=%d member %d len=%.0f SKIP kiss-guard pa=%v pb=%v\n", i, mi, m.Len(), m.Within(pa, p.Reach), m.Within(pb, p.Reach))
+						fmt.Printf("REFC3 i=%d member %d len=%.0f SKIP kiss-guard pa=%v pb=%v\n", i, mi, m.Len(), m.Within(pa, mr), m.Within(pb, mr))
 					}
 					continue // kiss guard: not persistent alongside
 				}
@@ -216,7 +352,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				// require both probes to land near the centerline's probe
 				// points. Corridor tracks persist; turnaround limbs curve
 				// away and are dropped exactly where they diverge.
-				for _, c := range m.CrossSectionNear(pts[i], tan, p.Reach) {
+				for _, c := range m.CrossSectionNear(pts[i], tan, mr) {
 					if c.Parallel < p.MinParallel {
 						if dbgHere {
 							fmt.Printf("REFC3 i=%d member %d SKIP parallel=%.2f\n", i, mi, c.Parallel)
@@ -226,8 +362,8 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 					qa := m.AtArc(c.Arc - da)
 					qb := m.AtArc(c.Arc + db)
 					near := func(q geo.Pt) bool {
-						return q.Dist(pa) < p.Reach*1.5 ||
-							q.Dist(pb) < p.Reach*1.5
+						return q.Dist(pa) < mr*1.5 ||
+							q.Dist(pb) < mr*1.5
 					}
 					// switch tolerance: a crossover diagonal passes the
 					// parallel test (a switch is only ~10-15 deg off the
@@ -270,7 +406,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						continue
 					}
 					if near(qa) && near(qb) {
-						offs = append(offs, c.Offset)
+						offs = append(offs, strandVote{off: c.Offset, ln: m.Len()})
 					} else if dbgHere {
 						fmt.Printf("REFC3 i=%d member %d SKIP per-pass qa=%v qb=%v off=%.1f\n", i, mi, near(qa), near(qb), c.Offset)
 					}
@@ -280,7 +416,14 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				offsPool.Put(&offs)
 				return
 			}
-			st := Strands(offs, p.StrandGap)
+			// NOTE: a long-haul precedence filter was tried here (strands
+			// backed by ≥3 km members outvote yard leads when ≥2 are
+			// present) and REVERTED: the filter is binary per section, so
+			// at arcs where a long strand's crossing count flips the vote
+			// set snaps between filtered and unfiltered — a fresh flicker
+			// source (4th Ave 26°→34° spikes, new 28° at Battery) for no
+			// measured gain at Woodside. Don't retry without hysteresis.
+			st, _ := strandVotes(offs, p.StrandGap)
 			countAt[i] = len(st)
 			if len(st) > 1 {
 				lo2, hi2 := st[0], st[0]
@@ -291,10 +434,10 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				widthAt[i] = hi2 - lo2
 			}
 			o := MedianStrand(st)
-			offStar[i] = math.Max(-p.Reach, math.Min(p.Reach, o))
+			offStar[i] = math.Max(-maxReach, math.Min(maxReach, o))
 			has[i] = true
 			if dbgCPt != nil && pts[i].Dist(*dbgCPt) < 40 {
-				fmt.Printf("REFC3 it=%d i=%d offs=%v strands=%v o=%.1f\n", it, i, offs, st, o)
+				fmt.Printf("REFC3 it=%d i=%d votes=%v strands=%v o=%.1f\n", it, i, offs, st, o)
 			}
 			offsPool.Put(&offs)
 		})
