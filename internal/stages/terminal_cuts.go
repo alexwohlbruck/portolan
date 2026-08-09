@@ -171,11 +171,16 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 							continue
 						}
 						sa, sd := s.Line.ProjectArc(stop)
-						if sd > 80 || sa <= tcMarginM || sa >= L-tcMarginM {
+						if sd > 80 || sa <= 1 || sa >= L-1 {
 							continue
 						}
 						// which side is the tail? The side holding the
 						// path's nearer TIP, close to the segment.
+						// Coverage shrinks to the stop UNCONDITIONALLY
+						// (a terminal's platforms spread — patterns
+						// ending at nearer platforms must not keep the
+						// tail lit); only the CUT placement respects
+						// the sliver margin.
 						pp := pa.Line.Pts
 						for _, tip := range []geo.Pt{pp[0], pp[len(pp)-1]} {
 							ta, td := s.Line.ProjectArc(tip)
@@ -184,9 +189,12 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 							}
 							if ta > sa && L-ta < tcMarginM {
 								cv.b = sa // tail on the high side
-								terminal = sa
 							} else if ta < sa && ta < tcMarginM {
 								cv.a = sa // tail on the low side
+							} else {
+								continue
+							}
+							if sa > tcMarginM && sa < L-tcMarginM {
 								terminal = sa
 							}
 						}
@@ -269,6 +277,25 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 						anyDiffers = true
 					}
 				}
+			}
+			// a piece NO pattern ever rides is relay/yard trackage the
+			// walk dragged in (MATCH appends terminal pieces whole) —
+			// drop it entirely, so the drawn line ENDS at the terminal
+			// stop and the clamp can cap it with the station marker.
+			// Only provable zeros drop: every route must have a parsed,
+			// empty mask (untrusted routes keep original acts and never
+			// qualify).
+			allZero := len(acts) == len(s.Routes) && len(acts) > 0
+			for _, a := range acts {
+				m, okz := gtfs.ParseMask168(a)
+				if !okz || !m.Empty() {
+					allZero = false
+					break
+				}
+			}
+			if allZero {
+				anyDiffers = true // dropping IS a change
+				continue
 			}
 			ns := *s
 			ns.Acts = acts

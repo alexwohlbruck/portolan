@@ -273,6 +273,28 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     check('partial-coverage stops draw per-line dots (Grand Army Plaza)',
       gap && gap.properties.dots && gap.properties.dots.split(';').length === 2 && gap.properties.span_px === undefined,
       `dots: ${gap?.properties.dots}`)
+    // terminal caps: relay tails past a terminal are dropped entirely,
+    // so the drawn line ENDS at the station and the marker sits on the
+    // tip — Atlantic Terminal is the canary (its tail once ran 180 m
+    // past the bumper, then survived as a 137 m stub lit by platforms
+    // inside the cut margin)
+    {
+      const at = mks.find((f) => f.properties.name === 'Atlantic Terminal')
+      const lirr = JSON.parse(fs.readFileSync(path.join(repo, 'build/nyc.geojson'), 'utf8'))
+        .features.filter((f) => f.properties.band_min === 15 && f.properties.kind !== 'transition' &&
+          String(f.properties.routes).split(',').every((r) => r.startsWith('f2:')))
+      const [mx, my] = at.geometry.coordinates
+      const kx = 111320 * Math.cos((my * Math.PI) / 180)
+      const dm = (c) => Math.hypot((c[0] - mx) * kx, (c[1] - my) * 111320)
+      const capped = lirr.some((f) => {
+        const cs = f.geometry.coordinates
+        return dm(cs[0]) < 2 || dm(cs[cs.length - 1]) < 2
+      })
+      const past = lirr.some((f) => f.geometry.coordinates.some((c) => dm(c) < 400 && c[0] < mx - 0.0003))
+      check('Atlantic Terminal marker caps the very end of the LIRR line', capped && !past,
+        `capped=${capped} tail-past-bumper=${past}`)
+    }
+
     // the dot wears the DRAWN ribbon color: Penn Station's LIRR dot must
     // match the color FAIR painted the LIRR trunk, not a branch color
     const penn = mks.find((f) => f.properties.name === 'Penn Station')
