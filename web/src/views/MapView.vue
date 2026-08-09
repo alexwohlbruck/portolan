@@ -345,6 +345,14 @@ async function loadStations() {
   if (fc?.features) {
     for (const f of fc.features) {
       const p = f.properties
+      if (p.ftype === 'cat') {
+        // caterpillar bullets: normalize singular route/mode into the
+        // aligned-array props so stationVisible and the class toggles
+        // treat a bullet exactly like a one-route station
+        p.routes = p.route
+        p.modes = p.mode
+        continue
+      }
       if (p.ftype === 'marker') {
         // marker rule: lines that fill the whole bundle → a white pill
         // lying ACROSS it; anything less → one borderless dot per
@@ -697,6 +705,27 @@ function addLayers() {
       'icon-ignore-placement': true,
     },
   })
+  // caterpillars: inline route bullets riding the ribbons. Each bullet is
+  // a point at the chain's anchor carrying a map-aligned px vector (fork
+  // symbol-anchor-offset) that lands it on its own ribbon's slot offset —
+  // the chain rotates with the camera, glyphs stay upright, and the
+  // pixel-space group never stretches with zoom. Band 14 bullets show
+  // z14-15, band 15 bullets take over above (offsets match zoomScaledOffset
+  // only at z14+ where the slot pitch is fixed, so no cats below 14).
+  map.addLayer({
+    id: 'cats', type: 'symbol', source: 'stations', minzoom: 14,
+    filter: ['step', ['zoom'],
+      ['all', ['==', ['get', 'ftype'], 'cat'], ['==', ['get', 'band'], 14]],
+      15, ['all', ['==', ['get', 'ftype'], 'cat'], ['==', ['get', 'band'], 15]]] as any,
+    layout: {
+      'icon-image': ['concat', 'blt-', ['get', 'hex'], '-', ['get', 'label']],
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+      'symbol-anchor-offset': ['get', 'vec'],
+      'symbol-anchor-offset-alignment': 'map',
+    } as any,
+  })
+
   const rankBump = ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]
   // the merged complex label yields to per-corridor labels at z15 —
   // stations with one marker keep their label at every zoom (coalesce:

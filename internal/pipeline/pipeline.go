@@ -385,7 +385,18 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		nm += len(sts[i].Markers)
 	}
 	logf("stations: %d (%d markers) from %d patterns", len(sts), nm, len(rail))
-	if err := writeStations(o.Out+".stations.geojson", sts); err != nil {
+	// caterpillars: inline route bullets riding the ribbons, anchored on
+	// straight mid-station stretches (fork symbol-anchor-offset does the
+	// pixel-space group placement client-side)
+	cats := BuildCaterpillars(segs, sts, feed.Routes, frame)
+	logf("caterpillars: %d bullets in %d chains", len(cats), func() int {
+		g := map[int]bool{}
+		for _, c := range cats {
+			g[c.Group] = true
+		}
+		return len(g)
+	}())
+	if err := writeStations(o.Out+".stations.geojson", sts, cats); err != nil {
 		return err
 	}
 	// the resolved style travels WITH the build: the viewer renders widths,

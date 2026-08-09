@@ -919,7 +919,7 @@ func naturalCmp(a, b string) int {
 // `ftype: "marker"` feature per snapped bundle — a complex is one label
 // and as many markers as corridors. Aligned per-route arrays are
 // comma-joined like ribbon `routes`.
-func writeStations(path string, sts []Station) error {
+func writeStations(path string, sts []Station, cats []CatBullet) error {
 	fc := collection{Type: "FeatureCollection"}
 	pt := func(ll geo.LL) json.RawMessage {
 		raw, _ := json.Marshal([2]float64{ll.Lon, ll.Lat})
@@ -980,6 +980,26 @@ func writeStations(path string, sts []Station) error {
 				Geom:  geomJSON{Type: "Point", Coords: pt(m.LL)},
 			})
 		}
+	}
+	// caterpillar bullets ride in the same artifact: one point per bullet,
+	// the map-aligned px vector as an [x, y] array for the fork's
+	// data-driven symbol-anchor-offset
+	for _, c := range cats {
+		fc.Features = append(fc.Features, feature{
+			Type: "Feature",
+			Props: map[string]any{
+				"ftype": "cat",
+				"route": c.Route,
+				"label": c.Label,
+				"hex":   c.Hex,
+				"acts":  c.Acts,
+				"mode":  c.Mode,
+				"vec":   c.Vec,
+				"band":  c.Band,
+				"grp":   c.Group,
+			},
+			Geom: geomJSON{Type: "Point", Coords: pt(c.LL)},
+		})
 	}
 	return writeFC(path, fc)
 }
