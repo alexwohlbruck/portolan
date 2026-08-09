@@ -124,8 +124,7 @@
   background-size: 22px 22px;
 }
 
-/* MapLibre's own stylesheet ships light chrome; the console is dark by
-   default and the map fills its pane. */
+/* MapLibre's own stylesheet ships light chrome; the map fills its pane. */
 .maplibregl-map {
   font: inherit;
 }

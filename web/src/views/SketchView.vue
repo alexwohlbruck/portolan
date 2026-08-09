@@ -9,6 +9,7 @@ import Input from '@/components/ui/Input.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { feed, currentCity } from '@/lib/store'
+import { basemapTiles, isDark } from '@/lib/theme'
 import { toast } from '@/lib/toast'
 import {
   History, bake, bakeAll, deleteAnchor, displayColor, handlesOf, insertAnchor, isCorner,
@@ -577,6 +578,16 @@ function fitCity() {
   if (map && b?.length === 4) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, duration: 0 })
 }
 
+// The basemap is only ever a tracing underlay here, so it sits fainter
+// than the map view's — but the light tiles still need more of it than
+// the dark ones to be legible at all (lib/theme.ts).
+const rasterOpacity = () => (isDark.value ? 0.5 : 0.9)
+watch(isDark, () => {
+  if (!map) return
+  map.getSource('osm')?.setTiles([basemapTiles()])
+  map.setPaintProperty('osm', 'raster-opacity', rasterOpacity())
+})
+
 onMounted(() => {
   if (typeof maplibregl === 'undefined') {
     toast({ title: 'MapLibre not loaded', variant: 'error' })
@@ -593,12 +604,12 @@ onMounted(() => {
       sources: {
         osm: {
           type: 'raster',
-          tiles: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'],
+          tiles: [basemapTiles()],
           tileSize: 256,
           attribution: '© OpenStreetMap © CARTO',
         },
       },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.5 } }],
+      layers: [{ id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': rasterOpacity() } }],
     },
   })
   ro = new ResizeObserver(() => map?.resize())

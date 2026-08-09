@@ -1,10 +1,23 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <title>Portolan</title>
+    <script>
+      // Theme BEFORE first paint. lib/theme.ts owns this decision, but it
+      // runs after the module graph loads and Vue mounts — settling it
+      // there alone flashes the wrong shell on every load. Same key, same
+      // rule (query light so an unknown preference lands on dark); change
+      // one and change the other.
+      ;(function () {
+        var t = localStorage.getItem('portolan.theme')
+        var dark = t === 'dark' || (t !== 'light' && !matchMedia('(prefers-color-scheme: light)').matches)
+        document.documentElement.classList.toggle('dark', dark)
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+      })()
+    </script>
     <link rel="stylesheet" href="/vendor/maplibre-gl.css" />
     <script src="/vendor/maplibre-gl.js"></script>
   </head>

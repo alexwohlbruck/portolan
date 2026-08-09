@@ -8,6 +8,7 @@ import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
 import { applyDynamic, activePredicate, activeRouteIdx, markerIconAt, maskActive, stationVisible, type BundleRow } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
+import { basemapTiles, isDark } from '@/lib/theme'
 import { toast } from '@/lib/toast'
 
 // MapLibre comes from the FORK the server exposes at /vendor — it carries
@@ -40,6 +41,45 @@ const BANDS = [
   { min: 13, max: 14, key: 13 },
   { min: 0, max: 13, key: 0 },
 ]
+
+// ── theme (lib/theme.ts) ───────────────────────────────────────────────
+// WebGL inherits no CSS: the basemap and every label colour are switched
+// by hand when the theme flips.
+// CARTO's light tiles are already pale enough to sit under the ribbons at
+// full strength; dimming them the way the dark tiles need washes the
+// street grid out entirely.
+const rasterOpacity = () => (isDark.value ? 0.55 : 1)
+// Station names are drawn OVER coloured ribbons in both themes, so the
+// halo does the separating work and has to invert with the basemap; the
+// text just needs enough contrast against its own halo.
+const LABEL = {
+  dark: { color: '#e8e8ee', halo: 'rgba(12,12,16,0.9)' },
+  light: { color: '#1b1b22', halo: 'rgba(255,255,255,0.92)' },
+}
+const labelPaint = () => {
+  const t = isDark.value ? LABEL.dark : LABEL.light
+  return { 'text-color': t.color, 'text-halo-color': t.halo, 'text-halo-width': 1.4 }
+}
+const LABEL_LAYERS = ['station-labels', 'station-labels-hi']
+
+// The marker images (dots, pills, bullets) are NOT re-themed: every one
+// of them sits on top of a route's own colour, so they read the same
+// against either basemap — and their ids are content-addressed, so a
+// theme-dependent fill would need every cached image evicted.
+watch(isDark, () => {
+  if (!map) return
+  map.getSource('osm')?.setTiles([basemapTiles()])
+  map.setPaintProperty('osm', 'raster-opacity', rasterOpacity())
+  const p = labelPaint()
+  for (const id of LABEL_LAYERS) {
+    if (!map.getLayer(id)) continue
+    for (const [k, v] of Object.entries(p)) map.setPaintProperty(id, k, v)
+  }
+  if (map.getLayer('dbg-nodes')) map.setPaintProperty('dbg-nodes', 'circle-stroke-color', nodeStroke())
+})
+// debug node halo: the one debug layer whose colour is a contrast choice
+// rather than an identity
+const nodeStroke = () => (isDark.value ? '#fff' : '#1b1b22')
 
 // Offsets live in DIFFERENT properties depending on the segment kind, and
 // getting this wrong is invisible in the data and glaring on the map: a
@@ -716,11 +756,7 @@ function addLayers() {
       'icon-offset': bulletOffset,
       'icon-optional': true,
     },
-    paint: {
-      'text-color': '#e8e8ee',
-      'text-halo-color': 'rgba(12,12,16,0.9)',
-      'text-halo-width': 1.4,
-    },
+    paint: labelPaint(),
   })
   // per-corridor labels for complexes at z15+: this corridor's name and
   // ITS bullets (Fulton St splits into A·C / J·Z / 2·3 / 4·5 labels the
@@ -741,13 +777,9 @@ function addLayers() {
       'icon-offset': bulletOffset,
       'icon-optional': true,
     },
-    paint: {
-      'text-color': '#e8e8ee',
-      'text-halo-color': 'rgba(12,12,16,0.9)',
-      'text-halo-width': 1.4,
-    },
+    paint: labelPaint(),
   })
-  for (const id of ['station-markers', 'station-labels', 'station-labels-hi']) {
+  for (const id of ['station-markers', ...LABEL_LAYERS]) {
     map.on('click', id, (e: any) => {
       inspect.value = e.features?.[0]?.properties ?? null
     })
@@ -774,7 +806,7 @@ function addLayers() {
     id: 'dbg-nodes', type: 'circle', source: 'nodes',
     paint: {
       'circle-radius': ['+', 2, ['get', 'degree']], 'circle-color': '#e33',
-      'circle-opacity': 0.8, 'circle-stroke-color': '#fff', 'circle-stroke-width': 1,
+      'circle-opacity': 0.8, 'circle-stroke-color': nodeStroke(), 'circle-stroke-width': 1,
     },
     layout: { visibility: 'none' },
   })
@@ -863,12 +895,12 @@ onMounted(async () => {
       sources: {
         osm: {
           type: 'raster',
-          tiles: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'],
+          tiles: [basemapTiles()],
           tileSize: 256,
           attribution: '© OpenStreetMap © CARTO',
         },
       },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.55 } }],
+      layers: [{ id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': rasterOpacity() } }],
     },
   })
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
@@ -955,7 +987,8 @@ watch(feed, async () => {
         <input
           v-model="when"
           type="datetime-local"
-          class="h-8 rounded-md border border-input bg-transparent px-2 text-sm [color-scheme:dark]"
+          class="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+          :class="isDark ? '[color-scheme:dark]' : '[color-scheme:light]'"
         />
         <Button variant="ghost" size="sm" title="Jump to the current time" @click="when = localNow()">now</Button>
 
