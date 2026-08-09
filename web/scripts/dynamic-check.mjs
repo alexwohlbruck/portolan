@@ -520,6 +520,29 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       activeRouteIdx(props, masks, null, new Set()) === null)
 }
 
+// ── markers re-derive under time filters ───────────────────────────────
+// A two-ribbon pill whose second line sleeps becomes the survivor's
+// colored dot at the re-centered offset; when both run it stays a pill.
+{
+  const { markerIconAt } = await import('../src/lib/dynamic.ts')
+  const allWeek = 'ffffff'.repeat(7)
+  const never = '000000'.repeat(7)
+  const bundle = [
+    { g: 'g1', color: '996633', off: -3, routes: ['J'], props: { mode: 'metro', routes: 'J', acts: allWeek } },
+    { g: 'g1', color: 'EB6800', off: 3, routes: ['M'], props: { mode: 'metro', routes: 'M', acts: never } },
+  ]
+  const marker = { routes: 'J,M', modes: 'metro,metro', acts: allWeek + ';' + never, icon: 'pill-6' }
+  const night = new Date('2026-08-11T03:30')
+  check('pill collapses to the survivor dot at the re-centered slot',
+    markerIconAt(marker, bundle, {}, night, new Set()) === 'dots-996633@0')
+  const bothOn = bundle.map((r) => ({ ...r, props: { ...r.props, acts: allWeek } }))
+  const markerOn = { ...marker, acts: allWeek + ';' + allWeek }
+  check('pill stays a pill while both lines run',
+    markerIconAt(markerOn, bothOn, {}, night, new Set()) === 'pill-6')
+  check('no filter → keep the static union icon',
+    markerIconAt(markerOn, bothOn, {}, null, new Set()) === null)
+}
+
 // mask bit layout must match internal/atlas/activity.go: 7×6 hex chars,
 // Monday first, hour 0 = LSB
 {

@@ -130,6 +130,84 @@ export function activeRouteIdx(
   return idx.length === routes.length ? null : idx
 }
 
+/** One ribbon of a marker's bundle, in union terms. `g` is the
+ *  centerline hash the ribbon re-centers within (applyDynamic's
+ *  grouping) — offsets here must move exactly as the ribbons move,
+ *  residuals included, or dots detach from their lines. */
+export interface BundleRow {
+  g: string
+  color: string
+  off: number
+  routes: string[]
+  props: Record<string, any> // the ribbon feature's props (acts etc.)
+}
+
+/** The marker icon for one instant, re-derived against the marker's
+ *  ribbon bundle: hide sleeping ribbons, re-center the survivors with
+ *  applyDynamic's exact per-centerline rule, and draw a pill only while
+ *  the station's ACTIVE lines still fill the surviving bundle — a J/M
+ *  pill becomes a lone brown dot at 3am when the M sleeps. Returns the
+ *  icon id (dots-… / pill-…), or null to keep the static union icon. */
+export function markerIconAt(
+  props: Record<string, any>,
+  bundle: BundleRow[],
+  masks: Record<string, string>,
+  date: Date | null,
+  classesOff: Set<string>,
+): string | null {
+  if (!bundle.length || (!date && !classesOff.size)) return null
+  const pred = date ? activePredicate(masks, date) : () => true
+  const rowOn = (r: BundleRow) =>
+    !classesOff.has(r.props.mode) && pred({ properties: r.props } as any)
+
+  // re-centered offset per row, mirroring applyDynamic: within each
+  // centerline group, survivors of a thinned group re-pack at the
+  // group's own pitch; singleton groups and untouched groups keep
+  // their union offsets
+  const byG = new Map<string, BundleRow[]>()
+  for (const r of bundle) {
+    if (!byG.has(r.g)) byG.set(r.g, [])
+    byG.get(r.g)!.push(r)
+  }
+  const newOff = new Map<BundleRow, number>()
+  const alive = new Map<BundleRow, boolean>()
+  for (const rows of byG.values()) {
+    const vis = rows.filter(rowOn)
+    for (const r of rows) {
+      alive.set(r, vis.includes(r))
+      newOff.set(r, r.off)
+    }
+    if (rows.length < 2 || !vis.length || vis.length === rows.length) continue
+    const offs = rows.map((r) => r.off).sort((a, b) => a - b)
+    let pitch = Infinity
+    for (let i = 1; i < offs.length; i++) {
+      const d = offs[i] - offs[i - 1]
+      if (d > 0.01 && d < pitch) pitch = d
+    }
+    if (!isFinite(pitch)) pitch = 6
+    vis.sort((a, b) => a.off - b.off)
+    vis.forEach((r, i) => newOff.set(r, (i - (vis.length - 1) / 2) * pitch))
+  }
+  const survivors = bundle.filter((r) => alive.get(r))
+  if (!survivors.length) return null // station hides anyway
+
+  // which surviving ribbons still have an ACTIVE stopping route here?
+  const idx = activeRouteIdx(props, masks, date, classesOff)
+  const routes = routesOf(props)
+  const active = new Set(idx ? idx.map((i) => routes[i]) : routes)
+  const stopRows = survivors.filter((r) => r.routes.some((x) => active.has(x)))
+  if (!stopRows.length) return null
+  if (stopRows.length === survivors.length && survivors.length > 1) {
+    const offs = survivors.map((r) => newOff.get(r)!)
+    const span = Math.max(...offs) - Math.min(...offs)
+    return `pill-${Math.round(span * 10) / 10}`
+  }
+  const parts = stopRows
+    .map((r) => ({ hex: r.color, off: newOff.get(r)! }))
+    .sort((a, b) => a.off - b.off)
+  return 'dots-' + parts.map((p) => `${p.hex}@${Math.round(p.off * 10) / 10}`).join(';')
+}
+
 // ── the dynamic render rule ────────────────────────────────────────────
 
 const endKey = (c: number[]) => c[0].toFixed(6) + ',' + c[1].toFixed(6)

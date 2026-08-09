@@ -6,7 +6,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
-import { applyDynamic, activePredicate, activeRouteIdx, maskActive, stationVisible } from '@/lib/dynamic'
+import { applyDynamic, activePredicate, activeRouteIdx, markerIconAt, maskActive, stationVisible, type BundleRow } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
@@ -254,6 +254,11 @@ function applyBand(key: number) {
       ? (f: any) => !off.has(f.properties.mode) && (!timePred || timePred(f))
       : null
   map.getSource(`build-${key}`)?.setData(pred ? applyDynamic(raw, pred) : raw)
+  if (key === 15) {
+    // markers re-derive their icons against this band's bundles
+    markerBundles = null
+    applyStations()
+  }
 }
 
 function applyBands() {
@@ -361,6 +366,7 @@ async function loadStations() {
     }
   }
   stationsRaw.value = fc
+  markerBundles = null // fresh stations — bundle links rebuild lazily
   applyStations()
 }
 
@@ -470,6 +476,78 @@ const lumaOf = (hex: string) => {
   return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)
 }
 
+// marker → its union ribbon bundle, resolved once per data load: the
+// nearest band-15 ribbon carrying one of the marker's routes names the
+// corridor, and every feature sharing its centerline hash is the
+// bundle (passers-by included — a pill must know about the express
+// lines that survive it).
+let markerBundles: Map<any, BundleRow[]> | null = null
+
+function buildMarkerBundles() {
+  const band = bandRaw.get(15)
+  const sts = stationsRaw.value
+  if (!band || !sts) return
+  const byRoute = new Map<string, any[]>()
+  const byG = new Map<string, BundleRow[]>()
+  for (const f of band.features) {
+    const p = f.properties
+    if ((p.kind !== 'steady' && p.kind !== 'bridge') || !f._g) continue
+    const row: BundleRow = {
+      g: f._g, color: p.color, off: +p.offset_px,
+      routes: String(p.routes ?? '').split(',').filter(Boolean), props: p,
+    }
+    if (!byG.has(f._g)) byG.set(f._g, [])
+    byG.get(f._g)!.push(row)
+    for (const r of row.routes) {
+      if (!byRoute.has(r)) byRoute.set(r, [])
+      byRoute.get(r)!.push(f)
+    }
+  }
+  // point-to-SEGMENT distance: FAIR vertices sit >60 m apart on
+  // straights, so vertex distance alone misses ribbons the marker is
+  // sitting right on top of
+  const distToLine = (mx: number, my: number, kx: number, cs: number[][]) => {
+    let best = Infinity
+    for (let i = 1; i < cs.length; i++) {
+      const ax = (cs[i - 1][0] - mx) * kx, ay = (cs[i - 1][1] - my) * 111320
+      const bx = (cs[i][0] - mx) * kx, by = (cs[i][1] - my) * 111320
+      const dx = bx - ax, dy = by - ay
+      const n2 = dx * dx + dy * dy
+      const t = n2 > 1e-12 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / n2)) : 0
+      best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy))
+    }
+    return best
+  }
+  markerBundles = new Map()
+  for (const f of sts.features) {
+    const p = f.properties
+    if (p.ftype !== 'marker') continue
+    const [mx, my] = f.geometry.coordinates
+    const kx = 111320 * Math.cos((my * Math.PI) / 180)
+    // per-color extents differ at junctions (the J reaches the fork,
+    // the M stops at Essex), so ONE nearest feature under-collects:
+    // take the union of each ROUTE's nearest ribbon's centerline group
+    const gs = new Set<string>()
+    for (const r of String(p.routes ?? '').split(',')) {
+      let best: any = null
+      let bestD = 40
+      for (const cf of byRoute.get(r) ?? []) {
+        const d = distToLine(mx, my, kx, cf.geometry.coordinates)
+        if (d < bestD) {
+          bestD = d
+          best = cf
+        }
+      }
+      if (best) gs.add(best._g)
+    }
+    if (gs.size) {
+      const rows: BundleRow[] = []
+      for (const g of gs) rows.push(...(byG.get(g) ?? []))
+      markerBundles.set(f, rows)
+    }
+  }
+}
+
 function applyStations() {
   const src = map?.getSource('stations')
   if (!src) return
@@ -481,6 +559,7 @@ function applyStations() {
   const d = when.value ? new Date(when.value) : null
   const date = d && !Number.isNaN(d.getTime()) ? d : null
   const off = classesOff.value
+  if ((date || off.size) && !markerBundles) buildMarkerBundles()
   const feats =
     date || off.size
       ? raw.features
@@ -496,23 +575,36 @@ function applyStations() {
  *  Pure: filtered features are copies, the cached data stays the union. */
 function timeFilteredBullets(f: any, date: Date | null, off: Set<string>): any {
   const p = f.properties
-  const labeled = p.ftype === 'station' || (p.ftype === 'marker' && p.nmarkers > 1)
-  if (!labeled) return f
-  const idx = activeRouteIdx(p, masks.value, date, off)
-  if (!idx) return f
-  const pick = (s: string) => {
-    const all = String(s ?? '').split(',')
-    return idx.map((i) => all[i]).join(',')
+  let props: Record<string, any> | null = null
+  // markers re-derive their icon against the bundle at this instant —
+  // a two-line pill whose second line sleeps becomes that line's dot
+  if (p.ftype === 'marker') {
+    const bundle = markerBundles?.get(f)
+    if (bundle) {
+      const icon = markerIconAt(p, bundle, masks.value, date, off)
+      if (icon && icon !== p.icon) props = { ...p, icon }
+    }
   }
-  const ids = bulletIdsOf({
-    labels: pick(p.labels),
-    route_colors: pick(p.route_colors),
-    modes: pick(p.modes),
-  })
-  const props = { ...p }
-  if (ids.length) props.brow = 'row-' + ids.join('|')
-  else delete props.brow
-  return { ...f, properties: props }
+  const labeled = p.ftype === 'station' || (p.ftype === 'marker' && p.nmarkers > 1)
+  if (labeled) {
+    const idx = activeRouteIdx(p, masks.value, date, off)
+    if (idx) {
+      const pick = (s: string) => {
+        const all = String(s ?? '').split(',')
+        return idx.map((i) => all[i]).join(',')
+      }
+      const ids = bulletIdsOf({
+        labels: pick(p.labels),
+        route_colors: pick(p.route_colors),
+        modes: pick(p.modes),
+      })
+      const np = props ?? { ...p }
+      if (ids.length) np.brow = 'row-' + ids.join('|')
+      else delete np.brow
+      props = np
+    }
+  }
+  return props ? { ...f, properties: props } : f
 }
 
 // time and class changes re-filter the cached data in memory — no fetch

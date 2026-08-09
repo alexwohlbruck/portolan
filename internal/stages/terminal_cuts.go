@@ -22,12 +22,16 @@ package stages
 // hours in the right places.
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"sort"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 )
+
+var tcDebug = os.Getenv("PORTOLAN_TCDBG") != ""
 
 const (
 	tcEndDistM = 40.0  // a path endpoint this close to the segment is ON it
@@ -65,11 +69,53 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 		byRoute[rid] = append(byRoute[rid], i)
 	}
 
+	// Parallel ribbons of one corridor share exact geometry, and the
+	// client bundles them BY that geometry (the _g hash) for dynamic
+	// re-centering. Cutting only the short-turning ribbon would desync
+	// the pair — the J stays whole while the M splits — so cut arcs are
+	// pooled per GEOMETRY GROUP and applied to every member: pieces stay
+	// identical across ribbons and the bundle survives the cut.
+	sig := func(l *geo.Line) uint64 {
+		h := uint64(1469598103934665603) // fnv64 offset basis
+		mix := func(v float64) {
+			// via int64: uint64(negative float) is undefined, and frame
+			// coords are signed — a direct cast collapses every negative
+			// coordinate to garbage and collides unrelated segments
+			u := uint64(int64(math.Round(v * 100)))
+			for i := 0; i < 8; i++ {
+				h ^= u & 0xff
+				h *= 1099511628211
+				u >>= 8
+			}
+		}
+		mix(float64(len(l.Pts)))
+		for _, p := range l.Pts {
+			mix(p.X)
+			mix(p.Y)
+		}
+		return h
+	}
+	groupCuts := map[uint64][]float64{}
+	segSig := make([]uint64, len(segs))
+	for si := range segs {
+		s := &segs[si]
+		if (s.Kind != "steady" && s.Kind != "bridge") || s.Line == nil {
+			continue
+		}
+		segSig[si] = sig(s.Line)
+	}
+
 	out := make([]Segment, 0, len(segs))
+	type prepared struct {
+		si      int
+		covers  map[int][]pathCover
+		trusted []bool
+		changed bool
+	}
+	var prep []prepared
 	for si := range segs {
 		s := &segs[si]
 		if (s.Kind != "steady" && s.Kind != "bridge") || len(s.Acts) == 0 || s.Line == nil {
-			out = append(out, *s)
 			continue
 		}
 		L := s.Line.Len()
@@ -128,10 +174,13 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 				trusted[ri] = true
 			}
 		}
-		if !changed && len(cuts) == 0 {
-			out = append(out, *s)
-			continue
-		}
+		groupCuts[segSig[si]] = append(groupCuts[segSig[si]], cuts...)
+		prep = append(prep, prepared{si: si, covers: covers, trusted: trusted, changed: changed})
+	}
+
+	// deduped cut arcs per geometry group
+	groupArcs := make(map[uint64][]float64, len(groupCuts))
+	for g, cuts := range groupCuts {
 		sort.Float64s(cuts)
 		var arcs []float64
 		for _, c := range cuts {
@@ -139,42 +188,89 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 				arcs = append(arcs, c)
 			}
 		}
-		// piece boundaries: [0, cuts..., L]
+		groupArcs[g] = arcs
+	}
+	prepBySeg := make(map[int]*prepared, len(prep))
+	for i := range prep {
+		prepBySeg[prep[i].si] = &prep[i]
+	}
+
+	for si := range segs {
+		s := &segs[si]
+		if (s.Kind != "steady" && s.Kind != "bridge") || s.Line == nil {
+			out = append(out, *s)
+			continue
+		}
+		L := s.Line.Len()
+		var arcs []float64
+		for _, a := range groupArcs[segSig[si]] {
+			if a > tcMarginM && a < L-tcMarginM {
+				arcs = append(arcs, a)
+			}
+		}
+		pr := prepBySeg[si]
+		if len(arcs) == 0 && (pr == nil || !pr.changed) {
+			out = append(out, *s)
+			continue
+		}
 		bounds := append([]float64{0}, arcs...)
 		bounds = append(bounds, L)
 		orig := s.Acts
+		anyDiffers := false
+		var pieces []Segment
 		for bi := 0; bi < len(bounds)-1; bi++ {
 			lo, hi := bounds[bi], bounds[bi+1]
 			mid := (lo + hi) / 2
-			acts := make([]string, len(s.Routes))
-			differs := false
-			for ri := range s.Routes {
-				if !trusted[ri] {
-					if ri < len(orig) {
-						acts[ri] = orig[ri]
+			acts := append([]string(nil), orig...)
+			if pr != nil {
+				for ri := range s.Routes {
+					if !pr.trusted[ri] {
+						continue
 					}
-					continue
-				}
-				var m gtfs.Mask168
-				for _, cv := range covers[ri] {
-					if cv.a <= mid && mid <= cv.b {
-						m = m.Or(cv.mask)
+					var m gtfs.Mask168
+					for _, cv := range pr.covers[ri] {
+						if cv.a <= mid && mid <= cv.b {
+							m = m.Or(cv.mask)
+						}
+					}
+					for len(acts) <= ri {
+						acts = append(acts, "")
+					}
+					if acts[ri] != m.Hex() {
+						acts[ri] = m.Hex()
+						anyDiffers = true
 					}
 				}
-				acts[ri] = m.Hex()
-				if ri < len(orig) && acts[ri] != orig[ri] {
-					differs = true
-				}
-			}
-			if len(bounds) == 2 && !differs {
-				out = append(out, *s) // recompute matched the original — no-op
-				break
 			}
 			ns := *s
 			ns.Acts = acts
 			ns.Line = subLine(s.Line, lo, hi)
-			out = append(out, ns)
+			pieces = append(pieces, ns)
 		}
+		if len(pieces) == 1 && !anyDiffers {
+			out = append(out, *s) // recompute matched the original — no-op
+			continue
+		}
+		if tcDebug {
+			L := s.Line.Len()
+			for _, a := range arcs {
+				if a < tcMarginM || a > L-tcMarginM {
+					fmt.Printf("TCDBG bad arc %.0f on L=%.0f routes=%v band=%d\n", a, L, s.Routes, s.BandMin)
+				}
+			}
+			for pi2, ns := range pieces {
+				if ns.Line.Len() < 1 {
+					fmt.Printf("TCDBG zero piece %d/%d routes=%v L=%.0f arcs=%v band=%d\n", pi2, len(pieces), s.Routes, L, arcs, s.BandMin)
+				}
+				for ri, a := range ns.Acts {
+					if a == "000000000000000000000000000000000000000000" && ri < len(s.Acts) && s.Acts[ri] != a {
+						fmt.Printf("TCDBG zeroed act r=%s piece %d/%d L=%.0f arcs=%v band=%d prTrusted=%v\n",
+							s.Routes[ri], pi2, len(pieces), L, arcs, s.BandMin, pr != nil && pr.trusted[ri])
+					}
+				}
+			}
+		}
+		out = append(out, pieces...)
 	}
 	return out
 }

@@ -85,6 +85,50 @@ func TestCutsKeepUnmaskedRoutesIntact(t *testing.T) {
 	}
 }
 
+// Parallel ribbons of one corridor must cut at the SAME arcs or the
+// client's geometry-hash bundling desyncs: the J stays whole while the
+// M splits, and re-centering + markers lose the pair.
+func TestCutsSynchronizeAcrossRibbons(t *testing.T) {
+	line := func(x0, x1 float64) *geo.Line {
+		var pts []geo.Pt
+		for x := x0; x <= x1; x += 50 {
+			pts = append(pts, geo.Pt{X: x, Y: 0})
+		}
+		return geo.NewLine(pts)
+	}
+	mFull := gtfs.Pattern{Route: gtfs.Route{ID: "M"}, ShapeID: "full"}
+	mShort := gtfs.Pattern{Route: gtfs.Route{ID: "M"}, ShapeID: "short"}
+	jFull := gtfs.Pattern{Route: gtfs.Route{ID: "J"}, ShapeID: "jf"}
+	var day, wkd, all gtfs.Mask168
+	day = day.Set(0, 9)
+	wkd = wkd.Set(5, 14)
+	all = day.Or(wkd)
+	SetPatternActs(map[string]gtfs.Mask168{"M\x1ffull": day, "M\x1fshort": wkd, "J\x1fjf": all})
+	defer SetPatternActs(nil)
+	// the J and M ribbons share EXACT geometry (one corridor)
+	jSeg := Segment{Kind: "steady", Routes: []string{"J"}, Acts: []string{all.Hex()}, Line: line(0, 2000)}
+	mSeg := Segment{Kind: "steady", Routes: []string{"M"}, Acts: []string{day.Or(wkd).Hex()}, Line: line(0, 2000)}
+	paths := []Path{
+		{Pattern: mFull, Line: line(-500, 2500)},
+		{Pattern: mShort, Line: line(-500, 700)},
+		{Pattern: jFull, Line: line(-500, 2500)},
+	}
+	out := CutSegmentsAtTerminals([]Segment{jSeg, mSeg}, paths, nil)
+	if len(out) != 4 {
+		t.Fatalf("both ribbons must split identically: want 4 pieces, got %d", len(out))
+	}
+	// piece geometries pair up across the two ribbons
+	if math.Abs(out[0].Line.Len()-out[2].Line.Len()) > 1 ||
+		math.Abs(out[1].Line.Len()-out[3].Line.Len()) > 1 {
+		t.Fatalf("piece extents differ across ribbons: %v %v vs %v %v",
+			out[0].Line.Len(), out[1].Line.Len(), out[2].Line.Len(), out[3].Line.Len())
+	}
+	// the J's hours are the same on both its pieces
+	if out[0].Acts[0] != all.Hex() || out[1].Acts[0] != all.Hex() {
+		t.Fatalf("J acts changed: %v / %v", out[0].Acts, out[1].Acts)
+	}
+}
+
 // The Essex St case: the short pattern's SHAPE overruns its terminal by
 // 300 m of tail trackage. With the terminal stop location supplied, the
 // cut happens at the STOP — the drawn tail ends at the station.
