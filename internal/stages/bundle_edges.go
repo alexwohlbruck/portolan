@@ -390,10 +390,19 @@ func mergeOnePair(net *Network, st *bundleState) bool {
 		if !ok {
 			return false
 		}
+		// with BOTH end pairs anchored at shared junctions the pair is a
+		// lens — two drawings of one corridor that bulge apart and rejoin
+		// with no junction between. The topology proof is total, so the
+		// band widens: the LIRR's Woodside bend fans its track pairs to
+		// ~31 m around the curve and drew as a purple eye at 25.
+		band := bandMax
+		if (mat[0][0] || mat[0][1]) && (mat[1][0] || mat[1][1]) {
+			band = 40.0
+		}
 		in := 0
 		samples := lineOf(a).Resample(12)
 		for _, q := range samples {
-			if lineOf(b).WithinLE(q, bandMax) {
+			if lineOf(b).WithinLE(q, band) {
 				in++
 			}
 		}
