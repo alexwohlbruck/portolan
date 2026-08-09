@@ -278,25 +278,11 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 					}
 				}
 			}
-			// a piece NO pattern ever rides is relay/yard trackage the
-			// walk dragged in (MATCH appends terminal pieces whole) —
-			// drop it entirely, so the drawn line ENDS at the terminal
-			// stop and the clamp can cap it with the station marker.
-			// Only provable zeros drop: every route must have a parsed,
-			// empty mask (untrusted routes keep original acts and never
-			// qualify).
-			allZero := len(acts) == len(s.Routes) && len(acts) > 0
-			for _, a := range acts {
-				m, okz := gtfs.ParseMask168(a)
-				if !okz || !m.Empty() {
-					allZero = false
-					break
-				}
-			}
-			if allZero {
-				anyDiffers = true // dropping IS a change
-				continue
-			}
+			// tail pieces with all-zero hours are KEPT (dark under any
+			// timestamp, visible on the union): at terminals like
+			// Atlantic the "overshoot" is the platforms themselves —
+			// the GTFS stop point sits at one end of them — and the
+			// terminus clamp walks the chain to cap the true tip.
 			ns := *s
 			ns.Acts = acts
 			ns.Line = subLine(s.Line, lo, hi)

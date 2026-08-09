@@ -129,10 +129,11 @@ func TestCutsSynchronizeAcrossRibbons(t *testing.T) {
 	}
 }
 
-// A relay tail — trackage beyond the terminal stop that NO pattern
-// ever rides — is dropped entirely: the drawn line ends at the stop
-// (where the terminal clamp then caps it with the station marker).
-func TestRelayTailIsDropped(t *testing.T) {
+// A tail beyond the terminal stop that NO pattern rides is KEPT but
+// carries zero hours: at real terminals the "overshoot" is often the
+// platforms themselves, so the geometry stays (the terminus clamp caps
+// its tip) while any timestamp renders it dark.
+func TestRelayTailGoesDark(t *testing.T) {
 	line := func(x0, x1 float64) *geo.Line {
 		var pts []geo.Pt
 		for x := x0; x <= x1; x += 50 {
@@ -148,18 +149,21 @@ func TestRelayTailIsDropped(t *testing.T) {
 	seg := Segment{Kind: "steady", Routes: []string{"L"},
 		Acts: []string{day.Hex()}, Line: line(0, 2000)}
 	// the path runs the whole segment (MATCH appends terminal pieces
-	// whole) but the terminal STOP is at 1600 — the last 400 m is relay
+	// whole) but the terminal STOP is at 1600 — the last 400 m is tail
 	paths := []Path{{Pattern: pat, Line: line(-500, 2000)}}
 	terms := [][2]geo.Pt{{{X: -500, Y: 0}, {X: 1600, Y: 0}}}
 	out := CutSegmentsAtTerminals([]Segment{seg}, paths, terms)
-	if len(out) != 1 {
-		t.Fatalf("want 1 piece (tail dropped), got %d", len(out))
+	if len(out) != 2 {
+		t.Fatalf("want 2 pieces (tail kept), got %d", len(out))
 	}
 	if math.Abs(out[0].Line.Len()-1600) > 30 {
-		t.Fatalf("kept piece should end at the STOP: len %.0f", out[0].Line.Len())
+		t.Fatalf("service piece should end at the STOP: len %.0f", out[0].Line.Len())
 	}
 	if out[0].Acts[0] != day.Hex() {
-		t.Fatalf("kept piece acts: %s", out[0].Acts[0])
+		t.Fatalf("service piece acts: %s", out[0].Acts[0])
+	}
+	if m, ok := gtfs.ParseMask168(out[1].Acts[0]); !ok || !m.Empty() {
+		t.Fatalf("tail must carry ZERO hours: %s", out[1].Acts[0])
 	}
 }
 

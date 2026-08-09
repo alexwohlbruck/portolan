@@ -311,9 +311,10 @@ func TestClampSeesTransitionsAsContinuation(t *testing.T) {
 	pats := []gtfs.Pattern{{Route: r2, StopIDs: []string{"AT"}}}
 	sts := BuildStations(feed, pats, nil, nil)
 	// steady N ends at the seam; steady S starts 35 m away (cut-back
-	// gap); a transition bridges them and continues south
+	// gap); a transition bridges them and continues FAR south — a long
+	// onward chain is inline track, not a terminus
 	north := mk(geo.LL{Lon: -73.9776, Lat: 40.6890}, geo.LL{Lon: -73.9766, Lat: 40.68285})
-	south := mk(geo.LL{Lon: -73.97635, Lat: 40.68254}, geo.LL{Lon: -73.9758, Lat: 40.6790})
+	south := mk(geo.LL{Lon: -73.97635, Lat: 40.68254}, geo.LL{Lon: -73.9740, Lat: 40.6690})
 	bridge := mk(geo.LL{Lon: -73.9766, Lat: 40.68285}, geo.LL{Lon: -73.97635, Lat: 40.68254})
 	segs := []stages.Segment{
 		{Kind: "steady", Routes: []string{"2"}, NSlots: 1, Color: "D82233", BandMin: 15, Line: north},
