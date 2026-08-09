@@ -433,6 +433,30 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       night > -73.94, `westmost M lon ${night.toFixed(4)}`)
     check('weekend M ends at Delancey/Essex (not the Chrystie fork)',
       wknd > -73.9895 && wknd < -73.985, `westmost M lon ${wknd.toFixed(4)}`)
+
+    // the H's MATCH path overruns its Rockaway Blvd terminal by 1.3 km
+    // of relay trackage to the 80 St crossover; that tail must carry NO
+    // hours at all — and gap-mask 24/7 lies must not survive the acts
+    // recompute (the extension shuttle runs 8-21 only)
+    const hFeats = JSON.parse(fs.readFileSync(unionP, 'utf8')).features.filter(
+      (f) => f.properties.band_min === 15 && f.properties.kind !== 'transition' &&
+        String(f.properties.routes).split(',').includes('H'),
+    )
+    let tailLit = 0
+    let east321 = false
+    for (const f of hFeats) {
+      const rts = String(f.properties.routes).split(',')
+      const a = String(f.properties.acts ?? '').split(';')[rts.indexOf('H')]
+      if (!a || a.length !== 42) continue
+      const anyHour = [...Array(7)].some((_, d) => parseInt(a.slice(d * 6, d * 6 + 6), 16) !== 0)
+      const lons = f.geometry.coordinates.map((c) => c[0])
+      const lats = f.geometry.coordinates.map((c) => c[1])
+      if (Math.min(...lats) > 40.66 && Math.min(...lons) < -73.845 && anyHour) tailLit++
+      if (Math.min(...lats) > 40.66 && Math.min(...lons) > -73.845 && Math.min(...lons) < -73.83 &&
+        mAct(a, 5, 14)) east321 = true
+    }
+    check('the H relay tail west of Rockaway Blvd is never lit', tailLit === 0, `${tailLit} lit`)
+    check('the H extension IS lit east of Rockaway Blvd on Sat 14:00', east321)
   }
 }
 

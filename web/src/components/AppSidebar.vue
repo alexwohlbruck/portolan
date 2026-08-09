@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Map, MapPin, Hammer, Clock, Palette, Crosshair, Compass, PenTool, SlidersHorizontal } from 'lucide-vue-next'
+import { Map, MapPin, Hammer, Clock, Palette, Crosshair, Compass, PenTool, SlidersHorizontal, Sun, Moon, Monitor } from 'lucide-vue-next'
 import Badge from './ui/Badge.vue'
 import Select from './ui/Select.vue'
 import Spinner from './ui/Spinner.vue'
 import { cities, feed, run } from '@/lib/store'
+import { theme, THEMES, type Theme } from '@/lib/theme'
 
 const route = useRoute()
 const nav = [
@@ -22,6 +23,8 @@ const config = [
 ]
 const isActive = (to: string) => route.path === to || route.path.startsWith(`${to}/`)
 const options = computed(() => cities.value.map((c) => ({ value: c.id, label: c.name || c.id })))
+
+const themeIcon: Record<Theme, any> = { light: Sun, system: Monitor, dark: Moon }
 </script>
 
 <template>
@@ -88,6 +91,28 @@ const options = computed(() => cities.value.map((c) => ({ value: c.id, label: c.
       >
         <Compass class="size-4" /> Old workbench
       </a>
+
+      <!-- Three states, not a switch: 'system' is a real choice and the
+           default, and a two-way toggle has nowhere to put it. -->
+      <div class="mt-2 flex items-center gap-1 rounded-lg bg-muted/60 p-1">
+        <button
+          v-for="t in THEMES"
+          :key="t"
+          type="button"
+          :title="t === 'system' ? 'Follow system appearance' : t[0].toUpperCase() + t.slice(1) + ' theme'"
+          :aria-pressed="theme === t"
+          :class="[
+            'flex flex-1 items-center justify-center rounded-md py-1.5 transition-colors',
+            theme === t
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
+          ]"
+          @click="theme = t"
+        >
+          <component :is="themeIcon[t]" class="size-4" />
+          <span class="sr-only">{{ t }}</span>
+        </button>
+      </div>
     </div>
   </aside>
 </template>

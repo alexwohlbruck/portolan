@@ -110,7 +110,6 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 		si      int
 		covers  map[int][]pathCover
 		trusted []bool
-		changed bool
 	}
 	var prep []prepared
 	for si := range segs {
@@ -125,7 +124,6 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 		covers := make(map[int][]pathCover, len(s.Routes))
 		trusted := make([]bool, len(s.Routes))
 		var cuts []float64
-		changed := false
 		for ri, rid := range s.Routes {
 			ok := true
 			var cvs []pathCover
@@ -161,12 +159,42 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 						}
 					}
 				}
+				// the THROUGH-TAIL case: the path runs the whole segment
+				// because MATCH appends terminal pieces whole, but the
+				// pattern's last STOP sits mid-segment — the H's shape
+				// ends AT Rockaway Blvd while its matched path runs the
+				// full piece to the 80 St crossover. Coverage ends at
+				// the stop; the relay tail beyond gets nothing.
+				if terminal < 0 && terms != nil && cv.a <= 1 && cv.b >= L-1 {
+					for _, stop := range terms[pi] {
+						if stop == (geo.Pt{}) {
+							continue
+						}
+						sa, sd := s.Line.ProjectArc(stop)
+						if sd > 80 || sa <= tcMarginM || sa >= L-tcMarginM {
+							continue
+						}
+						// which side is the tail? The side holding the
+						// path's nearer TIP, close to the segment.
+						pp := pa.Line.Pts
+						for _, tip := range []geo.Pt{pp[0], pp[len(pp)-1]} {
+							ta, td := s.Line.ProjectArc(tip)
+							if td > tcEndDistM {
+								continue
+							}
+							if ta > sa && L-ta < tcMarginM {
+								cv.b = sa // tail on the high side
+								terminal = sa
+							} else if ta < sa && ta < tcMarginM {
+								cv.a = sa // tail on the low side
+								terminal = sa
+							}
+						}
+					}
+				}
 				cvs = append(cvs, cv)
 				if terminal >= 0 && terminal > tcMarginM && terminal < L-tcMarginM {
 					cuts = append(cuts, terminal)
-				}
-				if cv.a > 1 || cv.b < L-1 {
-					changed = true // partial coverage — acts may differ per piece
 				}
 			}
 			if ok && len(cvs) > 0 {
@@ -175,7 +203,7 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 			}
 		}
 		groupCuts[segSig[si]] = append(groupCuts[segSig[si]], cuts...)
-		prep = append(prep, prepared{si: si, covers: covers, trusted: trusted, changed: changed})
+		prep = append(prep, prepared{si: si, covers: covers, trusted: trusted})
 	}
 
 	// deduped cut arcs per geometry group
@@ -209,7 +237,7 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 			}
 		}
 		pr := prepBySeg[si]
-		if len(arcs) == 0 && (pr == nil || !pr.changed) {
+		if len(arcs) == 0 && pr == nil {
 			out = append(out, *s)
 			continue
 		}
