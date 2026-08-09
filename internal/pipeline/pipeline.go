@@ -357,11 +357,17 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		logf("direct: %d paths → %d deduped segments", len(busPaths), len(bsegs))
 		segs = append(segs, bsegs...)
 	}
-	// STATIONS: platforms → merged, classed, ranked stations
-	// (docs/STOP-LABELS.md). Built from the same pattern list that drew
-	// the map, so a scenario build's stations are that scenario's too.
+	// STATIONS: platforms → merged, classed, ranked stations, snapped
+	// onto the drawn ribbons (docs/STOP-LABELS.md). Built from the same
+	// pattern list that drew the map, so a scenario build's stations are
+	// that scenario's too.
 	sts := BuildStations(feed, rail, o.BBox)
-	logf("stations: %d from %d patterns", len(sts), len(rail))
+	SnapStations(sts, segs, frame, d.FairGapPx, feed.Routes)
+	nm := 0
+	for i := range sts {
+		nm += len(sts[i].Markers)
+	}
+	logf("stations: %d (%d markers) from %d patterns", len(sts), nm, len(rail))
 	if err := writeStations(o.Out+".stations.geojson", sts); err != nil {
 		return err
 	}

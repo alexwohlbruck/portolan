@@ -248,8 +248,27 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
   if (!fs.existsSync(stPath)) {
     console.log('note  NYC stations build missing — skipping station checks')
   } else {
-    const sts = JSON.parse(fs.readFileSync(stPath, 'utf8')).features
+    const all = JSON.parse(fs.readFileSync(stPath, 'utf8')).features
+    const sts = all.filter((f) => f.properties.ftype === 'station')
+    const mks = all.filter((f) => f.properties.ftype === 'marker')
     check('stations exist', sts.length > 300, `${sts.length}`)
+
+    // markers: snapped onto the drawn ribbons, one per bundle
+    check('markers exist, at least one per station', mks.length >= sts.length,
+      `${mks.length} markers / ${sts.length} stations`)
+    const snapped = mks.filter((f) => f.properties.span_px > 0 || f.properties.bearing !== 0)
+    check('nearly every marker snapped to a ribbon', snapped.length / mks.length > 0.98,
+      `${snapped.length}/${mks.length}`)
+    const single = mks.filter((f) => f.properties.nlines === 1)
+    check('single-line markers carry their line color', single.every((f) => /^[0-9A-Fa-f]{6}$/.test(f.properties.mcolor)),
+      `${single.length} single-line markers`)
+    const complexes = new Map()
+    for (const m of mks) complexes.set(m.properties.name, (complexes.get(m.properties.name) ?? 0) + 1)
+    check('complexes split into per-bundle markers (Times Sq has several)',
+      (complexes.get('Times Sq-42 St') ?? 0) >= 3, `${complexes.get('Times Sq-42 St')} bundles at Times Sq`)
+    const hoyt = mks.find((f) => f.properties.name === 'Hoyt St')
+    check('Hoyt St dot rides ITS ribbon slot (offset baked)', hoyt && Math.abs(hoyt.properties.dot_off) > 0,
+      `dot_off ${hoyt?.properties.dot_off}`)
     const aligned = sts.every((f) => {
       const p = f.properties
       const n = String(p.routes).split(',').length
@@ -276,14 +295,15 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       `${hidden.length} hidden with metro off, ${wrong.length} wrongly`)
 
     // the marker rule: single-line stations exist in bulk, hubs exist,
-    // and Hoyt St stays a colored dot while Hoyt-Schermerhorn is a disc
+    // and Hoyt St stays a colored dot while Hoyt-Schermerhorn is a pill
     const one = sts.filter((f) => f.properties.nlines === 1).length
     check('marker rule has both kinds', one > 0 && one < sts.length,
       `${one} single-line, ${sts.length - one} multi`)
-    const hoyt = sts.find((f) => f.properties.name === 'Hoyt St')
-    const hs = sts.find((f) => f.properties.name.startsWith('Hoyt-Schermerhorn'))
-    check('Hoyt St (2,3) is ONE red line; Hoyt-Schermerhorn (A,C,G) is a hub',
-      hoyt?.properties.nlines === 1 && hs?.properties.nlines > 1)
+    const hoytS = sts.find((f) => f.properties.name === 'Hoyt St')
+    const hs = mks.find((f) => f.properties.name.startsWith('Hoyt-Schermerhorn'))
+    check('Hoyt St (2,3) is ONE red line; Hoyt-Schermerhorn (A,C,G) is a spanning pill',
+      hoytS?.properties.nlines === 1 && hs?.properties.nlines > 1 && hs?.properties.span_px > 0,
+      `pill span ${hs?.properties.span_px}px`)
 
     // ranks: the biggest stations are the famous hubs
     const top = sts.slice().sort((a, b) => b.properties.rank - a.properties.rank).slice(0, 6)

@@ -89,27 +89,53 @@ size, render precedence and zoom-of-first-appearance all derive from it.
 
 ### Staging
 
-1. ✅→ **Stations data.** GTFS stop names/parents into `Feed`; stations
+1. ✅ **Stations data.** GTFS stop names/parents into `Feed`; stations
    builder + emission; `/api/stations`.
-2. ✅→ **Markers + labels in the console**, with rank-driven size,
-   sort-key precedence, variable anchors, and the same dynamic time +
-   class filters ribbons get.
-3. **Bullets and agency icons in labels** (req 7, 8). Bullet images are
-   generated client-side (canvas → `map.addImage`) from a per-system
-   bullet spec: `{shape: circle|card|pill, bg, fg, text}` — default
-   derived from route color/short name, curated per agency in
-   `internal/style` config the way colors already are. Labels become
-   `text` + `icon-image` composites (or formatted sections with inline
-   images once we count on the fork).
-4. **Inline bullets on trunks** (req 6): `symbol-placement: line` with
-   the same bullet images, spaced by `symbol-spacing`, on high-rank
-   trunk ribbons.
-5. **Marker-spans-the-bundle**: size the white dot from the bundle's
-   drawn width at the station (slots × pitch), so it reads as a bar
-   across the parallel lines the way Apple draws Nevins St.
-6. **World scale**: stations ride the same tile/feature-state path as
+2. ✅ **Markers + labels in the console**, with rank-driven size,
+   sort-key precedence, and the same dynamic time + class filters
+   ribbons get.
+3. ✅ **Snapping (SnapStations).** Every station moves onto the DRAWN
+   map: per member route, the nearest band-15 ribbon carrying it;
+   routes snapping to one spot become one `Marker` (a complex like
+   Times Sq is one label + one marker per corridor). Markers carry
+   `bearing`, `span_px` (bundle width = (nslots−1)·pitch) and
+   `dot_off` (the line's own slot offset).
+4. ✅ **Markers as generated icons.** Single line → borderless dot in
+   the line's color, its slot offset BAKED INTO the image so
+   `icon-rotate: bearing` carries it to the correct side; `icon-size`
+   then scales image and offset together, matching zoomScaledOffset
+   exactly. Multiple lines → a white rounded-rect pill spanning the
+   bundle (corner radius = dot radius), rotated to lie across the
+   corridor.
+5. ✅ **Bullets in labels** (req 7, 8): MTA-style circles for 1–2 char
+   labels, rounded-corner word pills for longer (the Chicago
+   'Red'/'Brown' shape falls out for free); yellow bullets get dark
+   glyphs by luminance. Express variants (7X, FX) fold into their
+   parent. The strip is ONE composed canvas image per station rendered
+   as the symbol's icon below the name.
+6. ✅ **Inline bullets on trunks** (req 6): the same composed strips,
+   `symbol-placement: line`, upright via viewport alignment, z15+, on
+   ribbons at the bundle center only (a symbol cannot follow a ribbon's
+   line-offset).
+7. **Agency icons in labels** (rest of req 7): needs curated logo
+   assets per agency — no honest way to generate them.
+8. **World scale**: stations ride the same tile/feature-state path as
    ribbons (docs/DYNAMIC-SERVICE.md stage 5); rank thresholds per zoom
    keep tile size sane.
+
+### Fork bug, worked around
+
+Images inside `text-field` `format` expressions corrupt the fork's
+per-tile glyph/image atlas: on dense tiles the bullet slots render as
+unrelated glyphs (deterministic per tile, worse at lower zooms — z13.8
+midtown garbled nearly every label). Bisect ruled out sort keys,
+variable anchors, image registration timing, names and bullet sets;
+the trigger is images-in-formatted-text itself. Workaround shipped:
+bullets NEVER ride in text — each strip is one composed image on the
+icon channel. Cost: `text-variable-anchor` is off for station labels
+(the icon does not follow the text's variable anchor), so labels
+anchor below the marker. Revisit if the fork picks up the upstream
+atlas fix.
 
 ### Honest limits, known now
 
@@ -117,8 +143,14 @@ size, render precedence and zoom-of-first-appearance all derive from it.
   Times Square by ridership but not by route count. If this ever reads
   wrong on the map, the fix is a curated rank boost in style config, not
   a data source we don't have.
-- Bus stops are absent until stage 3+ decides how (and whether) to show
-  them; the class toggle for bus governs ribbons only for now.
+- Bus stops are absent until a later stage decides how (and whether) to
+  show them; the class toggle for bus governs ribbons only for now.
 - Name-based merging is exact-match after normalization; "Court St" and
   "Borough Hall" stay separate stations (correct — Apple keeps them
   separate too, even though they interconnect).
+- Dots reflect UNION slot offsets: when dynamic time-filtering
+  re-centers a bundle's survivors, a dot can sit a few px off its
+  re-centered ribbon. Same residual class as FAIR mask-inertness.
+- Inline trunk bullets skip offset ribbons (an express/local pair shows
+  bullets only on the centered one); following the ribbon offset needs
+  renderer support.

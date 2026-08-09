@@ -241,12 +241,36 @@ async function ensureBand() {
   }
 }
 
+/** stamp inline-bullet image ids onto band-15 ribbons (idempotent) —
+ *  the trunk-bullets layer reads ib0..ib3. Waits for routeMeta; when it
+ *  lands, loadStations re-applies the bands. */
+function decorateBand(raw: any) {
+  const meta = routeMeta.value
+  if (!Object.keys(meta).length) return
+  for (const f of raw.features) {
+    const p = f.properties
+    if (p.ibrow !== undefined || p.kind !== 'steady' || p.band_min !== 15) continue
+    if (p.mode !== 'metro' && p.mode !== 'tram' && p.mode !== 'monorail') continue
+    const ids = String(p.routes ?? '').split(',')
+    const all = ids.map((r: string) => meta[r]?.label ?? '')
+    const blts = ids
+      .filter((r: string) => {
+        const m = meta[r]
+        return m && m.label && m.label.length <= 8 && !isVariantLabel(m.label, all)
+      })
+      .slice(0, 4)
+      .map((r: string) => bulletId(meta[r].label, meta[r].hex))
+    if (blts.length) p.ibrow = 'row-' + blts.join('|')
+  }
+}
+
 /** push one band to the map, through the dynamic filter when a time is
  *  set or a class is hidden — both are the same operation (hide + the
  *  survivors re-center), so they compose in one predicate. */
 function applyBand(key: number) {
   const raw = bandRaw.get(key)
   if (!raw || !map) return
+  if (key === 15) decorateBand(raw)
   const timePred = activeAt.value
   const off = classesOff.value
   const pred =
@@ -265,20 +289,179 @@ function applyBands() {
 // map applies them whenever both are ready). Same dynamic rule as
 // ribbons: time and class toggles hide, via stationVisible.
 const stationsRaw = ref<any | null>(null)
+// route id → {label, hex} for bullets, from /api/routes — shared by
+// station labels and the inline trunk bullets
+const routeMeta = ref<Record<string, { label: string; hex: string }>>({})
+
+// bullet image id for one route. The image itself is generated on demand
+// by the styleimagemissing handler (drawMarkerImage), so any city's
+// bullets exist the moment a label asks for them.
+const bulletId = (label: string, hex: string) => `blt-${hex || '888888'}-${label}`
+
+/** bullets a station label shows: distinct (label, color) pairs, capped,
+ *  and only for classes where a bullet means something — a commuter
+ *  branch's identity is its agency, not a 20-character pill. */
+function bulletIdsOf(p: any): string[] {
+  const labels = String(p.labels ?? '').split(',')
+  const colors = String(p.route_colors ?? '').split(',')
+  const modes = String(p.modes ?? '').split(',')
+  const seen = new Set<string>()
+  const out: string[] = []
+  labels.forEach((l, i) => {
+    if (!l || l.length > 8) return
+    if (modes[i] === 'regional' || modes[i] === 'bus') return
+    if (isVariantLabel(l, labels)) return
+    const id = bulletId(l, colors[i])
+    if (seen.has(id)) return
+    seen.add(id)
+    if (out.length < 6) out.push(id)
+  })
+  return out
+}
+
+// "FX"/"6X"/"7X" are express variants of a line the set already shows —
+// Apple never bullets them separately, and neither do we
+const isVariantLabel = (l: string, all: string[]) =>
+  l.length >= 2 && l.endsWith('X') && all.includes(l.slice(0, -1))
 
 async function loadStations() {
-  const fc = feed.value ? await api.stations(feed.value).catch(() => null) : null
+  const [fc, routes] = await Promise.all([
+    feed.value ? api.stations(feed.value).catch(() => null) : null,
+    feed.value ? api.routes(feed.value).catch(() => []) : [],
+  ])
+  const meta: Record<string, { label: string; hex: string }> = {}
+  for (const r of routes as any[]) {
+    meta[r.id] = { label: r.short_name || r.long_name || '', hex: (r.color || '888888').replace('#', '') }
+  }
+  routeMeta.value = meta
   if (fc?.features) {
     for (const f of fc.features) {
       const p = f.properties
-      // marker rule: one line → a dot in that line's color; several
-      // parallel lines → a white disc (the Apple hub marker)
-      const lines = String(p.line_colors ?? '').split(',').filter(Boolean)
-      p.marker_color = p.nlines > 1 ? '#ffffff' : '#' + (lines[0] || '888888')
+      if (p.ftype === 'marker') {
+        // marker rule: one line → a borderless dot in that line's color,
+        // shifted onto ITS ribbon (offset baked into the image so it
+        // rotates with the corridor bearing); several parallel lines →
+        // a white pill lying ACROSS the bundle
+        p.icon =
+          p.nlines > 1
+            ? `pill-${p.span_px || 0}`
+            : `dot-${p.mcolor || '888888'}-${p.dot_off || 0}`
+      } else {
+        // the whole bullet strip is ONE composed image rendered as the
+        // symbol's icon. Bullets must NOT ride inside the text-field:
+        // the fork corrupts the per-tile glyph/image atlas when format
+        // sections mix images into text (dense tiles rendered random
+        // glyphs where bullets belonged), and the icon pipeline never
+        // touches the glyph atlas.
+        const ids = bulletIdsOf(p)
+        if (ids.length) p.brow = 'row-' + ids.join('|')
+        // wrapped-name estimate drives how far below the anchor the
+        // bullet strip sits (MapLibre wraps at ~10em ≈ 20 chars)
+        p.nrows = Math.min(3, Math.ceil(String(p.name ?? '').length / 20))
+      }
     }
   }
   stationsRaw.value = fc
   applyStations()
+  applyBands() // routeMeta just landed — band 15 can take its bullets now
+}
+
+// ── marker + bullet images, drawn on demand ────────────────────────────
+// All images render at 2× (pixelRatio 2). Sizes below are CSS px at full
+// zoom (z14+, where the slot pitch is its full 6 px).
+const DOT_D = 7 // dot diameter; also the pill height and its corner radius ×2
+
+// one bullet as a canvas: MTA-style circle for 1–2 char labels, a
+// rounded-corner word pill (the Chicago 'Red'/'Brown' shape) for longer
+function bulletCanvas(id: string): HTMLCanvasElement | null {
+  const m = id.match(/^blt-([0-9a-fA-F]{6})-(.+)$/)
+  if (!m) return null
+  const hex = m[1]
+  const label = m[2]
+  const h = 14
+  const cv = document.createElement('canvas')
+  cv.width = 2
+  cv.height = 2
+  let ctx = cv.getContext('2d')!
+  ctx.font = '600 9.5px system-ui, sans-serif'
+  const tw = ctx.measureText(label).width
+  const circle = label.length <= 2
+  const w = circle ? h : Math.ceil(tw) + 9
+  cv.width = w * 2
+  cv.height = h * 2
+  ctx = cv.getContext('2d')!
+  ctx.scale(2, 2)
+  ctx.fillStyle = '#' + hex
+  ctx.beginPath()
+  if (circle) ctx.arc(w / 2, h / 2, h / 2, 0, Math.PI * 2)
+  else ctx.roundRect(0, 0, w, h, 3.5)
+  ctx.fill()
+  ctx.fillStyle = lumaOf(hex) > 160 ? '#111111' : '#ffffff'
+  ctx.font = '600 9.5px system-ui, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, w / 2, h / 2 + 0.5)
+  return cv
+}
+
+function drawMarkerImage(id: string): ImageData | null {
+  const cv = document.createElement('canvas')
+  const draw = (w: number, h: number) => {
+    cv.width = w * 2
+    cv.height = h * 2
+    const ctx = cv.getContext('2d')!
+    ctx.scale(2, 2)
+    return ctx
+  }
+  let m: RegExpMatchArray | null
+  if ((m = id.match(/^dot-([0-9a-fA-F]{6})-(-?[\d.]+)$/))) {
+    const off = parseFloat(m[2])
+    const w = DOT_D + 2 * Math.abs(off)
+    const ctx = draw(w, DOT_D)
+    ctx.fillStyle = '#' + m[1]
+    ctx.beginPath()
+    ctx.arc(w / 2 + off, DOT_D / 2, DOT_D / 2, 0, Math.PI * 2)
+    ctx.fill()
+    return ctx.getImageData(0, 0, cv.width, cv.height)
+  }
+  if ((m = id.match(/^pill-([\d.]+)$/))) {
+    const span = parseFloat(m[1])
+    const w = span + DOT_D + 2
+    const h = DOT_D + 2
+    const ctx = draw(w, h)
+    ctx.fillStyle = '#ffffff'
+    ctx.strokeStyle = 'rgba(10,10,16,0.55)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(1, 1.5, w - 2, DOT_D, DOT_D / 2)
+    ctx.fill()
+    ctx.stroke()
+    return ctx.getImageData(0, 0, cv.width, cv.height)
+  }
+  if ((m = id.match(/^row-(.+)$/))) {
+    // a whole bullet strip composed into one image (see loadStations)
+    const parts = m[1].split('|').map(bulletCanvas).filter(Boolean) as HTMLCanvasElement[]
+    if (!parts.length) return null
+    const gap = 3 * 2
+    const w = parts.reduce((a, c) => a + c.width, 0) + gap * (parts.length - 1)
+    const h = Math.max(...parts.map((c) => c.height))
+    cv.width = w
+    cv.height = h
+    const ctx = cv.getContext('2d')!
+    let x = 0
+    for (const c of parts) {
+      ctx.drawImage(c, x, 0)
+      x += c.width + gap
+    }
+    return ctx.getImageData(0, 0, w, h)
+  }
+  const single = bulletCanvas(id)
+  return single ? single.getContext('2d')!.getImageData(0, 0, single.width, single.height) : null
+}
+// perceived luminance — yellow bullets (N/Q/R/W) need dark glyphs
+const lumaOf = (hex: string) => {
+  const n = parseInt(hex, 16)
+  return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)
 }
 
 function applyStations() {
@@ -333,52 +516,85 @@ function addLayers() {
     }
   }
 
-  // ── stations: markers then labels, above every ribbon ────────────────
-  // Density is gated by rank per zoom (top-level step on zoom — the only
-  // place a filter may read zoom), and the LABEL economy is MapLibre's:
-  // symbol collision never draws overlaps, symbol-sort-key places hubs
-  // first so locals are what drop, and variable anchors let a label take
-  // whichever side of its marker has room.
-  const rankGate = (base: number[]) =>
-    ['step', ['zoom'],
-      ['>=', ['get', 'rank'], base[0]],
-      11, ['>=', ['get', 'rank'], base[1]],
-      12, ['>=', ['get', 'rank'], base[2]],
-      13, ['>=', ['get', 'rank'], base[3]],
-      14, true] as any
-  const multi = ['>', ['get', 'nlines'], 1]
+  // ── inline bullets on the lines (z15+): the 1·2·3 along the red trunk.
+  // The strip is ONE composed icon (never images-in-text: the fork
+  // corrupts the tile glyph atlas mixing the two), placed along the line
+  // and kept upright via viewport alignment. Only ribbons at the bundle
+  // center get them — a symbol layer cannot follow a ribbon's
+  // line-offset, so offset ribbons would show bullets floating between
+  // lines.
   map.addLayer({
-    id: 'station-dots', type: 'circle', source: 'stations', minzoom: 10,
-    filter: rankGate([10, 6, 4, 2]),
-    paint: {
-      'circle-color': ['get', 'marker_color'],
-      'circle-radius': ['interpolate', ['linear'], ['zoom'],
-        11, ['case', multi, 2.5, 1.7],
-        14, ['case', multi, 5, 3],
-        17, ['case', multi, 8, 5.5]],
-      // single-line dots ring white; the multi-line disc is white already
-      // and rings dark, which is what reads as "spans the bundle"
-      'circle-stroke-color': ['case', multi, '#26262e', '#ffffff'],
-      'circle-stroke-width': ['interpolate', ['linear'], ['zoom'],
-        11, 0.5, 14, ['case', multi, 1.6, 1]],
+    id: 'trunk-bullets', type: 'symbol', source: 'build-15', minzoom: 15,
+    filter: ['all',
+      ['==', ['get', 'band_min'], 15], ['==', ['get', 'kind'], 'steady'],
+      ['has', 'ibrow'],
+      ['<', ['*', ['get', 'offset_px'], ['get', 'offset_px']], 1]],
+    layout: {
+      'symbol-placement': 'line',
+      'symbol-spacing': 400,
+      'icon-image': ['get', 'ibrow'],
+      'icon-rotation-alignment': 'viewport',
+      'icon-pitch-alignment': 'viewport',
     },
   })
+
+  // ── stations: markers then labels, above every ribbon ────────────────
+  // Density is gated by rank per zoom (a top-level step on zoom — the
+  // only place a filter may read zoom, so the ftype test rides INSIDE
+  // each branch), and the LABEL economy is MapLibre's: symbol collision
+  // never overlaps, symbol-sort-key places hubs first so locals are what
+  // drop, variable anchors let a label take whichever side has room.
+  const gate = (cond: any, base: number[]) =>
+    ['step', ['zoom'],
+      ['all', cond, ['>=', ['get', 'rank'], base[0]]],
+      11, ['all', cond, ['>=', ['get', 'rank'], base[1]]],
+      12, ['all', cond, ['>=', ['get', 'rank'], base[2]]],
+      13, ['all', cond, ['>=', ['get', 'rank'], base[3]]],
+      14, cond] as any
+  const isMarker = ['==', ['get', 'ftype'], 'marker']
+  const isStation = ['==', ['get', 'ftype'], 'station']
+  map.addLayer({
+    id: 'station-markers', type: 'symbol', source: 'stations', minzoom: 10,
+    filter: gate(isMarker, [10, 6, 4, 2]),
+    layout: {
+      // the icon id is precomputed per feature (dot-<hex>-<off> or
+      // pill-<span>) and DRAWN on demand by styleimagemissing. A dot's
+      // slot offset is baked into its image so icon-rotate carries it to
+      // the correct side of the corridor; icon-size then scales image
+      // AND offset together, exactly matching zoomScaledOffset.
+      'icon-image': ['get', 'icon'],
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 14, 1],
+      'icon-rotate': ['get', 'bearing'],
+      'icon-rotation-alignment': 'map',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+  })
+  const rankBump = ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]
   map.addLayer({
     id: 'station-labels', type: 'symbol', source: 'stations', minzoom: 11,
-    filter: rankGate([10, 6, 4, 2]),
+    filter: gate(isStation, [10, 6, 4, 2]),
     layout: {
       'text-field': ['get', 'name'],
       'text-font': ['Montserrat Medium'],
       'symbol-sort-key': ['*', -1, ['get', 'rank']],
-      'text-variable-anchor': ['top', 'bottom', 'left', 'right'],
-      'text-radial-offset': 0.7,
-      'text-justify': 'auto',
+      // fixed top anchor: name under the marker, the bullet strip under
+      // the name. (Variable anchors are off for now — the icon does not
+      // follow the text's variable anchor, so the strip would detach.)
+      'text-anchor': 'top',
+      'text-offset': [0, 0.5],
       // rank bump INSIDE the zoom stops: ["zoom"] is only legal as input
       // to a top-level interpolate/step, so the composite goes this way
       // around (same shape as zoomScaledOffset)
       'text-size': ['interpolate', ['linear'], ['zoom'],
-        11, ['+', 10, ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]],
-        16, ['+', 13, ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]]],
+        11, ['+', 10, rankBump], 16, ['+', 13, rankBump]],
+      // the bullet strip appears once there is room for it; its distance
+      // below the anchor follows the name's estimated wrap count
+      'icon-image': ['step', ['zoom'], '', 13.5, ['coalesce', ['get', 'brow'], '']],
+      'icon-anchor': 'top',
+      'icon-offset': ['match', ['get', 'nrows'],
+        2, ['literal', [0, 43]], 3, ['literal', [0, 59]], ['literal', [0, 27]]],
+      'icon-optional': true,
     },
     paint: {
       'text-color': '#e8e8ee',
@@ -386,7 +602,7 @@ function addLayers() {
       'text-halo-width': 1.4,
     },
   })
-  for (const id of ['station-dots', 'station-labels']) {
+  for (const id of ['station-markers', 'station-labels']) {
     map.on('click', id, (e: any) => {
       inspect.value = e.features?.[0]?.properties ?? null
     })
@@ -511,6 +727,14 @@ onMounted(async () => {
     },
   })
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
+  // marker dots, bundle pills and route bullets are canvas-drawn the
+  // first time a layer asks for them — any city's colors and labels work
+  // with no sprite sheet
+  map.on('styleimagemissing', (e: any) => {
+    if (!e.id || map.hasImage(e.id)) return
+    const image = drawMarkerImage(e.id)
+    if (image) map.addImage(e.id, image, { pixelRatio: 2 })
+  })
   ;(window as any).__map = map // debugging handle; the map is the whole page
   map.on('error', (e: any) => console.error('map error', e?.error?.message || e))
   // MapLibre measures the container once at construction and falls back to

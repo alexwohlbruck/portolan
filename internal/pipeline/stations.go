@@ -25,6 +25,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/mode"
+	"github.com/alexwohlbruck/portolan/internal/stages"
 	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
@@ -40,6 +41,29 @@ type Station struct {
 	Agencies []string // distinct agency display names
 	Lines    int      // distinct trunk keys — the marker rule (dot vs disc)
 	LineHex  []string // display color per line, distinct, sorted
+
+	// Set by SnapStations: where the label anchors (the busiest marker),
+	// and one marker per ribbon bundle the station's lines snap to — a
+	// complex like Times Sq is one label but three bundles, each with its
+	// own marker.
+	LabelLL geo.LL
+	Markers []Marker
+}
+
+// Marker is one drawn station marker, snapped onto the FAIR-adjusted
+// geometry. Everything the renderer needs to sit ON the drawn lines:
+// the direction of the corridor (so a hub pill can lie across it), the
+// bundle's drawn width, and — for a single line calling on a wider
+// bundle — which slot its ribbon occupies.
+type Marker struct {
+	LL      geo.LL
+	Routes  []string
+	Modes   []string // aligned with Routes
+	Lines   int      // distinct trunks at THIS marker
+	Hex     string   // the line's color when Lines == 1
+	Bearing float64  // corridor direction at the snap, deg cw from north
+	SpanPx  float64  // full bundle width (nslots-1)·pitch; 0 = unsnapped
+	DotOff  float64  // this line's ribbon offset_px (0 for multi-line)
 }
 
 // BuildStations groups the stops served by the drawn patterns into
@@ -303,6 +327,172 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 	return out
 }
 
+// SnapStations moves every station onto the DRAWN map. Platform
+// centroids sit where the operator built the mezzanine, not where FAIR
+// drew the ribbons — markers must sit on the adjusted lines or they
+// float beside them. Per station, each member route snaps to the
+// nearest band-15 ribbon that carries it; routes sharing one centerline
+// become one Marker (a complex spanning several corridors gets several,
+// which is how Apple draws Times Square). The label anchors at the
+// marker with the most routes.
+//
+// pitch is FAIR's slot gap in px (the fair_gap_px dial): bundle span =
+// (nslots−1)·pitch, and a ribbon's offset is already baked in OffsetPx.
+func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
+	pitch float64, routes map[string]gtfs.Route) {
+	// the most detailed band has every class; snap against only that copy
+	maxBand := 0
+	for i := range segs {
+		if segs[i].BandMin > maxBand {
+			maxBand = segs[i].BandMin
+		}
+	}
+	routeSegs := map[string][]int{} // route id → candidate seg indices
+	for i := range segs {
+		s := &segs[i]
+		if s.BandMin != maxBand || (s.Kind != "steady" && s.Kind != "bridge") || s.Line == nil {
+			continue
+		}
+		for _, r := range s.Routes {
+			routeSegs[r] = append(routeSegs[r], i)
+		}
+	}
+	const maxSnapM = 150.0
+	// two routes share one marker when they snap to the same SPOT — not
+	// the same segment: parallel ribbons of one bundle are split at
+	// different junctions per color (the A/C piece and the G piece under
+	// Schermerhorn St have different endpoints), so segment identity
+	// would split a bundle into stacked markers.
+	const sameSpotM = 20.0
+
+	for si := range sts {
+		st := &sts[si]
+		st.LabelLL = st.LL
+		pt := frame.ToXY(st.LL)
+
+		type hit struct {
+			seg  int
+			arc  float64
+			dist float64
+		}
+		byRoute := map[string]hit{}
+		for ri, r := range st.Routes {
+			_ = ri
+			best := hit{seg: -1, dist: maxSnapM}
+			for _, siG := range routeSegs[r] {
+				arc, d := segs[siG].Line.ProjectArc(pt)
+				if d < best.dist {
+					best = hit{seg: siG, arc: arc, dist: d}
+				}
+			}
+			if best.seg >= 0 {
+				byRoute[r] = best
+			}
+		}
+
+		// cluster snapped routes by snap-point proximity (single-link);
+		// unsnapped routes fall back to one marker at the platform
+		// centroid. Route order keeps clusters deterministic.
+		snapPt := map[string]geo.Pt{}
+		for r, h := range byRoute {
+			snapPt[r] = segs[h.seg].Line.AtArc(h.arc)
+		}
+		groups := map[string][]string{}
+		var order []string
+		for _, r := range st.Routes {
+			key := "~unsnapped"
+			if p, ok := snapPt[r]; ok {
+				key = ""
+				for _, k := range order {
+					if k == "~unsnapped" {
+						continue
+					}
+					for _, m := range groups[k] {
+						if q, ok2 := snapPt[m]; ok2 && p.Dist(q) <= sameSpotM {
+							key = k
+							break
+						}
+					}
+					if key != "" {
+						break
+					}
+				}
+				if key == "" {
+					key = "g" + r // new cluster, seeded by this route
+				}
+			}
+			if _, seen := groups[key]; !seen {
+				order = append(order, key)
+			}
+			groups[key] = append(groups[key], r)
+		}
+
+		modeOf := map[string]string{}
+		for i, r := range st.Routes {
+			modeOf[r] = st.Modes[i]
+		}
+
+		bestN := 0
+		for _, key := range order {
+			rts := groups[key]
+			m := Marker{Routes: rts, LL: st.LL}
+			for _, r := range rts {
+				m.Modes = append(m.Modes, modeOf[r])
+			}
+			trunks := map[string]map[string]int{}
+			for _, r := range rts {
+				rt := routes[r]
+				tk := mode.TrunkKey(rt)
+				if trunks[tk] == nil {
+					trunks[tk] = map[string]int{}
+				}
+				trunks[tk][routeHex(rt)]++
+			}
+			m.Lines = len(trunks)
+			if m.Lines == 1 {
+				for _, votes := range trunks {
+					var hxs []string
+					for h := range votes {
+						hxs = append(hxs, h)
+					}
+					sort.Strings(hxs)
+					best, bestV := "", 0
+					for _, h := range hxs {
+						if votes[h] > bestV {
+							best, bestV = h, votes[h]
+						}
+					}
+					m.Hex = best
+				}
+			}
+			if key != "~unsnapped" {
+				// snap at the closest member's projection; the bundle's
+				// slots and this line's offset come from the ribbons
+				bh := hit{seg: -1, dist: math.Inf(1)}
+				for _, r := range rts {
+					if h := byRoute[r]; h.dist < bh.dist {
+						bh = h
+					}
+				}
+				sg := &segs[bh.seg]
+				xy := sg.Line.AtArc(bh.arc)
+				m.LL = frame.ToLL(xy)
+				t := sg.Line.TangentAtArc(bh.arc, 20)
+				m.Bearing = math.Atan2(t.X, t.Y) * 180 / math.Pi
+				m.SpanPx = float64(sg.NSlots-1) * pitch
+				if m.Lines == 1 {
+					m.DotOff = sg.OffsetPx
+				}
+			}
+			st.Markers = append(st.Markers, m)
+			if len(rts) > bestN {
+				bestN = len(rts)
+				st.LabelLL = m.LL
+			}
+		}
+	}
+}
+
 // routeHex is the display color for ONE route — the bullet color. Same
 // precedence FAIR uses for ribbons: config override (route, then agency)
 // → class canonical → the route's own → gray.
@@ -378,15 +568,26 @@ func naturalCmp(a, b string) int {
 	return strings.Compare(a, b)
 }
 
-// writeStations emits <out>.stations.geojson — Point features with
-// aligned per-route arrays, comma-joined like ribbon `routes`.
+// writeStations emits <out>.stations.geojson: one `ftype: "station"`
+// label feature per station (anchored at its busiest marker) plus one
+// `ftype: "marker"` feature per snapped bundle — a complex is one label
+// and as many markers as corridors. Aligned per-route arrays are
+// comma-joined like ribbon `routes`.
 func writeStations(path string, sts []Station) error {
 	fc := collection{Type: "FeatureCollection"}
+	pt := func(ll geo.LL) json.RawMessage {
+		raw, _ := json.Marshal([2]float64{ll.Lon, ll.Lat})
+		return raw
+	}
 	for _, s := range sts {
-		raw, _ := json.Marshal([2]float64{s.LL.Lon, s.LL.Lat})
+		label := s.LabelLL
+		if label == (geo.LL{}) {
+			label = s.LL
+		}
 		fc.Features = append(fc.Features, feature{
 			Type: "Feature",
 			Props: map[string]any{
+				"ftype":        "station",
 				"name":         s.Name,
 				"routes":       strings.Join(s.Routes, ","),
 				"labels":       strings.Join(s.Labels, ","),
@@ -398,8 +599,26 @@ func writeStations(path string, sts []Station) error {
 				"line_colors":  strings.Join(s.LineHex, ","),
 				"rank":         len(s.Routes),
 			},
-			Geom: geomJSON{Type: "Point", Coords: raw},
+			Geom: geomJSON{Type: "Point", Coords: pt(label)},
 		})
+		for _, m := range s.Markers {
+			fc.Features = append(fc.Features, feature{
+				Type: "Feature",
+				Props: map[string]any{
+					"ftype":   "marker",
+					"name":    s.Name,
+					"routes":  strings.Join(m.Routes, ","),
+					"modes":   strings.Join(m.Modes, ","),
+					"nlines":  m.Lines,
+					"mcolor":  m.Hex,
+					"bearing": math.Round(m.Bearing*10) / 10,
+					"span_px": math.Round(m.SpanPx*10) / 10,
+					"dot_off": math.Round(m.DotOff*10) / 10,
+					"rank":    len(s.Routes),
+				},
+				Geom: geomJSON{Type: "Point", Coords: pt(m.LL)},
+			})
+		}
 	}
 	return writeFC(path, fc)
 }
