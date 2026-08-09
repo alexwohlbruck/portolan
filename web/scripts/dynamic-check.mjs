@@ -373,6 +373,27 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
   }
 }
 
+// ── bullets respect the timestamp ──────────────────────────────────────
+// A station open at 2am must not advertise routes that stopped at
+// midnight: activeRouteIdx picks the awake subset the strip rebuilds
+// from. Synthetic masks: A runs always, B never, C has no mask (benefit
+// of the doubt), D is a class that's toggled off.
+{
+  const { activeRouteIdx } = await import('../src/lib/dynamic.ts')
+  const allWeek = 'ffffff'.repeat(7)
+  const never = '000000'.repeat(7)
+  const props = { routes: 'A,B,C,D', labels: 'A,B,C,D', modes: 'metro,metro,metro,tram' }
+  const masks = { A: allWeek, B: never, C: undefined }
+  const at = new Date('2026-08-11T03:30') // any hour — B is never awake
+  check('sleeping routes drop out of the bullet subset',
+    JSON.stringify(activeRouteIdx(props, masks, at, new Set())) === '[0,2,3]')
+  check('class toggles drop their routes from the subset',
+    JSON.stringify(activeRouteIdx(props, masks, at, new Set(['tram']))) === '[0,2]')
+  check('nothing filtered → null (reuse the original feature)',
+    activeRouteIdx(props, { A: allWeek, B: allWeek }, at, new Set()) === null &&
+      activeRouteIdx(props, masks, null, new Set()) === null)
+}
+
 // mask bit layout must match internal/atlas/activity.go: 7×6 hex chars,
 // Monday first, hour 0 = LSB
 {

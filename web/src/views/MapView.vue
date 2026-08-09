@@ -6,7 +6,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
-import { applyDynamic, activePredicate, maskActive, stationVisible } from '@/lib/dynamic'
+import { applyDynamic, activePredicate, activeRouteIdx, maskActive, stationVisible } from '@/lib/dynamic'
 import { feed, currentCity, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
@@ -483,9 +483,36 @@ function applyStations() {
   const off = classesOff.value
   const feats =
     date || off.size
-      ? raw.features.filter((f: any) => stationVisible(f.properties, masks.value, date, off))
+      ? raw.features
+          .filter((f: any) => stationVisible(f.properties, masks.value, date, off))
+          .map((f: any) => timeFilteredBullets(f, date, off))
       : raw.features
   src.setData({ type: 'FeatureCollection', features: feats })
+}
+
+/** A surviving station's bullet strip shows only the routes awake at
+ *  the chosen time (and in enabled classes) — the 2am map must not
+ *  advertise the B and C at stations they stopped serving at midnight.
+ *  Pure: filtered features are copies, the cached data stays the union. */
+function timeFilteredBullets(f: any, date: Date | null, off: Set<string>): any {
+  const p = f.properties
+  const labeled = p.ftype === 'station' || (p.ftype === 'marker' && p.nmarkers > 1)
+  if (!labeled) return f
+  const idx = activeRouteIdx(p, masks.value, date, off)
+  if (!idx) return f
+  const pick = (s: string) => {
+    const all = String(s ?? '').split(',')
+    return idx.map((i) => all[i]).join(',')
+  }
+  const ids = bulletIdsOf({
+    labels: pick(p.labels),
+    route_colors: pick(p.route_colors),
+    modes: pick(p.modes),
+  })
+  const props = { ...p }
+  if (ids.length) props.brow = 'row-' + ids.join('|')
+  else delete props.brow
+  return { ...f, properties: props }
 }
 
 // time and class changes re-filter the cached data in memory — no fetch

@@ -91,6 +91,36 @@ export function stationVisible(
   })
 }
 
+/** Indices of a feature's routes that are awake at `date` AND in an
+ *  enabled class — the subset a bullet strip should show. A station
+ *  that stays open at 2am must not advertise routes that stopped
+ *  running at midnight. Returns null when nothing is filtered (reuse
+ *  the original feature; no churn). Route-level masks on purpose:
+ *  bullets answer "does this route serve this station", not "does it
+ *  ride this exact segment". */
+export function activeRouteIdx(
+  props: Record<string, any>,
+  masks: Record<string, string>,
+  date: Date | null,
+  classesOff: Set<string>,
+): number[] | null {
+  const routes = routesOf(props)
+  if (!routes.length || (!date && !classesOff.size)) return null
+  const modes = String(props.modes ?? '').split(',')
+  const day = date ? (date.getDay() + 6) % 7 : 0
+  const hour = date ? date.getHours() : 0
+  const idx: number[] = []
+  routes.forEach((r, i) => {
+    if (classesOff.has(modes[i])) return
+    if (date) {
+      const m = masks[r]
+      if (m && !maskActive(m, day, hour)) return
+    }
+    idx.push(i)
+  })
+  return idx.length === routes.length ? null : idx
+}
+
 // ── the dynamic render rule ────────────────────────────────────────────
 
 const endKey = (c: number[]) => c[0].toFixed(6) + ',' + c[1].toFixed(6)
