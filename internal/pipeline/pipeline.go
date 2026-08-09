@@ -362,7 +362,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	// pattern list that drew the map, so a scenario build's stations are
 	// that scenario's too.
 	sts := BuildStations(feed, rail, o.BBox)
-	SnapStations(sts, segs, frame, d.FairGapPx, feed.Routes)
+	SnapStations(sts, segs, frame, d.FairGapPx, feed.Routes, o.BBox)
 	nm := 0
 	for i := range sts {
 		nm += len(sts[i].Markers)

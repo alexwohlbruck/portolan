@@ -148,7 +148,7 @@ func TestSnapStations(t *testing.T) {
 		{Kind: "steady", Routes: []string{"f1:hudson"}, NSlots: 1, OffsetPx: 0,
 			Color: "5D2B90", BandMin: 15, Line: mk(geo.LL{Lon: -73.9760, Lat: 40.7500}, geo.LL{Lon: -73.9760, Lat: 40.7560})},
 	}
-	SnapStations(sts, segs, frame, 6, feed.Routes)
+	SnapStations(sts, segs, frame, 6, feed.Routes, nil)
 
 	if len(gc.Markers) != 2 {
 		t.Fatalf("GC should have 2 markers (subway bundle + commuter), got %+v", gc.Markers)
@@ -267,7 +267,7 @@ func TestTerminalClamp(t *testing.T) {
 		{Kind: "steady", Routes: []string{"A"}, NSlots: 1, Color: "0062CF", BandMin: 15, Line: north},
 		{Kind: "steady", Routes: []string{"A"}, NSlots: 1, Color: "0062CF", BandMin: 15, Line: south},
 	}
-	SnapStations(sts, segs, frame, 6, feed.Routes)
+	SnapStations(sts, segs, frame, 6, feed.Routes, nil)
 	var in, mid *Station
 	for i := range sts {
 		switch sts[i].Name {

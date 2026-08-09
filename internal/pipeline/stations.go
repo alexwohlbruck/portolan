@@ -365,8 +365,20 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 //
 // pitch is FAIR's slot gap in px (the fair_gap_px dial): bundle span =
 // (nslots−1)·pitch, and a ribbon's offset is already baked in OffsetPx.
+// bbox, when present, marks window-cut line ends: a ribbon running off
+// the map is not a terminus and never attracts the terminal clamp.
 func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
-	pitch float64, routes map[string]gtfs.Route) {
+	pitch float64, routes map[string]gtfs.Route, bbox []float64) {
+	nearClip := func(p geo.Pt) bool { return false }
+	if len(bbox) == 4 {
+		// clipPatterns cuts shapes at bbox ± 0.02°, so an endpoint out in
+		// that margin band is a window cut, not real trackage ending
+		nearClip = func(p geo.Pt) bool {
+			ll := frame.ToLL(p)
+			return ll.Lon < bbox[0]-0.015 || ll.Lon > bbox[2]+0.015 ||
+				ll.Lat < bbox[1]-0.015 || ll.Lat > bbox[3]+0.015
+		}
+	}
 	// the most detailed band has every class; snap against only that copy
 	maxBand := 0
 	for i := range segs {
@@ -490,7 +502,7 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 				// (nothing else of theirs touches it — that distinction
 				// keeps stations near junction cuts unclamped), the
 				// station IS the end of the line: put the marker there.
-				const termM = 150.0 // how far shy of the tip a terminal snaps
+				const termM = 250.0 // how far shy of the tip a terminal snaps
 				const touchM = 25.0 // endpoint coincidence tolerance
 				const probeM = 60.0 // how far along a toucher to look
 				const asideM = 30.0 // beyond this, the toucher LEAVES us
@@ -504,6 +516,9 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 						continue
 					}
 					endPt := sg.Line.AtArc(endArc)
+					if nearClip(endPt) {
+						continue // a line running off the map, not a terminus
+					}
 					continues := false
 					for _, r := range rts {
 						for _, si2 := range routeSegs[r] {
