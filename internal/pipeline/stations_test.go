@@ -141,10 +141,11 @@ func TestSnapStations(t *testing.T) {
 	line := mk(geo.LL{Lon: -73.9767, Lat: 40.7500}, geo.LL{Lon: -73.9767, Lat: 40.7560})
 	segs := []stages.Segment{
 		{Kind: "steady", Routes: []string{"4", "10"}, NSlots: 2, OffsetPx: 3,
-			BandMin: 15, Line: line},
-		// the commuter ribbon, further east, carries the Hudson line
+			Color: "00933C", BandMin: 15, Line: line},
+		// the commuter ribbon, further east, carries the Hudson line —
+		// DRAWN in the agency trunk's purple, not the branch's green
 		{Kind: "steady", Routes: []string{"f1:hudson"}, NSlots: 1, OffsetPx: 0,
-			BandMin: 15, Line: mk(geo.LL{Lon: -73.9760, Lat: 40.7500}, geo.LL{Lon: -73.9760, Lat: 40.7560})},
+			Color: "5D2B90", BandMin: 15, Line: mk(geo.LL{Lon: -73.9760, Lat: 40.7500}, geo.LL{Lon: -73.9760, Lat: 40.7560})},
 	}
 	SnapStations(sts, segs, frame, 6, feed.Routes)
 
@@ -164,12 +165,16 @@ func TestSnapStations(t *testing.T) {
 	if b > 5 && b < 175 {
 		t.Fatalf("bearing = %v, want ~north-south", sub.Bearing)
 	}
-	if sub.SpanPx != 6 {
-		t.Fatalf("span = %v, want (2-1)*6", sub.SpanPx)
-	}
-	// 4 and 10 share one color → one line → the dot rides ITS ribbon
-	if sub.Lines != 1 || sub.DotOff != 3 || sub.Hex != "00933C" {
+	// the 4/10 occupy ONE ribbon of a 2-slot bundle: partial coverage
+	// draws a dot on THEIR ribbon (at its slot offset, in the segment's
+	// drawn color), never a pill over the line that passes them by
+	if sub.Pill || len(sub.Dots) != 1 || sub.Dots[0].Off != 3 || sub.Dots[0].Hex != "00933C" {
 		t.Fatalf("subway marker = %+v", sub)
+	}
+	// the commuter dot takes the DRAWN trunk color, not the branch's own
+	com := gc.Markers[1]
+	if com.Pill || len(com.Dots) != 1 || com.Dots[0].Hex != "5D2B90" {
+		t.Fatalf("commuter marker should wear the ribbon's color: %+v", com)
 	}
 	// label anchors at the busiest marker (the 2-route subway bundle)
 	if gc.LabelLL != sub.LL {

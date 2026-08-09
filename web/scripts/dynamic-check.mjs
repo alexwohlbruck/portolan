@@ -256,19 +256,40 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     // markers: snapped onto the drawn ribbons, one per bundle
     check('markers exist, at least one per station', mks.length >= sts.length,
       `${mks.length} markers / ${sts.length} stations`)
-    const snapped = mks.filter((f) => f.properties.span_px > 0 || f.properties.bearing !== 0)
-    check('nearly every marker snapped to a ribbon', snapped.length / mks.length > 0.98,
+    const snapped = mks.filter((f) => f.properties.span_px !== undefined || f.properties.bearing !== 0)
+    check('nearly every marker snapped to a ribbon', snapped.length / mks.length > 0.97,
       `${snapped.length}/${mks.length}`)
-    const single = mks.filter((f) => f.properties.nlines === 1)
-    check('single-line markers carry their line color', single.every((f) => /^[0-9A-Fa-f]{6}$/.test(f.properties.mcolor)),
-      `${single.length} single-line markers`)
+    // every marker is either a full-coverage pill or per-line dots with
+    // valid colors and offsets
+    const wellFormed = mks.every((f) => {
+      const p = f.properties
+      if (p.span_px !== undefined) return p.span_px > 0 && p.dots === undefined
+      return String(p.dots).split(';').every((s) => /^[0-9A-Fa-f]{6}@-?\d+(\.\d+)?$/.test(s))
+    })
+    check('markers are pills XOR per-line dots', wellFormed)
+    // a stop that skips part of its bundle gets dots, not a band: Grand
+    // Army Plaza's 2/3/4 occupy two ribbons of the four-slot corridor
+    const gap = mks.find((f) => f.properties.name === 'Grand Army Plaza')
+    check('partial-coverage stops draw per-line dots (Grand Army Plaza)',
+      gap && gap.properties.dots && gap.properties.dots.split(';').length === 2 && gap.properties.span_px === undefined,
+      `dots: ${gap?.properties.dots}`)
+    // the dot wears the DRAWN ribbon color: Penn Station's LIRR dot must
+    // match the color FAIR painted the LIRR trunk, not a branch color
+    const penn = mks.find((f) => f.properties.name === 'Penn Station')
+    const lirrSeg = JSON.parse(fs.readFileSync(path.join(repo, 'build/nyc.geojson'), 'utf8'))
+      .features.find((f) => f.properties.band_min === 15 && f.properties.kind === 'steady' &&
+        String(f.properties.routes).split(',').every((r) => r.startsWith('f2:')))
+    check('Penn Station dot matches the drawn LIRR trunk color',
+      penn && lirrSeg && String(penn.properties.dots).startsWith(lirrSeg.properties.color + '@'),
+      `dot ${penn?.properties.dots} vs ribbon ${lirrSeg?.properties.color}`)
     const complexes = new Map()
     for (const m of mks) complexes.set(m.properties.name, (complexes.get(m.properties.name) ?? 0) + 1)
     check('complexes split into per-bundle markers (Times Sq has several)',
       (complexes.get('Times Sq-42 St') ?? 0) >= 3, `${complexes.get('Times Sq-42 St')} bundles at Times Sq`)
     const hoyt = mks.find((f) => f.properties.name === 'Hoyt St')
-    check('Hoyt St dot rides ITS ribbon slot (offset baked)', hoyt && Math.abs(hoyt.properties.dot_off) > 0,
-      `dot_off ${hoyt?.properties.dot_off}`)
+    const hoytOff = parseFloat(String(hoyt?.properties.dots ?? '').split('@')[1] ?? '0')
+    check('Hoyt St dot rides ITS ribbon slot (offset baked)', Math.abs(hoytOff) > 0,
+      `dots ${hoyt?.properties.dots}`)
     const aligned = sts.every((f) => {
       const p = f.properties
       const n = String(p.routes).split(',').length

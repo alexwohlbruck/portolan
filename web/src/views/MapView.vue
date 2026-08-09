@@ -332,14 +332,11 @@ async function loadStations() {
     for (const f of fc.features) {
       const p = f.properties
       if (p.ftype === 'marker') {
-        // marker rule: one line → a borderless dot in that line's color,
-        // shifted onto ITS ribbon (offset baked into the image so it
-        // rotates with the corridor bearing); several parallel lines →
-        // a white pill lying ACROSS the bundle
-        p.icon =
-          p.nlines > 1
-            ? `pill-${p.span_px || 0}`
-            : `dot-${p.mcolor || '888888'}-${p.dot_off || 0}`
+        // marker rule: lines that fill the whole bundle → a white pill
+        // lying ACROSS it; anything less → one borderless dot per
+        // stopping line, each baked at its ribbon's slot offset so the
+        // group rotates with the corridor bearing as a unit
+        p.icon = p.dots ? `dots-${p.dots}` : `pill-${p.span_px || 0}`
         // a complex's markers each get their OWN label at high zoom
         // (this corridor's name + bullets), while the merged station
         // label bows out — Apple's Fulton St behaviour
@@ -415,14 +412,22 @@ function drawMarkerImage(id: string): ImageData | null {
     return ctx
   }
   let m: RegExpMatchArray | null
-  if ((m = id.match(/^dot-([0-9a-fA-F]{6})-(-?[\d.]+)$/))) {
-    const off = parseFloat(m[2])
-    const w = DOT_D + 2 * Math.abs(off)
+  if ((m = id.match(/^dots-(.+)$/))) {
+    // one dot per stopping line: "hex@off;hex@off…", each circle at its
+    // ribbon's slot offset from the marker anchor
+    const dots = m[1].split(';').map((s) => {
+      const [hex, off] = s.split('@')
+      return { hex: /^[0-9a-fA-F]{6}$/.test(hex) ? hex : '888888', off: parseFloat(off) || 0 }
+    })
+    const reach = Math.max(...dots.map((d) => Math.abs(d.off)))
+    const w = DOT_D + 2 * reach
     const ctx = draw(w, DOT_D)
-    ctx.fillStyle = '#' + m[1]
-    ctx.beginPath()
-    ctx.arc(w / 2 + off, DOT_D / 2, DOT_D / 2, 0, Math.PI * 2)
-    ctx.fill()
+    for (const d of dots) {
+      ctx.fillStyle = '#' + d.hex
+      ctx.beginPath()
+      ctx.arc(w / 2 + d.off, DOT_D / 2, DOT_D / 2, 0, Math.PI * 2)
+      ctx.fill()
+    }
     return ctx.getImageData(0, 0, cv.width, cv.height)
   }
   if ((m = id.match(/^pill-([\d.]+)$/))) {

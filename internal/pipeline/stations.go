@@ -62,10 +62,22 @@ type Marker struct {
 	RouteHex []string // aligned with Routes
 	Modes    []string // aligned with Routes
 	Lines    int      // distinct trunks at THIS marker
-	Hex      string   // the line's color when Lines == 1
 	Bearing  float64  // corridor direction at the snap, deg cw from north
-	SpanPx   float64  // full bundle width (nslots-1)·pitch; 0 = unsnapped
-	DotOff   float64  // this line's ribbon offset_px (0 for multi-line)
+	// The marker draws as EITHER a white pill spanning the bundle (the
+	// station's lines occupy every slot) or one colored dot per occupied
+	// ribbon (an express stop on a wider corridor shows a dot per
+	// stopping line, not a band over lines that pass it by).
+	Pill   bool
+	SpanPx float64 // pill: full bundle width (nslots-1)·pitch
+	Dots   []Dot   // dots: one per occupied ribbon, at its slot offset
+}
+
+// Dot is one stopping line at a marker: the RIBBON's drawn color — the
+// segment's resolved color, so an agency trunk's dot matches the drawn
+// line, not the branches' own colors — at the ribbon's slot offset.
+type Dot struct {
+	Hex string
+	Off float64
 }
 
 // BuildStations groups the stops served by the drawn patterns into
@@ -462,35 +474,13 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 				m.Labels = append(m.Labels, displayLabel(routes[r]))
 				m.RouteHex = append(m.RouteHex, routeHex(routes[r]))
 			}
-			trunks := map[string]map[string]int{}
+			trunks := map[string]bool{}
 			for _, r := range rts {
-				rt := routes[r]
-				tk := mode.TrunkKey(rt)
-				if trunks[tk] == nil {
-					trunks[tk] = map[string]int{}
-				}
-				trunks[tk][routeHex(rt)]++
+				trunks[mode.TrunkKey(routes[r])] = true
 			}
 			m.Lines = len(trunks)
-			if m.Lines == 1 {
-				for _, votes := range trunks {
-					var hxs []string
-					for h := range votes {
-						hxs = append(hxs, h)
-					}
-					sort.Strings(hxs)
-					best, bestV := "", 0
-					for _, h := range hxs {
-						if votes[h] > bestV {
-							best, bestV = h, votes[h]
-						}
-					}
-					m.Hex = best
-				}
-			}
 			if key != "~unsnapped" {
-				// snap at the closest member's projection; the bundle's
-				// slots and this line's offset come from the ribbons
+				// snap at the closest member's projection
 				bh := hit{seg: -1, dist: math.Inf(1)}
 				for _, r := range rts {
 					if h := byRoute[r]; h.dist < bh.dist {
@@ -502,10 +492,52 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 				m.LL = frame.ToLL(xy)
 				t := sg.Line.TangentAtArc(bh.arc, 20)
 				m.Bearing = math.Atan2(t.X, t.Y) * 180 / math.Pi
-				m.SpanPx = float64(sg.NSlots-1) * pitch
-				if m.Lines == 1 {
-					m.DotOff = sg.OffsetPx
+				// which RIBBONS do this marker's routes occupy? Each dot
+				// takes the segment's DRAWN color — an agency trunk's dot
+				// matches the purple line on the map, not the branches'
+				// own colors — at the ribbon's slot offset. Pill only when
+				// the lines fill the whole bundle: an express stop on a
+				// wider corridor gets a dot per stopping line instead of a
+				// band over lines that pass it by.
+				seen := map[string]Dot{}
+				nslots := 0
+				for _, r := range rts {
+					s2 := &segs[byRoute[r].seg]
+					if s2.NSlots > nslots {
+						nslots = s2.NSlots
+					}
+					k := strconv.FormatFloat(s2.OffsetPx, 'f', 1, 64)
+					if _, ok := seen[k]; !ok {
+						seen[k] = Dot{Hex: s2.Color, Off: s2.OffsetPx}
+					}
 				}
+				if len(seen) >= nslots && len(seen) > 1 {
+					m.Pill = true
+					m.SpanPx = float64(nslots-1) * pitch
+				} else {
+					for _, d := range seen {
+						m.Dots = append(m.Dots, d)
+					}
+					sort.Slice(m.Dots, func(i, j int) bool { return m.Dots[i].Off < m.Dots[j].Off })
+				}
+			} else {
+				// unsnapped fallback: one gray-or-majority dot at center
+				hexes := map[string]int{}
+				for _, r := range rts {
+					hexes[routeHex(routes[r])]++
+				}
+				var hxs []string
+				for h := range hexes {
+					hxs = append(hxs, h)
+				}
+				sort.Strings(hxs)
+				best, bestV := "888888", 0
+				for _, h := range hxs {
+					if hexes[h] > bestV {
+						best, bestV = h, hexes[h]
+					}
+				}
+				m.Dots = []Dot{{Hex: best}}
 			}
 			st.Markers = append(st.Markers, m)
 			if len(rts) > bestN {
@@ -638,24 +670,33 @@ func writeStations(path string, sts []Station) error {
 			Geom: geomJSON{Type: "Point", Coords: pt(label)},
 		})
 		for _, m := range s.Markers {
+			props := map[string]any{
+				"ftype":        "marker",
+				"name":         s.Name,
+				"routes":       strings.Join(m.Routes, ","),
+				"labels":       strings.Join(m.Labels, ","),
+				"route_colors": strings.Join(m.RouteHex, ","),
+				"modes":        strings.Join(m.Modes, ","),
+				"nlines":       m.Lines,
+				"bearing":      math.Round(m.Bearing*10) / 10,
+				"rank":         len(s.Routes),
+				"nmarkers":     len(s.Markers),
+			}
+			if m.Pill {
+				props["span_px"] = math.Round(m.SpanPx*10) / 10
+			} else {
+				// "hex@off" per occupied ribbon — the client bakes these
+				// into one marker image
+				parts := make([]string, len(m.Dots))
+				for i, d := range m.Dots {
+					parts[i] = d.Hex + "@" + strconv.FormatFloat(math.Round(d.Off*10)/10, 'f', -1, 64)
+				}
+				props["dots"] = strings.Join(parts, ";")
+			}
 			fc.Features = append(fc.Features, feature{
-				Type: "Feature",
-				Props: map[string]any{
-					"ftype":        "marker",
-					"name":         s.Name,
-					"routes":       strings.Join(m.Routes, ","),
-					"labels":       strings.Join(m.Labels, ","),
-					"route_colors": strings.Join(m.RouteHex, ","),
-					"modes":        strings.Join(m.Modes, ","),
-					"nlines":       m.Lines,
-					"mcolor":       m.Hex,
-					"bearing":      math.Round(m.Bearing*10) / 10,
-					"span_px":      math.Round(m.SpanPx*10) / 10,
-					"dot_off":      math.Round(m.DotOff*10) / 10,
-					"rank":         len(s.Routes),
-					"nmarkers":     len(s.Markers),
-				},
-				Geom: geomJSON{Type: "Point", Coords: pt(m.LL)},
+				Type:  "Feature",
+				Props: props,
+				Geom:  geomJSON{Type: "Point", Coords: pt(m.LL)},
 			})
 		}
 	}
