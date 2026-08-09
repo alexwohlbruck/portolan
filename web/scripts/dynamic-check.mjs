@@ -493,6 +493,26 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     }
     check('the H relay tail west of Rockaway Blvd is never lit', tailLit === 0, `${tailLit} lit`)
     check('the H extension IS lit east of Rockaway Blvd on Sat 14:00', east321)
+
+    // flatbush_willoughby: no tunnel→bridge phantom. At the fork where
+    // the Montague legs leave the bridge trunk, the legs separate slower
+    // than the ride-gate's probe tolerance, and a fixed 60 m probe let
+    // the night N's tunnel walk attest an N,R,W transition onto the
+    // BRIDGE steady — a movement no train makes, drawn as a little eye.
+    // pairProbes walks the probes out until the legs separate. Every
+    // N,R,W transition at this junction must head SOUTH (to the DeKalb
+    // trunk), never north onto the bridge.
+    const box = [-73.98356, 40.69108, -73.98168, 40.69256]
+    const phantom = JSON.parse(fs.readFileSync(unionP, 'utf8')).features.filter((f) => {
+      const p = f.properties
+      if (p.kind !== 'transition' || p.routes !== 'N,R,W') return false
+      const cs = f.geometry.coordinates
+      if (!cs.some((c) => c[0] >= box[0] && c[0] <= box[2] && c[1] >= box[1] && c[1] <= box[3]))
+        return false
+      return cs[cs.length - 1][1] > cs[0][1] // ends north of where it starts
+    })
+    check('no tunnel→bridge phantom at Flatbush/Willoughby (all bands)',
+      phantom.length === 0, `${phantom.length} northbound N,R,W ramps`)
   }
 }
 
