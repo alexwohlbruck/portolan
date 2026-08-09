@@ -671,6 +671,9 @@ func loadFeeds(paths string, cover float64, keep func(gtfs.Route) bool) (*gtfs.F
 			}
 			base.Stops[pre+id] = st
 		}
+		for _, tr := range f.Transfers {
+			base.Transfers = append(base.Transfers, [2]string{pre + tr[0], pre + tr[1]})
+		}
 	}
 	return base, nil
 }

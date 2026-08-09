@@ -187,6 +187,47 @@ func TestSnapStations(t *testing.T) {
 	}
 }
 
+func countName(sts []Station, name string) int {
+	n := 0
+	for i := range sts {
+		if sts[i].Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+// Same name a block apart is NOT one station unless a rider can walk
+// between them without paying again — and transfers.txt is the ground
+// truth for that whenever the feed ships one (NYC's Rector St pair).
+func TestTransfersControlMerging(t *testing.T) {
+	feed, pats := testFeed()
+	feed.Stops["RA"] = gtfs.Stop{Name: "Rector St", LL: geo.LL{Lon: -74.0135, Lat: 40.7075}}
+	feed.Stops["RB"] = gtfs.Stop{Name: "Rector St", LL: geo.LL{Lon: -74.0122, Lat: 40.7073}}
+	pats = append(pats,
+		gtfs.Pattern{Route: feed.Routes["4"], StopIDs: []string{"RA"}},
+		gtfs.Pattern{Route: feed.Routes["B"], StopIDs: []string{"RB"}})
+
+	// no transfers.txt → the 150 m name fallback merges them
+	if n := countName(BuildStations(feed, pats, nil), "Rector St"); n != 1 {
+		t.Fatalf("no transfers.txt: proximity should merge, got %d stations", n)
+	}
+	// the feed ships transfers and does NOT link them → two stations
+	feed.Transfers = [][2]string{{"GCn", "GCs"}}
+	if n := countName(BuildStations(feed, pats, nil), "Rector St"); n != 2 {
+		t.Fatalf("transfers authoritative: want 2 Rector St, got %d", n)
+	}
+	// a link folds them into one complex again
+	feed.Transfers = append(feed.Transfers, [2]string{"RA", "RB"})
+	if n := countName(BuildStations(feed, pats, nil), "Rector St"); n != 1 {
+		t.Fatalf("linked complex: want 1 Rector St, got %d", n)
+	}
+	// cross-feed name merging is untouched by same-feed transfers
+	if n := countName(BuildStations(feed, pats, nil), "Grand Central"); n != 1 {
+		t.Fatalf("cross-feed Grand Central merge broke: %d", n)
+	}
+}
+
 func TestNaturalCmp(t *testing.T) {
 	if naturalCmp("2", "10") >= 0 {
 		t.Fatal("2 must sort before 10")

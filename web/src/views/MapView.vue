@@ -314,7 +314,7 @@ function bulletIdsOf(p: any): string[] {
     const id = bulletId(l, colors[i])
     if (seen.has(id)) return
     seen.add(id)
-    if (out.length < 6) out.push(id)
+    if (out.length < 8) out.push(id)
   })
   return out
 }
@@ -346,6 +346,14 @@ async function loadStations() {
           p.nlines > 1
             ? `pill-${p.span_px || 0}`
             : `dot-${p.mcolor || '888888'}-${p.dot_off || 0}`
+        // a complex's markers each get their OWN label at high zoom
+        // (this corridor's name + bullets), while the merged station
+        // label bows out — Apple's Fulton St behaviour
+        if (p.nmarkers > 1) {
+          const ids = bulletIdsOf(p)
+          if (ids.length) p.brow = 'row-' + ids.join('|')
+          p.nrows = Math.min(3, Math.ceil(String(p.name ?? '').length / 20))
+        }
       } else {
         // the whole bullet strip is ONE composed image rendered as the
         // symbol's icon. Bullets must NOT ride inside the text-field:
@@ -571,9 +579,20 @@ function addLayers() {
     },
   })
   const rankBump = ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]
+  // the merged complex label yields to per-corridor labels at z15 —
+  // stations with one marker keep their label at every zoom (coalesce:
+  // builds predating nmarkers read as solo)
+  const rk = ['get', 'rank']
+  const labelGate = ['step', ['zoom'],
+    ['all', isStation, ['>=', rk, 10]],
+    11, ['all', isStation, ['>=', rk, 6]],
+    12, ['all', isStation, ['>=', rk, 4]],
+    13, ['all', isStation, ['>=', rk, 2]],
+    14, isStation,
+    15, ['all', isStation, ['<', ['coalesce', ['get', 'nmarkers'], 1], 2]]] as any
   map.addLayer({
     id: 'station-labels', type: 'symbol', source: 'stations', minzoom: 11,
-    filter: gate(isStation, [10, 6, 4, 2]),
+    filter: labelGate,
     layout: {
       'text-field': ['get', 'name'],
       'text-font': ['Montserrat Medium'],
@@ -602,7 +621,33 @@ function addLayers() {
       'text-halo-width': 1.4,
     },
   })
-  for (const id of ['station-markers', 'station-labels']) {
+  // per-corridor labels for complexes at z15+: this corridor's name and
+  // ITS bullets (Fulton St splits into A·C / J·Z / 2·3 / 4·5 labels the
+  // way Apple draws it; the merged label above takes over below z15)
+  map.addLayer({
+    id: 'station-labels-hi', type: 'symbol', source: 'stations', minzoom: 15,
+    filter: ['all', isMarker, ['>=', ['coalesce', ['get', 'nmarkers'], 1], 2]],
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-font': ['Montserrat Medium'],
+      'symbol-sort-key': ['*', -1, ['get', 'rank']],
+      'text-anchor': 'top',
+      'text-offset': [0, 0.5],
+      'text-size': ['interpolate', ['linear'], ['zoom'],
+        11, ['+', 10, rankBump], 16, ['+', 13, rankBump]],
+      'icon-image': ['coalesce', ['get', 'brow'], ''],
+      'icon-anchor': 'top',
+      'icon-offset': ['match', ['get', 'nrows'],
+        2, ['literal', [0, 43]], 3, ['literal', [0, 59]], ['literal', [0, 27]]],
+      'icon-optional': true,
+    },
+    paint: {
+      'text-color': '#e8e8ee',
+      'text-halo-color': 'rgba(12,12,16,0.9)',
+      'text-halo-width': 1.4,
+    },
+  })
+  for (const id of ['station-markers', 'station-labels', 'station-labels-hi']) {
     map.on('click', id, (e: any) => {
       inspect.value = e.features?.[0]?.properties ?? null
     })

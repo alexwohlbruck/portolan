@@ -56,14 +56,16 @@ type Station struct {
 // bundle's drawn width, and — for a single line calling on a wider
 // bundle — which slot its ribbon occupies.
 type Marker struct {
-	LL      geo.LL
-	Routes  []string
-	Modes   []string // aligned with Routes
-	Lines   int      // distinct trunks at THIS marker
-	Hex     string   // the line's color when Lines == 1
-	Bearing float64  // corridor direction at the snap, deg cw from north
-	SpanPx  float64  // full bundle width (nslots-1)·pitch; 0 = unsnapped
-	DotOff  float64  // this line's ribbon offset_px (0 for multi-line)
+	LL       geo.LL
+	Routes   []string
+	Labels   []string // aligned with Routes — this corridor's own bullets
+	RouteHex []string // aligned with Routes
+	Modes    []string // aligned with Routes
+	Lines    int      // distinct trunks at THIS marker
+	Hex      string   // the line's color when Lines == 1
+	Bearing  float64  // corridor direction at the snap, deg cw from north
+	SpanPx   float64  // full bundle width (nslots-1)·pitch; 0 = unsnapped
+	DotOff   float64  // this line's ribbon offset_px (0 for multi-line)
 }
 
 // BuildStations groups the stops served by the drawn patterns into
@@ -173,16 +175,18 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 			feed: feedPrefix(k), ll: ll, g: g})
 	}
 
-	// merge groups whose normalized names match within walking distance.
-	// The radius is TIERED: within one feed, parent_station already did
-	// the grouping, so only a tight 150 m catches parentless
-	// cross-platform pairs — any looser and NYC's two distinct "23 St"
-	// stations (6 Av and 7 Av, ~260 m apart) fold into one. Across feeds
-	// there are no ids to link, names are all we have, and terminals
-	// sprawl — 300 m is what it takes to put the LIRR's Madison concourse
-	// under Grand Central (276 m from Metro-North's centroid). Different
-	// names never merge: Apple labels Atlantic Terminal and Atlantic
-	// Av–Barclays separately, and so do we.
+	// merge same-named groups into one station — but only where a rider
+	// really doesn't pay again. Within one feed, transfers.txt is the
+	// ground truth when the feed ships it: NYC's two "Rector St" stations
+	// sit a block apart with NO transfer (two stations, two labels), while
+	// the four "Fulton St" platforms are one linked complex. Feeds without
+	// transfers fall back to a tight 150 m name match (any looser and the
+	// two distinct "23 St" stations fold). Across feeds there are no ids
+	// or transfers to link, names are all we have, and terminals sprawl —
+	// 300 m is what puts the LIRR's Madison concourse under Grand Central
+	// (276 m from Metro-North's centroid). Different names never merge:
+	// Apple labels Atlantic Terminal and Atlantic Av–Barclays separately,
+	// and so do we.
 	parent := make([]int, len(nodes))
 	for i := range parent {
 		parent[i] = i
@@ -194,6 +198,25 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 		}
 		return parent[i]
 	}
+	keyIdx := map[string]int{}
+	for i, n := range nodes {
+		keyIdx[n.g.key] = i
+	}
+	groupKeyOf := func(stopID string) string {
+		if st, ok := feed.Stops[stopID]; ok && st.Parent != "" {
+			return st.Parent
+		}
+		return stopID
+	}
+	feedHasTr := map[string]bool{}
+	for _, tr := range feed.Transfers {
+		feedHasTr[feedPrefix(tr[0])] = true
+		i, iok := keyIdx[groupKeyOf(tr[0])]
+		j, jok := keyIdx[groupKeyOf(tr[1])]
+		if iok && jok && i != j && nodes[i].norm == nodes[j].norm {
+			parent[find(i)] = find(j)
+		}
+	}
 	byNorm := map[string][]int{}
 	for i, n := range nodes {
 		byNorm[n.norm] = append(byNorm[n.norm], i)
@@ -202,8 +225,12 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 		for a := 0; a < len(idxs); a++ {
 			for b := a + 1; b < len(idxs); b++ {
 				i, j := idxs[a], idxs[b]
+				sameFeed := nodes[i].feed == nodes[j].feed
+				if sameFeed && feedHasTr[nodes[i].feed] {
+					continue // transfers are authoritative for this feed
+				}
 				lim := 300.0
-				if nodes[i].feed == nodes[j].feed {
+				if sameFeed {
 					lim = 150.0
 				}
 				if distM(nodes[i].ll, nodes[j].ll) <= lim {
@@ -275,13 +302,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64) []Stati
 			st.Routes = append(st.Routes, rid)
 			// regional routes often ship no short name — the long name is
 			// the branch identity ("Hudson", "Babylon Branch")
-			lbl := rt.ShortName
-			if lbl == "" {
-				lbl = rt.LongName
-			}
-			// aligned arrays are comma-joined in the geojson — a comma in
-			// a long name would shift every array after it
-			st.Labels = append(st.Labels, strings.ReplaceAll(lbl, ",", " "))
+			st.Labels = append(st.Labels, displayLabel(rt))
 			hx := routeHex(rt)
 			st.RouteHex = append(st.RouteHex, hx)
 			st.Modes = append(st.Modes, mode.Of(rt.Type).String())
@@ -438,6 +459,8 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 			m := Marker{Routes: rts, LL: st.LL}
 			for _, r := range rts {
 				m.Modes = append(m.Modes, modeOf[r])
+				m.Labels = append(m.Labels, displayLabel(routes[r]))
+				m.RouteHex = append(m.RouteHex, routeHex(routes[r]))
 			}
 			trunks := map[string]map[string]int{}
 			for _, r := range rts {
@@ -513,6 +536,18 @@ func routeHex(r gtfs.Route) string {
 		return r.Color
 	}
 	return "888888"
+}
+
+// displayLabel is the bullet text for one route: short name, falling
+// back to the long name (regional branches ship no short name). Aligned
+// arrays are comma-joined in the geojson — a comma inside a long name
+// would shift every array after it.
+func displayLabel(rt gtfs.Route) string {
+	l := rt.ShortName
+	if l == "" {
+		l = rt.LongName
+	}
+	return strings.ReplaceAll(l, ",", " ")
 }
 
 // feedPrefix extracts the overlay tag loadFeeds stamped on an id
@@ -598,6 +633,7 @@ func writeStations(path string, sts []Station) error {
 				"nlines":       s.Lines,
 				"line_colors":  strings.Join(s.LineHex, ","),
 				"rank":         len(s.Routes),
+				"nmarkers":     len(s.Markers),
 			},
 			Geom: geomJSON{Type: "Point", Coords: pt(label)},
 		})
@@ -605,16 +641,19 @@ func writeStations(path string, sts []Station) error {
 			fc.Features = append(fc.Features, feature{
 				Type: "Feature",
 				Props: map[string]any{
-					"ftype":   "marker",
-					"name":    s.Name,
-					"routes":  strings.Join(m.Routes, ","),
-					"modes":   strings.Join(m.Modes, ","),
-					"nlines":  m.Lines,
-					"mcolor":  m.Hex,
-					"bearing": math.Round(m.Bearing*10) / 10,
-					"span_px": math.Round(m.SpanPx*10) / 10,
-					"dot_off": math.Round(m.DotOff*10) / 10,
-					"rank":    len(s.Routes),
+					"ftype":        "marker",
+					"name":         s.Name,
+					"routes":       strings.Join(m.Routes, ","),
+					"labels":       strings.Join(m.Labels, ","),
+					"route_colors": strings.Join(m.RouteHex, ","),
+					"modes":        strings.Join(m.Modes, ","),
+					"nlines":       m.Lines,
+					"mcolor":       m.Hex,
+					"bearing":      math.Round(m.Bearing*10) / 10,
+					"span_px":      math.Round(m.SpanPx*10) / 10,
+					"dot_off":      math.Round(m.DotOff*10) / 10,
+					"rank":         len(s.Routes),
+					"nmarkers":     len(s.Markers),
 				},
 				Geom: geomJSON{Type: "Point", Coords: pt(m.LL)},
 			})

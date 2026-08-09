@@ -305,6 +305,26 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       hoytS?.properties.nlines === 1 && hs?.properties.nlines > 1 && hs?.properties.span_px > 0,
       `pill span ${hs?.properties.span_px}px`)
 
+    // transfers.txt decides what merges: Rector St's two stations have
+    // no free transfer (two labels, forever), Fulton St's platforms are
+    // one linked complex — except the G's own unconnected Fulton St
+    const rect = sts.filter((f) => f.properties.name === 'Rector St')
+    check('Rector St stays two stations (no transfer between them)',
+      rect.length === 2 && rect.some((f) => f.properties.labels === '1') &&
+        rect.some((f) => f.properties.labels === 'N,R,W'),
+      rect.map((f) => f.properties.labels).join(' vs '))
+    const ful = sts.filter((f) => f.properties.name === 'Fulton St')
+    const fulHub = ful.find((f) => f.properties.nmarkers > 1)
+    const fulG = ful.find((f) => f.properties.labels === 'G')
+    check('Fulton St: linked complex merges, the G one stays apart',
+      ful.length === 2 && !!fulHub && !!fulG && fulHub.properties.nmarkers >= 3,
+      `${ful.length} stations, complex has ${fulHub?.properties.nmarkers} corridors`)
+    const cmk = mks.filter((f) => f.properties.name === 'Fulton St' && f.properties.nmarkers > 1)
+    check('complex markers carry their OWN bullets for the z15 split',
+      cmk.length >= 3 && cmk.every((f) =>
+        String(f.properties.labels).split(',').length === String(f.properties.routes).split(',').length),
+      cmk.map((f) => f.properties.labels).join(' | '))
+
     // ranks: the biggest stations are the famous hubs
     const top = sts.slice().sort((a, b) => b.properties.rank - a.properties.rank).slice(0, 6)
       .map((f) => f.properties.name)

@@ -49,6 +49,11 @@ type Feed struct {
 	Patterns []Pattern
 	Agencies map[string]string // agency_id → agency_name (labels for agency trunks)
 	Stops    map[string]Stop   // stop_id → stop, platforms AND parent stations
+	// Transfers: stop-id pairs a rider can transfer between without
+	// paying again (transfers.txt rows with type ≠ 3). This is the
+	// ground truth for which same-named stations are one complex and
+	// which just share a name across the street (NYC's Rector St).
+	Transfers [][2]string
 }
 
 // Load reads a GTFS zip and returns patterns covering ≥ coverFrac of each
@@ -141,6 +146,17 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	}
 	if stopsErr != nil {
 		return nil, stopsErr
+	}
+	// transfers.txt is small and optional — read it inline
+	if tf, ok := files["transfers.txt"]; ok {
+		if err := eachRowCols(tf, []string{"from_stop_id", "to_stop_id", "transfer_type"},
+			func(v []string) {
+				if v[0] != "" && v[1] != "" && v[2] != "3" {
+					feed.Transfers = append(feed.Transfers, [2]string{v[0], v[1]})
+				}
+			}); err != nil {
+			return nil, err
+		}
 	}
 	// agency_id is optional in routes.txt when the feed has one agency
 	// (LIRR ships without the column entirely) — backfill it, or the

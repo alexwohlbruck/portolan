@@ -47,12 +47,17 @@ masks is lit — no new data needed, `/api/activity` already has the masks).
    when the feed provides one, else by its own id. (Bus stops are
    excluded for now — thousands of poles are a different rendering
    problem, and Apple only shows them deep in the zoom range.)
-2. Groups merge when their normalized names match within walking
-   distance — tiered: 150 m within one feed (parent_station already did
-   the real grouping; looser folds NYC's two distinct "23 St" stations),
-   300 m across feeds (no shared ids, and terminals sprawl — the LIRR's
-   Madison concourse is 276 m from Metro-North's Grand Central
-   centroid). Cross-feed groups with DIFFERENT names stay separate:
+2. Same-named groups merge only where a rider doesn't pay again.
+   Within one feed, **transfers.txt is the ground truth whenever the
+   feed ships it**: NYC's two "Rector St" stations sit a block apart
+   with NO transfer → two stations, two labels, forever; the four
+   linked "Fulton St" platforms are one complex — and the G train's
+   unconnected "Fulton St" stays its own. Feeds without transfers fall
+   back to a tight 150 m name match (looser folds the two distinct
+   "23 St" stations). Across feeds there are no ids or transfers to
+   link — 300 m name match (terminals sprawl: the LIRR's Madison
+   concourse is 276 m from Metro-North's Grand Central centroid).
+   Cross-feed groups with DIFFERENT names stay separate:
    Apple labels "Atlantic Terminal" (LIRR) and "Atlantic Av–Barclays
    Ctr" (subway) as two stations, and so do we.
 3. Station position = centroid of member platforms. (Refinement, later:
@@ -117,9 +122,14 @@ size, render precedence and zoom-of-first-appearance all derive from it.
    `symbol-placement: line`, upright via viewport alignment, z15+, on
    ribbons at the bundle center only (a symbol cannot follow a ribbon's
    line-offset).
-7. **Agency icons in labels** (rest of req 7): needs curated logo
+7. ✅ **Complexes split by zoom.** Below z15 a complex is one merged
+   label with merged bullets; at z15+ each corridor marker gets its own
+   label with ITS bullets (Fulton St becomes 4·5 / A·C·J·Z / 2·3), and
+   the merged label bows out. Solo-marker stations keep one label at
+   every zoom.
+8. **Agency icons in labels** (rest of req 7): needs curated logo
    assets per agency — no honest way to generate them.
-8. **World scale**: stations ride the same tile/feature-state path as
+9. **World scale**: stations ride the same tile/feature-state path as
    ribbons (docs/DYNAMIC-SERVICE.md stage 5); rank thresholds per zoom
    keep tile size sane.
 
