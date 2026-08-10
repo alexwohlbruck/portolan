@@ -528,14 +528,18 @@ const DOT_D = 7 // dot diameter; also the pill height and its corner radius ×2
 // agency) with circle as the default. The set is what transit systems
 // actually use:
 //
-//   circle    NYC, WMATA, Boston, Moscow, Seoul, Tokyo Metro — the default
-//   square    the German-speaking U-Bahnen: Berlin, Vienna, Munich, Hamburg
-//   rounded   Barcelona TMB, Singapore MRT, Shanghai, Delhi
+//   circle    NYC, WMATA, Boston, Seoul, Tokyo Metro — the default
+//   square    Vienna (its U1 badge is a 283x283 square)
+//   rounded   Barcelona TMB, Amsterdam metro, Santiago, Berlin BVG, Paris
 //   notch     square with the top-right corner rounded — Mexico City
-//   diamond   NYC EXPRESS variants (6◇, 7◇), Madrid's rhombus
-//   hexagon   several Japanese private railways, Lyon
+//   diamond   NYC EXPRESS variants (6◇, 7◇), Madrid's rhombus logo
+//   hexagon   several Japanese private railways
 //   octagon   a few Chinese systems
 //   triangle  rare, and only ever for special services
+//
+// Berlin is the caveat: its badge is a rounded RECTANGLE (151x90), wider
+// than tall, and `rounded` renders 1:1 for one- and two-character labels.
+// The corner treatment is right, the proportion is not.
 //
 // Non-circular outlines need a wider box to hold the same glyphs — a
 // diamond's inscribed rectangle is barely half its width — so each shape
