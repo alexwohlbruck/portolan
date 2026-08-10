@@ -167,6 +167,25 @@ Even spacing across a continuous zoom range needs a MapLibre build with variable
 line offsets. Point the workbench at it with `--maplibre <dist-dir>`. Rendering
 with fixed, pre-baked offsets works with stock MapLibre.
 
+## License and attribution
+
+Portolan is free and open source under the [MIT License](LICENSE). You can use
+it, change it, build on it and sell what you build, for any purpose, with no
+fee and no permission needed. The only condition is that the copyright notice
+stays with copies of the source.
+
+If you publish a map built with Portolan, please credit it in the attribution
+line, the small sources note in the corner of the map:
+
+```
+© Portolan · © OpenStreetMap contributors
+```
+
+The Portolan credit is a request, not a legal requirement. The OpenStreetMap
+credit is required, because the track geometry comes from OpenStreetMap and its
+[ODbL licence](https://www.openstreetmap.org/copyright) asks for it. Check the
+terms of your transit feeds as well, since some agencies ask to be named too.
+
 ## Thanks
 
 Portolan stands on work by other people.
