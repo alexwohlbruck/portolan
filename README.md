@@ -150,7 +150,9 @@ rather than an exact solve.
 
 | doc | what is in it |
 |---|---|
+| [CLI.md](docs/CLI.md) | every command and flag, and the build server's HTTP API |
 | [ALGORITHM.md](docs/ALGORITHM.md) | how the pipeline works, stage by stage |
+| [CORRIDORS.md](docs/CORRIDORS.md) | charting a network whose geometry you already have |
 | [BUNDLING.md](docs/BUNDLING.md), [CENTERLINE.md](docs/CENTERLINE.md) | the corridor detection core, in detail |
 | [CITIES.md](docs/CITIES.md) | adding a city, feed sources, per-city status |
 | [MODES.md](docs/MODES.md) | how each transit mode is drawn, and the plan for buses |
