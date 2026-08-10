@@ -361,6 +361,20 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		passCache[key] = arcs
 		return arcs
 	}
+	// maxStray: how far a walk strays from the junction between two probe
+	// passes. The arc-separation bound below only APPROXIMATES "these two
+	// passes are consecutive at this node"; this measures it directly.
+	maxStray := func(pi int, x, y float64, at geo.Pt) float64 {
+		lo, hi := math.Min(x, y), math.Max(x, y)
+		l := paths[pi].Line
+		worst := 0.0
+		for arc := lo; arc <= hi; arc += 20 {
+			if d := l.AtArc(arc).Dist(at); d > worst {
+				worst = d
+			}
+		}
+		return worst
+	}
 	// ridesPair: some shared route's walk passes both probes in one short
 	// span (arc separation comparable to the probe spans, not a lap of a
 	// loop). Attest-false only when the walks demonstrably pass BOTH legs
@@ -398,6 +412,31 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				for _, x := range aArcs {
 					for _, y := range bArcs {
 						if math.Abs(x-y) <= sepMax {
+							return true
+						}
+						// The arc bound measures TRAVEL between the passes,
+						// which a long welded approach inflates without the
+						// movement ever leaving the junction: at M10's
+						// Auteuil loop mouth the eastbound (707 trips, the
+						// heavier half of the one-way pair) passes the two
+						// probes 617 m apart against a 600 m budget — yet
+						// never strays past 477 m from the node, because
+						// the welded legs push the probes 100 m out and the
+						// walk meets one of them 500 m back down its own
+						// leg. FAIR drew the 21-trip leg↔leg movement and
+						// dropped the 707-trip trunk↔leg one.
+						//
+						// Distance FROM THE JUNCTION is what the bound was
+						// always reaching for. Same budget, measured on the
+						// quantity that means it: a phantom pairing (a
+						// circulator crossing its own path) swings a whole
+						// lap away and fails this by an order of magnitude.
+						if maxStray(pi, x, y, n.Nodes[ni].At) <= sepMax {
+							if dbg {
+								fmt.Printf("    STRAY3 ok x=%.0f y=%.0f sep=%.0f stray=%.0f max=%.0f\n",
+									x, y, math.Abs(x-y),
+									maxStray(pi, x, y, n.Nodes[ni].At), sepMax)
+							}
 							return true
 						}
 					}
@@ -679,16 +718,20 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			if belowFloor(a, c.color, band.min) {
 				continue // mode hidden in this band; its steady bodies skip too
 			}
+			dbgC := false
 			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
 				for _, e := range []int{a, cur} {
 					pts2 := n.Edges[e].Pts
 					if len(pts2) > 0 && pts2[len(pts2)-1].Dist(dbg3Pt) < 100 ||
 						len(pts2) > 0 && pts2[0].Dist(dbg3Pt) < 100 {
-						fmt.Printf("CAND3 %s a=e%d cur=e%d mids=%d aAtTo=%v bAtFrom=%v bend=%.0f\n",
-							c.color, a, cur, len(c.mids), c.aAtTo, c.bAtFrom, c.bend)
+						dbgC = true
 						break
 					}
 				}
+			}
+			if dbgC {
+				fmt.Printf("CAND3 %s a=e%d cur=e%d mids=%d aAtTo=%v bAtFrom=%v bend=%.0f\n",
+					c.color, a, cur, len(c.mids), c.aAtTo, c.bAtFrom, c.bend)
 			}
 			skip := absorbed[[2]int{a, colorIdx(a, c.color)}] ||
 				absorbed[[2]int{cur, colorIdx(cur, c.color)}]
@@ -700,7 +743,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			ck := [5]int{a, boolIdx(c.aAtTo), cur, boolIdx(!c.bAtFrom), colorIdx(a, c.color)}
 			rk := [5]int{cur, boolIdx(!c.bAtFrom), a, boolIdx(c.aAtTo), colorIdx(cur, c.color)}
 			if skip || emitted[ck] || emitted[rk] {
-				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+				if dbgC {
 					fmt.Printf("  REJ3 skip=%v em=%v/%v\n", skip, emitted[ck], emitted[rk])
 				}
 				continue
@@ -723,8 +766,8 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			tl, hl := geo.NewLine(tail), geo.NewLine(head)
 			entry, exit := pairTangents(a, cur, c.aAtTo, c.bAtFrom)
 			if entry.Dot(exit) < -0.5 {
-				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
-					fmt.Printf("  REJ3 hairpin\n")
+				if dbgC {
+					fmt.Printf("  REJ3 hairpin entry.exit=%.2f\n", entry.Dot(exit))
 				}
 				continue
 			}
@@ -745,8 +788,20 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			// a TURNING movement follows the steel: the junction's
 			// connector track is in the data — trace it between the cut
 			// points instead of sweeping a synthetic curve wide of it
+			// A near-straight BEND can still need the steel. `bend` is
+			// measured 100 m out, where a one-way pair's two legs already
+			// run parallel — but inside the junction they part with a
+			// tight S the far tangents never see. M10 at the Auteuil loop
+			// mouth reads 29° and then demands 67° per 12 m, so it fell
+			// through the turn branch, failed the straight-movement
+			// allowance, and was dropped: 707 trips of eastbound with no
+			// connector, while the 21-trip leg↔leg movement drew fine.
+			// The connector track is in the data whatever the angle says,
+			// so trace it whenever the synthetic chain cannot be drawn.
+			needSteel := bend > 40 ||
+				maxTurn12(smoothPolyline(geo.NewLine(chain))) > allow
 			onSteel := false
-			if bend > 40 && len(tail) > 0 && len(head) > 0 {
+			if needSteel && len(tail) > 0 && len(head) > 0 {
 				p0 := tail[0]
 				p3 := head[len(head)-1]
 				near := tail[len(tail)-1]
@@ -836,7 +891,7 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 					mt = mb
 				}
 				if mt > allow {
-					if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+					if dbgC {
 						fmt.Printf("  REJ3 drawgate mt=%.0f bez=%.0f allow=%.0f bend=%.0f\n", mt, mb, allow, bend)
 					}
 					continue
