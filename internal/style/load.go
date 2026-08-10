@@ -68,6 +68,19 @@ type Entity struct {
 	// a diamond for express variants, Madrid a rhombus — and the feed
 	// says nothing about it, so it is curation like colour.
 	Shape string `json:"shape,omitempty"`
+	// Font is the bullet label's typeface: default, mono, bolder,
+	// lighter, italic. Curation for the same reason Shape is — a code
+	// bullet reads better monospaced and a heritage line is set in
+	// italic, and no feed field says so.
+	Font string `json:"font,omitempty"`
+	// Bordered rings the bullet in a contrasting outline. A white or
+	// near-white bullet has no edge against parchment without one.
+	Bordered *bool `json:"bordered,omitempty"`
+	// Trunk overrides the merge policy for this subject alone —
+	// in practice "route", to keep it out of a colour trunk. Law 5
+	// merges by colour, which is right where colour carries meaning
+	// and wrong where a caller assigns colours arbitrarily.
+	Trunk string `json:"trunk,omitempty"`
 }
 
 // Options are the whole-city switches.
@@ -107,6 +120,24 @@ func (d Doc) Config() Config {
 					c.Shapes = map[string]string{}
 				}
 				c.Shapes[key] = e.Shape
+			}
+			if e.Font != "" {
+				if c.Fonts == nil {
+					c.Fonts = map[string]string{}
+				}
+				c.Fonts[key] = e.Font
+			}
+			if e.Bordered != nil {
+				if c.Bordered == nil {
+					c.Bordered = map[string]bool{}
+				}
+				c.Bordered[key] = *e.Bordered
+			}
+			if e.Trunk != "" {
+				if c.Trunks == nil {
+					c.Trunks = map[string]string{}
+				}
+				c.Trunks[key] = e.Trunk
 			}
 			if e.Name != "" {
 				if c.Names == nil {

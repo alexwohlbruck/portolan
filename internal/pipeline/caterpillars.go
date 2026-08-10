@@ -53,6 +53,15 @@ type CatBullet struct {
 	Ang float64
 	// Shape is the bullet outline (circle unless curated otherwise).
 	Shape string
+	// TextHex is the glyph colour ON the bullet, from route_text_color.
+	// Empty means the feed did not say, and the renderer falls back to
+	// the luminance rule (dark glyphs on a pale bullet).
+	TextHex string
+	// Font is the curated label typeface ("" = the default face).
+	Font string
+	// Bordered rings the bullet in a contrasting outline — what a white
+	// or near-white bullet needs to have an edge at all.
+	Bordered bool
 }
 
 // bulletLike decides how a route's label is drawn. Systems split cleanly
@@ -258,6 +267,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		// the REFERENCE line's travel frame (reversed siblings flip sign)
 		type bullet struct {
 			route, label, hex, acts, mode, shape string
+			textHex, font                        string
+			bordered                             bool
 			lat                                  float64
 			text                                 bool
 		}
@@ -301,7 +312,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 					continue
 				}
 				roster = append(roster, bullet{route: rid, label: label, hex: routeHex(rt),
-					acts: acts, mode: s.Mode, lat: lat, text: asText, shape: shp})
+					acts: acts, mode: s.Mode, lat: lat, text: asText, shape: shp,
+					textHex: textHexOf(rt), font: fontOf(rt), bordered: borderedOf(rt)})
 				labelSet[label] = true
 			}
 		}
@@ -485,7 +497,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 						es := make([]catEntry, len(roster))
 						for i, b := range roster {
 							es[i] = catEntry{route: b.route, label: b.label, hex: b.hex, acts: b.acts,
-								mode: b.mode, lat: b.lat, text: b.text, shape: b.shape}
+								mode: b.mode, lat: b.lat, text: b.text, shape: b.shape,
+								textHex: b.textHex, font: b.font, bordered: b.bordered}
 						}
 						return es
 					}()...),
@@ -608,6 +621,10 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				Text:  b.text,
 				Ang:   round1(ang),
 				Shape: b.shape,
+
+				TextHex:  b.textHex,
+				Font:     b.font,
+				Bordered: b.bordered,
 			})
 		}
 		group++
@@ -617,6 +634,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 
 type catEntry struct {
 	route, label, hex, acts, mode, shape string
+	textHex, font                        string
+	bordered                             bool
 	lat                                  float64
 	text                                 bool
 }

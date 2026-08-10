@@ -92,6 +92,23 @@ type Config struct {
 	Names map[string]string `json:"names,omitempty"`
 	// Shapes: route-bullet outlines, keyed like Colors and Names.
 	Shapes map[string]string `json:"shapes,omitempty"`
+	// Fonts: bullet label typeface, keyed like Colors and Names —
+	// default|mono|bolder|lighter|italic. A network whose bullets carry
+	// a code rather than a number reads better monospaced, and a
+	// heritage line is conventionally set in italic.
+	Fonts map[string]string `json:"fonts,omitempty"`
+	// Bordered: draw a contrasting ring around the bullet, keyed like
+	// Colors and Names. A white or very pale bullet is invisible on
+	// parchment without one.
+	Bordered map[string]bool `json:"bordered,omitempty"`
+	// Trunks: per-route merge policy, keyed like Colors and Names —
+	// the Trunk* values, in practice "route" to opt a route OUT of
+	// merging. Trunking is colour-based (law 5), which is right when
+	// colour means something and wrong when a caller assigns colours
+	// arbitrarily: two unrelated authored routes that happen to share a
+	// hex would otherwise merge into one ribbon. This is the escape
+	// hatch, per route rather than per class.
+	Trunks map[string]string `json:"trunks,omitempty"`
 	// BulletOrder: one of the Bullets* policies above. Empty inherits
 	// (default BulletsColor).
 	BulletOrder string `json:"bullet_order,omitempty"`
@@ -144,10 +161,13 @@ type Resolved struct {
 // Set is a resolved style config: the answer for every class, plus the
 // override table. Build one with New and hand it to the pipeline.
 type Set struct {
-	Modes  map[string]Resolved `json:"modes"`
-	Colors map[string]string   `json:"colors,omitempty"`
-	Names  map[string]string   `json:"names,omitempty"`
-	Shapes map[string]string   `json:"shapes,omitempty"`
+	Modes    map[string]Resolved `json:"modes"`
+	Colors   map[string]string   `json:"colors,omitempty"`
+	Names    map[string]string   `json:"names,omitempty"`
+	Shapes   map[string]string   `json:"shapes,omitempty"`
+	Fonts    map[string]string   `json:"fonts,omitempty"`
+	Bordered map[string]bool     `json:"bordered,omitempty"`
+	Trunks   map[string]string   `json:"trunks,omitempty"`
 	// BulletOrder: resolved Bullets* policy, never empty.
 	BulletOrder string `json:"bullet_order"`
 	// Caterpillars: resolved on/off for inline route bullets.
@@ -163,6 +183,12 @@ type Set struct {
 	nStop    map[string]string
 	sAgency  map[string]string
 	sRoute   map[string]string
+	fAgency  map[string]string
+	fRoute   map[string]string
+	bAgency  map[string]bool
+	bRoute   map[string]bool
+	tAgency  map[string]string
+	tRoute   map[string]string
 }
 
 // New resolves configs in precedence order — later ones win field by field.
@@ -172,10 +198,16 @@ func New(layers ...Config) *Set {
 	s := &Set{Modes: map[string]Resolved{}, Colors: map[string]string{},
 		Names:    map[string]string{},
 		Shapes:   map[string]string{},
+		Fonts:    map[string]string{},
+		Bordered: map[string]bool{},
+		Trunks:   map[string]string{},
 		byAgency: map[string]string{}, byRoute: map[string]string{},
 		nAgency: map[string]string{}, nRoute: map[string]string{},
 		nStop:   map[string]string{},
-		sAgency: map[string]string{}, sRoute: map[string]string{}}
+		sAgency: map[string]string{}, sRoute: map[string]string{},
+		fAgency: map[string]string{}, fRoute: map[string]string{},
+		bAgency: map[string]bool{}, bRoute: map[string]bool{},
+		tAgency: map[string]string{}, tRoute: map[string]string{}}
 	for name, d := range defaults {
 		merged := d
 		for _, l := range layers {
@@ -201,6 +233,15 @@ func New(layers ...Config) *Set {
 		}
 		for k, v := range l.Shapes {
 			s.Shapes[k] = v
+		}
+		for k, v := range l.Fonts {
+			s.Fonts[k] = v
+		}
+		for k, v := range l.Bordered {
+			s.Bordered[k] = v
+		}
+		for k, v := range l.Trunks {
+			s.Trunks[k] = v
 		}
 		if l.BulletOrder != "" {
 			s.BulletOrder = l.BulletOrder
@@ -229,6 +270,38 @@ func New(layers ...Config) *Set {
 			s.sAgency[strings.TrimPrefix(key, "agency:")] = strings.ToLower(strings.TrimSpace(v))
 		case strings.HasPrefix(key, "route:"):
 			s.sRoute[strings.TrimPrefix(key, "route:")] = strings.ToLower(strings.TrimSpace(v))
+		}
+	}
+	// fonts, borders and per-route trunk policy split exactly like
+	// shapes — same keys, same agency-then-route precedence, so a
+	// curator learns one addressing scheme and it holds everywhere
+	for k, v := range s.Fonts {
+		key := strings.ToLower(strings.TrimSpace(k))
+		val := strings.ToLower(strings.TrimSpace(v))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.fAgency[strings.TrimPrefix(key, "agency:")] = val
+		case strings.HasPrefix(key, "route:"):
+			s.fRoute[strings.TrimPrefix(key, "route:")] = val
+		}
+	}
+	for k, v := range s.Bordered {
+		key := strings.ToLower(strings.TrimSpace(k))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.bAgency[strings.TrimPrefix(key, "agency:")] = v
+		case strings.HasPrefix(key, "route:"):
+			s.bRoute[strings.TrimPrefix(key, "route:")] = v
+		}
+	}
+	for k, v := range s.Trunks {
+		key := strings.ToLower(strings.TrimSpace(k))
+		val := strings.ToLower(strings.TrimSpace(v))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.tAgency[strings.TrimPrefix(key, "agency:")] = val
+		case strings.HasPrefix(key, "route:"):
+			s.tRoute[strings.TrimPrefix(key, "route:")] = val
 		}
 	}
 	for k, v := range s.Names {
@@ -370,6 +443,65 @@ func (s *Set) RouteShape(routeIDs []string, agencyIDs []string) (string, bool) {
 		return v, true
 	}
 	return lookup(s.sAgency, agencyIDs)
+}
+
+// RouteFont is the bullet typeface override for a route, then its
+// agency — default|mono|bolder|lighter|italic.
+func (s *Set) RouteFont(routeIDs []string, agencyIDs []string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	if v, ok := lookup(s.fRoute, routeIDs); ok {
+		return v, true
+	}
+	return lookup(s.fAgency, agencyIDs)
+}
+
+// RouteBordered reports whether a route's bullet takes a contrasting
+// ring, and whether anything said so at all.
+func (s *Set) RouteBordered(routeIDs []string, agencyIDs []string) (bool, bool) {
+	if s == nil {
+		return false, false
+	}
+	for _, id := range routeIDs {
+		if id == "" {
+			continue
+		}
+		if v, ok := s.bRoute[strings.ToLower(strings.TrimSpace(id))]; ok {
+			return v, true
+		}
+	}
+	for _, id := range agencyIDs {
+		if id == "" {
+			continue
+		}
+		if v, ok := s.bAgency[strings.ToLower(strings.TrimSpace(id))]; ok {
+			return v, true
+		}
+	}
+	return false, false
+}
+
+// RouteTrunk is the per-route merge-policy override, then its agency's.
+// Its reason for existing is TrunkRoute: colour trunking is law 5 and
+// correct when colour is meaningful, but an authored network may assign
+// colours arbitrarily, and two unrelated routes sharing a hex must not
+// silently become one ribbon.
+func (s *Set) RouteTrunk(routeIDs []string, agencyIDs []string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	if v, ok := lookup(s.tRoute, routeIDs); ok {
+		return v, true
+	}
+	return lookup(s.tAgency, agencyIDs)
+}
+
+// AnyTrunk reports whether any per-route trunk override exists — the
+// cheap skip for the overwhelmingly common case of none, on a lookup
+// that would otherwise run per route per edge.
+func (s *Set) AnyTrunk() bool {
+	return s != nil && (len(s.tRoute) > 0 || len(s.tAgency) > 0)
 }
 
 // AnyName reports whether any name override exists — the same cheap skip

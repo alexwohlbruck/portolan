@@ -22,7 +22,13 @@ type Route struct {
 	ShortName string
 	LongName  string
 	Color     string // hex without '#', GTFS convention
-	Type      int    // GTFS route_type
+	// TextColor: route_text_color — what the agency prints ON the
+	// bullet. Standard GTFS and widely populated, and the only place
+	// the answer actually lives: luminance guessing gets NYC's yellow
+	// N·Q·R·W right and gets a mid-tone brand colour wrong about as
+	// often as not. Empty falls back to the luminance rule.
+	TextColor string
+	Type      int // GTFS route_type
 	Agency    string // agency_id — trunk-key fallback for colorless regional
 	// SortOrder: route_sort_order, the feed's own presentation order
 	// (MBTA, TriMet and PATH ship it); -1 when absent.
@@ -142,7 +148,7 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		defer wg.Done()
 		routesErr = eachRowCols(rf, []string{"route_id", "route_type",
 			"route_short_name", "route_long_name", "route_color", "agency_id",
-			"route_sort_order"},
+			"route_sort_order", "route_text_color"},
 			func(v []string) {
 				t, _ := strconv.Atoi(v[1])
 				so := -1
@@ -154,6 +160,7 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 				feed.Routes[v[0]] = Route{
 					ID: v[0], ShortName: v[2], LongName: v[3],
 					Color: v[4], Type: t, Agency: v[5], SortOrder: so,
+					TextColor: strings.TrimPrefix(v[7], "#"),
 				}
 			})
 	}()

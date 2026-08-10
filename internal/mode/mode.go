@@ -139,6 +139,20 @@ func SetLineAgencies(m map[string]bool) { lineAgencies = m }
 func TrunkKey(r gtfs.Route) string {
 	c := Of(r.Type)
 	trunk := style.Active().Class(c.String()).Trunk
+	// A per-ROUTE trunk override beats the class. Law 5 merges by
+	// colour because two routes drawn the same colour ARE one line to a
+	// rider — true where colour carries meaning, and false where a
+	// caller assigns colours arbitrarily, as an authored network may.
+	// Setting a route's trunk to "route" keeps it out of a colour trunk
+	// it only landed in by hex collision, without changing the class
+	// policy for everything around it.
+	if style.Active().AnyTrunk() {
+		if t, ok := style.Active().RouteTrunk(
+			[]string{r.ID, r.ShortName, r.LongName},
+			[]string{r.Agency, AgencyName(r.Agency)}); ok {
+			trunk = t
+		}
+	}
 	// line_agencies is a per-AGENCY escape from agency trunking: the
 	// agency's own colors are its line identities (RER A–E), so it falls
 	// back to color trunking however its class is configured.

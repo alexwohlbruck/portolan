@@ -82,10 +82,42 @@ type Station struct {
 // family (every Vienna U-Bahn numeral sits in a square), and a single line
 // is the exception.
 func shapeOf(rt gtfs.Route) string {
-	sh, _ := style.Active().RouteShape(
-		[]string{rt.ID, rt.ShortName, rt.LongName},
-		[]string{rt.Agency, mode.AgencyName(rt.Agency)})
+	sh, _ := style.Active().RouteShape(routeKeys(rt), agencyKeys(rt))
 	return sh
+}
+
+// routeKeys / agencyKeys are every identifier a curation document may
+// address a route by. Ids are feed bookkeeping ("f1:1") and nobody wants
+// to look one up to restyle Metro-North, so the names count too.
+func routeKeys(rt gtfs.Route) []string {
+	return []string{rt.ID, rt.ShortName, rt.LongName}
+}
+
+func agencyKeys(rt gtfs.Route) []string {
+	return []string{rt.Agency, mode.AgencyName(rt.Agency)}
+}
+
+// fontOf is the curated bullet typeface for a route ("" = the default).
+func fontOf(rt gtfs.Route) string {
+	fn, _ := style.Active().RouteFont(routeKeys(rt), agencyKeys(rt))
+	return fn
+}
+
+// borderedOf reports whether a route's bullet takes a contrasting ring.
+func borderedOf(rt gtfs.Route) bool {
+	b, _ := style.Active().RouteBordered(routeKeys(rt), agencyKeys(rt))
+	return b
+}
+
+// textHexOf is the colour of the glyph ON the bullet.
+//
+// route_text_color is standard GTFS, widely populated, and the only
+// place the answer actually lives — so it is honoured when present. The
+// luminance rule stays as the fallback for the feeds that omit it,
+// which is where it has always earned its keep (NYC's yellow N·Q·R·W
+// takes black text and nothing in the feed says so).
+func textHexOf(rt gtfs.Route) string {
+	return strings.TrimPrefix(strings.TrimSpace(rt.TextColor), "#")
 }
 
 // rankStations scores importance and converts it to a within-city
@@ -1152,23 +1184,35 @@ func writeStations(path string, sts []Station, cats []CatBullet) error {
 	// the map-aligned px vector as an [x, y] array for the fork's
 	// data-driven symbol-anchor-offset
 	for _, c := range cats {
+		props := map[string]any{
+			"ftype": "cat",
+			"route": c.Route,
+			"label": c.Label,
+			"hex":   c.Hex,
+			"acts":  c.Acts,
+			"mode":  c.Mode,
+			"veclo": c.VecLo,
+			"text":  c.Text,
+			"ang":   c.Ang,
+			"shape": c.Shape,
+			"vec":   c.Vec,
+			"band":  c.Band,
+			"grp":   c.Group,
+		}
+		// omitted rather than emitted empty: absence is what tells the
+		// renderer to fall back to its luminance rule and its default
+		// face, and an empty string would read as "black" and "no font"
+		if c.TextHex != "" {
+			props["text_hex"] = c.TextHex
+		}
+		if c.Font != "" {
+			props["font"] = c.Font
+		}
+		if c.Bordered {
+			props["bordered"] = true
+		}
 		fc.Features = append(fc.Features, feature{
-			Type: "Feature",
-			Props: map[string]any{
-				"ftype": "cat",
-				"route": c.Route,
-				"label": c.Label,
-				"hex":   c.Hex,
-				"acts":  c.Acts,
-				"mode":  c.Mode,
-				"veclo": c.VecLo,
-				"text":  c.Text,
-				"ang":   c.Ang,
-				"shape": c.Shape,
-				"vec":   c.Vec,
-				"band":  c.Band,
-				"grp":   c.Group,
-			},
+			Type: "Feature", Props: props,
 			Geom: geomJSON{Type: "Point", Coords: pt(c.LL)},
 		})
 	}
