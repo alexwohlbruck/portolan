@@ -945,7 +945,28 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		}
 
 		// steady bodies (and terminal stubs: unserved ends keep offset to
-		// the end of geometry)
+		// the end of geometry).
+		//
+		// Bodies are cut from ONE smoothed copy of the edge, shared by
+		// every color riding it. Smoothing each color's SubLine on its
+		// own — the old order — let the corner-cutting see a different
+		// vertex phase per color (the cuts trim different arcs), so the
+		// same 90° corner rounded differently per ribbon: at the Loop's
+		// SW corner Brown/Pink/Purple chorded 4 m inside the steel while
+		// Orange, uncut at Tower 18, hugged it — a bundle in the network
+		// de-bundled by the smoother. One smoothed line per (edge,
+		// smoothing scale); the raw cut points are pinned back onto the
+		// body's ends so transitions still meet flush.
+		smoothed := map[[2]int]*geo.Line{}
+		smoothedEdge := func(ei int, s float64) *geo.Line {
+			key := [2]int{ei, int(s * 10)}
+			if sl, ok := smoothed[key]; ok {
+				return sl
+			}
+			sl := smoothPolylineScaled(lines[ei], s)
+			smoothed[key] = sl
+			return sl
+		}
 		for ei, e := range n.Edges {
 			l := lines[ei]
 			// sorted color order: emission order must not vary run to run
@@ -970,7 +991,30 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 				if !served[[3]int{ei, 1, ci}] {
 					to = 0
 				}
-				body := bundle.SubLine(l, from, l.Len()-to)
+				sscale := 1.0
+				switch mode.Of(routeType(ei, color)) {
+				case mode.Tram, mode.Cable:
+					sscale = 0.4
+				}
+				sl := smoothedEdge(ei, sscale)
+				var body *geo.Line
+				if from == 0 && to == 0 {
+					body = sl // whole edge — rings included, no projection
+				} else {
+					p0 := l.AtArc(from)
+					p1 := l.AtArc(l.Len() - to)
+					a0, _ := sl.ProjectArc(p0)
+					a1, _ := sl.ProjectArc(p1)
+					if a1 < a0 {
+						a0, a1 = a1, a0
+					}
+					body = bundle.SubLine(sl, a0, a1)
+					if len(body.Pts) >= 2 {
+						pts := append([]geo.Pt{}, body.Pts...)
+						pts[0], pts[len(pts)-1] = p0, p1
+						body = geo.NewLine(pts)
+					}
+				}
 				if body.Len() < 1 {
 					continue
 				}
@@ -1007,6 +1051,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// Park Place dogleg into one sweep 20 m off the rails. Street-running
 	// modes keep tight corners; grade-separated modes keep the wide kit.
 	for i := range segs {
+		if segs[i].Kind != "transition" {
+			continue // steady/bridge bodies come pre-smoothed off the shared edge copy
+		}
 		s := 1.0
 		switch mode.Of(segs[i].RouteType) {
 		case mode.Tram, mode.Cable: // street-running: real corners survive
