@@ -86,6 +86,10 @@ type Config struct {
 	// BulletOrder: one of the Bullets* policies above. Empty inherits
 	// (default BulletsColor).
 	BulletOrder string `json:"bullet_order,omitempty"`
+	// Caterpillars: inline route bullets riding the ribbons. Nil
+	// inherits (default on); a city can switch them off over a global
+	// on, or vice versa.
+	Caterpillars *bool `json:"caterpillars,omitempty"`
 }
 
 // defaults are the shipped behaviour: change these and every city moves.
@@ -123,6 +127,8 @@ type Set struct {
 	Colors map[string]string   `json:"colors,omitempty"`
 	// BulletOrder: resolved Bullets* policy, never empty.
 	BulletOrder string `json:"bullet_order"`
+	// Caterpillars: resolved on/off for inline route bullets.
+	Caterpillars bool `json:"caterpillars"`
 
 	// lookup tables for overrides, lowercased; built by New.
 	byAgency map[string]string
@@ -149,12 +155,16 @@ func New(layers ...Config) *Set {
 		}
 	}
 	s.BulletOrder = BulletsColor
+	s.Caterpillars = true
 	for _, l := range layers {
 		for k, v := range l.Colors {
 			s.Colors[k] = v
 		}
 		if l.BulletOrder != "" {
 			s.BulletOrder = l.BulletOrder
+		}
+		if l.Caterpillars != nil {
+			s.Caterpillars = *l.Caterpillars
 		}
 	}
 	for k, v := range s.Colors {

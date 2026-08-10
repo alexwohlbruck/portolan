@@ -387,15 +387,21 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	logf("stations: %d (%d markers) from %d patterns", len(sts), nm, len(rail))
 	// caterpillars: inline route bullets riding the ribbons, anchored on
 	// straight mid-station stretches (fork symbol-anchor-offset does the
-	// pixel-space group placement client-side)
-	cats := BuildCaterpillars(segs, sts, feed.Routes, frame)
-	logf("caterpillars: %d bullets in %d chains", len(cats), func() int {
-		g := map[int]bool{}
-		for _, c := range cats {
-			g[c.Group] = true
-		}
-		return len(g)
-	}())
+	// pixel-space group placement client-side). Style knob, global or
+	// per-city: style caterpillars=false builds a map without them.
+	var cats []CatBullet
+	if style.Active().Caterpillars {
+		cats = BuildCaterpillars(segs, sts, feed.Routes, frame)
+		logf("caterpillars: %d bullets in %d chains", len(cats), func() int {
+			g := map[int]bool{}
+			for _, c := range cats {
+				g[c.Group] = true
+			}
+			return len(g)
+		}())
+	} else {
+		logf("caterpillars: off (style)")
+	}
 	if err := writeStations(o.Out+".stations.geojson", sts, cats); err != nil {
 		return err
 	}

@@ -232,7 +232,7 @@ func (s *Server) styleConfigAPI(w http.ResponseWriter, r *http.Request) {
 		err := s.editConfig(func(raw map[string]any) error {
 			if in.Global != nil {
 				if len(in.Global.Modes) == 0 && len(in.Global.Colors) == 0 &&
-					in.Global.BulletOrder == "" {
+					in.Global.BulletOrder == "" && in.Global.Caterpillars == nil {
 					delete(raw, "style")
 				} else {
 					raw["style"] = in.Global
@@ -261,6 +261,11 @@ func (s *Server) styleConfigAPI(w http.ResponseWriter, r *http.Request) {
 					delete(row, "bullet_order")
 				} else {
 					row["bullet_order"] = in.City.BulletOrder
+				}
+				if in.City.Caterpillars == nil {
+					delete(row, "caterpillars")
+				} else {
+					row["caterpillars"] = *in.City.Caterpillars
 				}
 				feeds[feed] = row
 			}

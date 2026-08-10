@@ -44,8 +44,8 @@ async function load() {
   try {
     const [res, cfg] = await Promise.all([api.style(feed.value), api.styleConfig(feed.value)])
     resolved.value = res
-    city.value = { modes: cfg.city?.modes ?? {}, colors: cfg.city?.colors ?? {}, bullet_order: cfg.city?.bullet_order }
-    globalCfg.value = { modes: cfg.global?.modes ?? {}, colors: cfg.global?.colors ?? {}, bullet_order: cfg.global?.bullet_order }
+    city.value = { modes: cfg.city?.modes ?? {}, colors: cfg.city?.colors ?? {}, bullet_order: cfg.city?.bullet_order, caterpillars: cfg.city?.caterpillars }
+    globalCfg.value = { modes: cfg.global?.modes ?? {}, colors: cfg.global?.colors ?? {}, bullet_order: cfg.global?.bullet_order, caterpillars: cfg.global?.caterpillars }
   } catch (e: any) {
     toast({ title: 'Could not load style', description: e.message, variant: 'error' })
   } finally {
@@ -125,6 +125,17 @@ function addOverride(key: string, hex: string) {
 }
 function removeOverride(key: string) {
   if (layer.value.colors) delete layer.value.colors[key]
+}
+
+/** caterpillars tri-state for the active layer: '' = inherit, 'on', 'off' */
+const catState = computed<string>(() => {
+  const v = layer.value.caterpillars
+  return v === undefined ? '' : v ? 'on' : 'off'
+})
+const catResolved = computed(() => (resolved.value as any)?.caterpillars !== false)
+function setCaterpillars(v: string) {
+  if (v === '') delete layer.value.caterpillars
+  else layer.value.caterpillars = v === 'on'
 }
 
 async function save() {
@@ -282,6 +293,33 @@ const overrideCount = computed(
             Width and opacity are relative to a metro's 1.0. Zoom floor is the lowest band the class draws in —
             raise it to declutter low zooms.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader class="pb-3">
+          <CardTitle class="text-sm">Map features</CardTitle>
+          <CardDescription>Optional layers a city can opt out of (or into, over a global off).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <div class="text-sm font-medium">Route bullets on lines</div>
+              <div class="text-xs text-muted-foreground">
+                Caterpillar chains riding the ribbons between stations. Currently
+                <strong>{{ catResolved ? 'on' : 'off' }}</strong> for this city.
+              </div>
+            </div>
+            <select
+              class="h-9 rounded-md border border-border bg-background px-3 text-sm"
+              :value="catState"
+              @change="setCaterpillars(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">inherit</option>
+              <option value="on">on</option>
+              <option value="off">off</option>
+            </select>
+          </div>
         </CardContent>
       </Card>
 

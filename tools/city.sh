@@ -174,8 +174,12 @@ build() { # $1 = feed key
   jq --arg f "$feed" '{
         modes:  ((.style.modes  // {}) * (.feeds[$f].modes  // {})),
         colors: ((.style.colors // {}) + (.feeds[$f].colors // {}))
-      }' "$CFG" > "$stylefile"
-  if [ -s "$stylefile" ] && [ "$(jq -r 'if (.modes|length)==0 and (.colors|length)==0 then "empty" else "set" end' "$stylefile")" = set ]; then
+      }
+      + (if .feeds[$f].bullet_order != null then {bullet_order: .feeds[$f].bullet_order}
+         elif .style.bullet_order != null then {bullet_order: .style.bullet_order} else {} end)
+      + (if .feeds[$f].caterpillars != null then {caterpillars: .feeds[$f].caterpillars}
+         elif .style.caterpillars != null then {caterpillars: .style.caterpillars} else {} end)' "$CFG" > "$stylefile"
+  if [ -s "$stylefile" ] && [ "$(jq -r 'if (.modes|length)==0 and (.colors|length)==0 and (.bullet_order == null) and (.caterpillars == null) then "empty" else "set" end' "$stylefile")" = set ]; then
     set -- "$@" --style "$stylefile"
   fi
   if [ -n "$streets" ]; then

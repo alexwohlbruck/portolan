@@ -16,6 +16,8 @@ export interface ModeStyle {
 export interface StyleSet {
   modes: Record<string, ModeStyle>
   colors?: Record<string, string>
+  /** resolved: inline route bullets riding the ribbons */
+  caterpillars?: boolean
 }
 
 /** Editable style layer — only the fields a city (or the global block)
@@ -25,6 +27,8 @@ export interface StyleConfig {
   colors?: Record<string, string>
   /** bullet ordering policy: 'color' (default) | 'feed' | 'natural' */
   bullet_order?: string
+  /** inline route bullets riding the ribbons; absent inherits (default on) */
+  caterpillars?: boolean
 }
 
 export interface City {
