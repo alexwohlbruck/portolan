@@ -291,6 +291,27 @@ func WeldTrunkThroats(net *Network, routes map[string]gtfs.Route) (welds, chords
 		return a < 0 || b < 0 || a == b
 	}
 
+	// moveRiders folds a dropped strand's routes and hours onto a survivor.
+	moveRiders := func(dst *Edge, src *Edge) {
+		have := map[string]bool{}
+		for _, r := range dst.Routes {
+			have[r] = true
+		}
+		for _, r := range src.Routes {
+			if !have[r] {
+				dst.Routes = append(dst.Routes, r)
+			}
+		}
+		sort.Strings(dst.Routes)
+		if src.Acts != nil {
+			if dst.Acts == nil {
+				dst.Acts = map[string]gtfs.Mask168{}
+			}
+			for r, m := range src.Acts {
+				dst.Acts[r] = dst.Acts[r].Or(m)
+			}
+		}
+	}
 	dbg := os.Getenv("PORTOLAN_DBGW") != ""
 	changed := true
 	for pass := 0; changed && pass < 600; pass++ {
@@ -375,6 +396,72 @@ func WeldTrunkThroats(net *Network, routes map[string]gtfs.Route) (welds, chords
 			}
 
 			w := weight(e, t)
+
+			// DANGLING PARALLEL STUB. A big terminal throat hands every
+			// service its own platform tail, so those strands never share
+			// endpoints — at Jamaica the LIRR tails simply stop at
+			// degree-1 nodes inside the yard — and the alternative-path
+			// rule below needs two shared nodes, so it structurally
+			// cannot see them. A stub that shadows a heavier same-trunk
+			// edge along its WHOLE length is that edge's platform, not a
+			// separate line: its riders move across and it stops drawing.
+			// A genuine line terminus is degree-1 too but shadows
+			// nothing — the parallelism discriminates, never the dangling
+			// end on its own. Dropping it cannot disconnect anything,
+			// because a degree-1 end is by definition attached to no one.
+			if len(net.Nodes[e.From].Adj) == 1 || len(net.Nodes[e.To].Adj) == 1 {
+				host := -1
+				for oj := range net.Edges {
+					if oj == ei {
+						continue
+					}
+					o := &net.Edges[oj]
+					if o.Gap || len(o.Pts) < 2 || soleTrunk(o) != t {
+						continue
+					}
+					if weight(o, t) < w {
+						continue // a spine absorbs a platform, never the reverse
+					}
+					if !within(el, []*geo.Line{geo.NewLine(o.Pts)}, gauge) {
+						continue
+					}
+					host = oj
+					break
+				}
+				if host < 0 && dbg {
+					best, bh, bw := math.Inf(1), -1, 0
+					for oj := range net.Edges {
+						o := &net.Edges[oj]
+						if oj == ei || o.Gap || len(o.Pts) < 2 || soleTrunk(o) != t {
+							continue
+						}
+						ol := geo.NewLine(o.Pts)
+						far := 0.0
+						for _, q := range el.Resample(20) {
+							if v := ol.DistTo(q); v > far {
+								far = v
+							}
+						}
+						if far < best {
+							best, bh, bw = far, oj, weight(o, t)
+						}
+					}
+					fmt.Printf("weldDBG STUBMISS edge=%d t=%s w=%d len=%.0f degF=%d degT=%d best=%d far=%.0f gauge=%.0f hostw=%d\n",
+						ei, t, w, el.Len(), len(net.Nodes[e.From].Adj), len(net.Nodes[e.To].Adj),
+						bh, best, gauge, bw)
+				}
+				if host >= 0 {
+					if dbg {
+						fmt.Printf("weldDBG STUB edge=%d t=%s w=%d len=%.0f -> host=%d\n",
+							ei, t, w, el.Len(), host)
+					}
+					moveRiders(&net.Edges[host], e)
+					net.Edges = append(net.Edges[:ei], net.Edges[ei+1:]...)
+					welds++
+					changed = true
+					break
+				}
+			}
 			// the survivor must be the SAME corridor, not a detour: its
 			// total length is capped just above the minor's. This, not a
 			// loose gauge, is what keeps a 95 m strand from welding onto a
@@ -419,25 +506,7 @@ func WeldTrunkThroats(net *Network, routes map[string]gtfs.Route) (welds, chords
 			}
 			// move the riders, drop the strand
 			for _, vi := range via {
-				v := &net.Edges[vi]
-				have := map[string]bool{}
-				for _, r := range v.Routes {
-					have[r] = true
-				}
-				for _, r := range e.Routes {
-					if !have[r] {
-						v.Routes = append(v.Routes, r)
-					}
-				}
-				sort.Strings(v.Routes)
-				if e.Acts != nil {
-					if v.Acts == nil {
-						v.Acts = map[string]gtfs.Mask168{}
-					}
-					for r, m := range e.Acts {
-						v.Acts[r] = v.Acts[r].Or(m)
-					}
-				}
+				moveRiders(&net.Edges[vi], e)
 			}
 			if dbg {
 				fmt.Printf("weldDBG WELD edge=%d t=%s w=%d len=%.0f routes=%v via=%v\n",
