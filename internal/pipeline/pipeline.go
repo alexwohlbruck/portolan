@@ -401,6 +401,21 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		logf("trunk weld: %d strands welded, %d gap chords dropped → %d edges",
 			welds, chords, len(net.Edges))
 	}
+	// multitrack corridors: where two same-trunk edges run within gauge
+	// for a sustained stretch, that stretch draws as ONE median trunk and
+	// the approaches/departures stay separate — node identity rules in
+	// internal/stages/parallel_merge.go
+	if m := stages.MergeParallelCorridors(net, feed.Routes); m > 0 {
+		logf("corridor merge: %d parallel runs merged → %d edges", m, len(net.Edges))
+		// the merge leaves short lenses where a parallel run ended under
+		// its sustain bar — now exactly the shape the weld collapses (a
+		// minor strand with a same-trunk alternative between shared
+		// nodes), so run it once more over the merged topology
+		if w2, c2 := stages.WeldTrunkThroats(net, feed.Routes); w2+c2 > 0 {
+			logf("trunk weld (post-merge): %d strands, %d chords → %d edges",
+				w2, c2, len(net.Edges))
+		}
+	}
 	if err := writeNetwork(o.Out, net, frame); err != nil {
 		return err
 	}
