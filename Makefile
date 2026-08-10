@@ -2,13 +2,44 @@ GO ?= go
 
 # every target names an action, not a file — without this the build/ directory
 # makes `build` (and everything depending on it) a silent no-op.
-.PHONY: build test smoke atlas nyc cities rail city
+.PHONY: build test smoke atlas nyc cities rail city dist clean-dist
 
 build:
 	$(GO) build ./...
 
 test:
 	$(GO) test ./...
+
+# dist — the release archives, built exactly as CI builds them, so what
+# you check locally is what ships (docs/RELEASING.md).
+VERSION := $(shell tr -d '[:space:]' < VERSION)
+TARGETS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
+
+dist: clean-dist
+	@for t in $(TARGETS); do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		bin=portolan; [ "$$os" = "windows" ] && bin=portolan.exe; \
+		name=portolan_$(VERSION)_$${os}_$${arch}; \
+		echo "  $$os/$$arch"; \
+		mkdir -p dist/stage/$$name/docs; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 $(GO) build -trimpath \
+			-ldflags "-s -w -X main.version=$(VERSION)" \
+			-o dist/stage/$$name/$$bin ./cmd/portolan || exit 1; \
+		cp -R style dist/stage/$$name/style; \
+		cp README.md LICENSE dist/stage/$$name/; \
+		cp docs/CLI.md docs/CORRIDORS.md docs/CITIES.md dist/stage/$$name/docs/; \
+		if [ "$$os" = "windows" ]; then \
+			(cd dist/stage && zip -qr ../$$name.zip $$name); \
+		else \
+			tar -czf dist/$$name.tar.gz -C dist/stage $$name; \
+		fi; \
+	done
+	@rm -rf dist/stage
+	@cd dist && shasum -a 256 portolan_* > SHA256SUMS
+	@echo && ls -lh dist/ | tail -n +2 | awk '{print "  " $$5 "\t" $$9}'
+
+clean-dist:
+	@rm -rf dist
 
 # end-to-end on the committed NYC fixtures: tracks -> bundles -> score
 smoke: build

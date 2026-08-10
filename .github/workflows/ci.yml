@@ -1,0 +1,57 @@
+# Tests on every pull request and every push to a long-lived branch.
+#
+# The release pipeline runs these again before it builds anything, so a
+# broken commit cannot ship even if it reached main without a PR. This
+# workflow exists to say so early, on the branch, rather than at the tag.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          # the toolchain the module asks for, so CI and a developer's
+          # machine cannot disagree about what compiles
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  format:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        # reported, not enforced: two files predate the check and are
+        # deliberately hand-formatted (internal/geo/geo.go's one-line
+        # vector methods). Tighten to a failure once they are settled.
+        run: |
+          unformatted=$(gofmt -l cmd internal tools)
+          if [ -n "$unformatted" ]; then
+            echo "::warning::gofmt would change:"
+            echo "$unformatted"
+          fi

@@ -1,0 +1,185 @@
+# Release pipeline: test, cross-compile every platform, publish one
+# GitHub Release with the archives and their checksums.
+#
+# Flow: test → build (matrix) → release
+#
+# Portolan is pure Go with no module dependencies and embeds its own
+# assets, so every target cross-compiles from one Linux runner with
+# CGO_ENABLED=0. There is no per-platform runner, no toolchain to
+# install, and no signing — which is why this is one short job and not
+# parchment's matrix of macOS and Android builders.
+#
+# No secrets are required. GITHUB_TOKEN creates the release.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+env:
+  # set by workflow_call from tag-release.yml, or by the tag that
+  # triggered the push
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [test]
+    runs-on: ubuntu-latest
+    strategy:
+      # one platform failing to compile means the tree is broken, not
+      # that platform — stop rather than publish a partial release
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64 } # Apple silicon
+          - { goos: darwin, goarch: amd64 } # Intel Macs
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 } # servers, Raspberry Pi 4+
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          BIN=portolan
+          [ "$GOOS" = "windows" ] && BIN=portolan.exe
+          # -trimpath keeps build paths out of the binary, so the same
+          # source produces the same bytes wherever it is compiled;
+          # -s -w drop the symbol and DWARF tables, which this has no
+          # use for and which are most of the size
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/${BIN}" ./cmd/portolan
+          ls -lh dist/
+
+      - name: Assemble the archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          NAME="portolan_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir -p "stage/${NAME}"
+          cp dist/portolan* "stage/${NAME}/"
+          # the curation documents ship WITH the binary: portolan looks
+          # for ./style by default, so a download that omitted them
+          # would draw every city in feed colours and look broken
+          cp -R style "stage/${NAME}/style"
+          cp README.md LICENSE "stage/${NAME}/"
+          mkdir -p "stage/${NAME}/docs"
+          cp docs/CLI.md docs/CORRIDORS.md docs/CITIES.md "stage/${NAME}/docs/"
+          cd stage
+          if [ "$GOOS" = "windows" ]; then
+            zip -qr "../${NAME}.zip" "${NAME}"
+          else
+            tar -czf "../${NAME}.tar.gz" "${NAME}"
+          fi
+          cd ..
+          ls -lh portolan_*
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: portolan-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            portolan_*.tar.gz
+            portolan_*.zip
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download every archive
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: portolan-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum portolan_* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release notes
+        id: notes
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          {
+            echo "body<<PORTOLAN_EOF"
+            # a CHANGELOG section for this version wins when one exists;
+            # otherwise GitHub's generated commit list carries the release
+            if [ -f CHANGELOG.md ] && grep -q "^## \[\?${VERSION}\]\?" CHANGELOG.md; then
+              awk -v v="${VERSION}" '
+                $0 ~ "^## \\[?" v "\\]?" { on = 1; next }
+                on && /^## / { exit }
+                on { print }
+              ' CHANGELOG.md
+              echo
+            fi
+            echo "### Install"
+            echo
+            echo '```'
+            echo "tar -xzf portolan_${VERSION}_darwin_arm64.tar.gz"
+            echo "cd portolan_${VERSION}_darwin_arm64 && ./portolan help"
+            echo '```'
+            echo
+            echo "Each archive holds the \`portolan\` binary, the \`style/\` curation"
+            echo "documents it reads by default, and the reference docs. No runtime"
+            echo "dependencies — it is a single static binary."
+            echo
+            echo "Verify with \`sha256sum -c SHA256SUMS\`."
+            echo "PORTOLAN_EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body: ${{ steps.notes.outputs.body }}
+          # append GitHub's own commit/PR summary below the notes above
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/portolan_*
+            artifacts/SHA256SUMS

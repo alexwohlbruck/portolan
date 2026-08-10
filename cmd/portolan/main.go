@@ -202,11 +202,23 @@ func (c *command) printHelp(w io.Writer) {
 	}
 }
 
-// versionString reports the module version and VCS revision the binary
-// was built from. `go run` has neither, and says so rather than lying.
+// version is stamped by the release build:
+//
+//	go build -ldflags "-X main.version=$(cat VERSION)"
+//
+// A build without it says "devel" rather than claiming a release number
+// it does not have — `portolan version` is how a bug report says which
+// binary it came from, so it must never be optimistic.
+var version = ""
+
+// versionString reports the release version, plus the VCS revision the
+// binary was built from when the toolchain recorded one.
 func versionString() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
+		if version != "" {
+			return "portolan v" + version
+		}
 		return "portolan (unknown build)"
 	}
 	rev, dirty := "", ""
@@ -224,7 +236,9 @@ func versionString() string {
 		}
 	}
 	v := bi.Main.Version
-	if v == "" || v == "(devel)" {
+	if version != "" {
+		v = "v" + version // the release stamp wins over the module version
+	} else if v == "" || v == "(devel)" {
 		v = "devel"
 	}
 	if rev == "" {

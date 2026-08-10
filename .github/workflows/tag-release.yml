@@ -1,0 +1,94 @@
+# Creates a vX.Y.Z tag when code lands on main, then runs the release.
+#
+# The version is whatever VERSION holds. Bump it in the pull request; the
+# merge tags it and ships it. Leave it alone and the tag already exists,
+# so nothing releases — merging documentation or a fix you do not want to
+# publish yet costs nothing.
+#
+# Tags pushed by GITHUB_TOKEN do NOT trigger `on: push: tags` workflows,
+# so release.yml is called directly via workflow_call rather than being
+# left to notice the tag.
+#
+# The manual trigger is an escape hatch for two ways a release silently
+# does not happen (both learned the hard way in the parchment repo):
+#
+#   1. GitHub skips the whole push event when the commit message carries
+#      a CI-skip directive — and squash-merging concatenates every branch
+#      commit message into the merge body. One routine "skip ci" on a
+#      branch commit is enough to swallow the release, with no run and no
+#      failure to notice.
+#
+#   2. Once the tag exists a re-run finds it and no-ops, so a release can
+#      never be retried for that version. That turns a failed build into
+#      a permanently unshippable version number.
+#
+# Dispatch with `force` to release a version whose tag already exists.
+
+name: Tag Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Release even if the tag already exists
+        type: boolean
+        default: false
+
+# release.yml needs contents:write to create the GitHub Release. These
+# must be set here because workflow_call inherits the CALLER's top-level
+# permissions, not its own.
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Create release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.TAG }}
+      # release when the tag is new, or when a manual run forces a
+      # version that was tagged but never actually shipped
+      release: ${{ steps.check_tag.outputs.exists == 'false' || inputs.force == true }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION is '$VERSION' — want MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAG=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check whether the tag exists
+        id: check_tag
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.TAG }}" | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "::notice::${{ steps.version.outputs.TAG }} already exists — bump VERSION to release"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.TAG }}" -m "Release ${{ steps.version.outputs.VERSION }}"
+          git push origin "${{ steps.version.outputs.TAG }}"
+          echo "::notice::Created ${{ steps.version.outputs.TAG }}"
+
+  release:
+    name: Release
+    needs: tag
+    if: needs.tag.outputs.release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    secrets: inherit
