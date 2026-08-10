@@ -252,13 +252,22 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 		bounds := append([]float64{0}, arcs...)
 		bounds = append(bounds, L)
 		orig := s.Acts
+		// A RING has no free end, so it has no terminal overshoot: its
+		// coverage wraps rather than stopping, and a piece whose midpoint
+		// falls outside a cover interval is a gap in the INTERVALS, not
+		// track beyond the last stop. Zeroing it punches a permanent hole
+		// in a closed loop — the Atlanta streetcar lost 435 m at Luckie
+		// St and read as broken at Centennial under every timestamp.
+		// Rings keep the segment's own hours.
+		ring := len(s.Line.Pts) > 2 &&
+			s.Line.Pts[0].Dist(s.Line.Pts[len(s.Line.Pts)-1]) < 25
 		anyDiffers := false
 		var pieces []Segment
 		for bi := 0; bi < len(bounds)-1; bi++ {
 			lo, hi := bounds[bi], bounds[bi+1]
 			mid := (lo + hi) / 2
 			acts := append([]string(nil), orig...)
-			if pr != nil {
+			if pr != nil && !ring {
 				for ri := range s.Routes {
 					if !pr.trusted[ri] {
 						continue

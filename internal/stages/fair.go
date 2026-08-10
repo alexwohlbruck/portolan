@@ -255,6 +255,21 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// actsFor: per-route activity on one edge, aligned with the group's
 	// route list; AND across two edges for a transition — the movement
 	// runs only in the hours the route rides both sides.
+	// A route that RIDES an edge but has no mask entry is UNKNOWN, not
+	// never: `Acts[rid]` on a missing key yields the zero Mask168, which
+	// serialises to all-zero hex and reads downstream as "runs at no hour
+	// of any week" — the segment is then dark under every time filter.
+	// That broke the Atlanta streetcar: one 435 m piece of the Luckie St
+	// loop had no entry, went permanently dark, and split the loop in
+	// two at Centennial. Absence is decided by MAP PRESENCE, never by
+	// emptiness — a genuinely serviceless pattern has an entry that is
+	// empty -- but a route cannot ride an edge on zero service, so an
+	// empty mask is unknown too, and a permanent hole is never the right
+	// failure mode. Short-turn tails are unaffected: their masks are
+	// non-empty (they run SOME hours), which is exactly where the
+	// per-segment detail earns its keep. When any
+	// member's hours are unknown the segment emits no acts at all, and
+	// the viewer falls back to route-level masks (docs/DYNAMIC-SERVICE).
 	actsFor := func(ei int, color string) []string {
 		e := n.Edges[ei]
 		if e.Acts == nil {
@@ -263,7 +278,11 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		rs := colorRoutes[ei][color]
 		out := make([]string, len(rs))
 		for i, rid := range rs {
-			out[i] = e.Acts[rid].Hex()
+			m, ok := e.Acts[rid]
+			if !ok || m.Empty() {
+				return nil
+			}
+			out[i] = m.Hex()
 		}
 		return out
 	}
@@ -275,7 +294,12 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		rs := colorRoutes[a][color]
 		out := make([]string, len(rs))
 		for i, rid := range rs {
-			out[i] = ea.Acts[rid].And(eb.Acts[rid]).Hex()
+			ma, oka := ea.Acts[rid]
+			mb, okb := eb.Acts[rid]
+			if !oka || !okb || ma.And(mb).Empty() {
+				return nil
+			}
+			out[i] = ma.And(mb).Hex()
 		}
 		return out
 	}
