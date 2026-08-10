@@ -1,6 +1,7 @@
 // portolan — automatic transit line maps from GTFS feeds.
 //
 //	portolan chart --gtfs feed.zip --rail rail.geojson --out build.geojson
+//	portolan chart --gtfs feed.zip --corridors corridors.geojson --out build.geojson
 //	portolan sound --network sketches/nyc.json --build build.geojson
 //	portolan atlas [--config portolan.json] [--addr 127.0.0.1:8765]
 package main
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/atlas"
+	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
 	"github.com/alexwohlbruck/portolan/internal/style"
@@ -78,7 +80,12 @@ func scenarios(args []string) {
 func chart(args []string) {
 	fs := flag.NewFlagSet("chart", flag.ExitOnError)
 	gtfsPath := fs.String("gtfs", "", "GTFS zip (comma list: primary,overlay,…)")
-	railPath := fs.String("rail", "", "OSM rail extract (GeoJSON)")
+	railPath := fs.String("rail", "", "OSM rail extract (GeoJSON) — portolan infers the corridors")
+	corridors := fs.String("corridors", "",
+		"authored corridor graph (GeoJSON, '-' for stdin) — corridors given, not inferred")
+	corridorNodes := fs.String("corridor-nodes", "",
+		"nodes half of the corridor graph, when it is split across two files")
+	anchor := fs.String("anchor", "", "lat,lon — pin the projection origin (default: derived)")
 	streets := fs.String("streets", "", "OSM street extract (GeoJSON) — enables bus routes")
 	stops := fs.String("stops", "", "OSM transit-stop extract (GeoJSON) — station name/id matching")
 	bboxStr := fs.String("bbox", "", "w,s,e,n — clip pattern shapes to the window")
@@ -90,9 +97,23 @@ func chart(args []string) {
 	city := fs.String("city", "", "city id — selects <style-dir>/<city>.json")
 	stylePath := fs.String("style", "", "single pre-merged style document (overrides --style-dir)")
 	fs.Parse(args)
-	if *railPath == "" {
+	// exactly one geometry source: either portolan works the corridor
+	// graph out from track, or the caller states it
+	switch {
+	case *railPath == "" && *corridors == "":
+		fmt.Fprintln(os.Stderr, "portolan chart: give --rail (infer corridors) or --corridors (corridors given)")
 		fs.Usage()
 		os.Exit(2)
+	case *railPath != "" && *corridors != "":
+		die(fmt.Errorf("--rail and --corridors are alternatives, not a pair"))
+	}
+	var anchorLL *geo.LL
+	if *anchor != "" {
+		var lat, lon float64
+		if _, err := fmt.Sscanf(*anchor, "%f,%f", &lat, &lon); err != nil {
+			die(fmt.Errorf("bad --anchor %q: want lat,lon", *anchor))
+		}
+		anchorLL = &geo.LL{Lat: lat, Lon: lon}
 	}
 	var bbox []float64
 	if *bboxStr != "" {
@@ -133,6 +154,7 @@ func chart(args []string) {
 	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
 		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, Stops: *stops, BBox: bbox,
+		Corridors: *corridors, CorridorNodes: *corridorNodes, Anchor: anchorLL,
 		LineAgencies: las, Scenario: *scenario, Style: sty,
 		Out: *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })

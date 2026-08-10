@@ -61,6 +61,15 @@ type Edge struct {
 	Routes   []string // route ids riding this segment
 	Tracks   int      // physical track count, if derived
 	Gap      bool     // shape-bridged (no OSM track) — render dashed
+	// OneWay: which way this edge is ridden, when the corridor is
+	// DIVIDED — a caller whose model splits a corridor into a track per
+	// direction hands over both, and both draw. "" (everything the OSM
+	// path produces) is an undivided corridor carrying both directions
+	// on one centerline; "forward" is From→To only, "backward" To→From.
+	// Two edges between the same node pair with opposite OneWay are a
+	// divided corridor, NOT a duplicate — the corridor validator knows
+	// the difference, and ORDER slots each of the pair on its own.
+	OneWay string
 	// Acts: per-route weekly activity ON THIS EDGE — the OR of the masks
 	// of the patterns that actually ride it (docs/DYNAMIC-SERVICE.md).
 	// This is where short-turns live: the tail beyond a short-turn
@@ -69,6 +78,12 @@ type Edge struct {
 	// when the pipeline ran without service info.
 	Acts map[string]gtfs.Mask168
 }
+
+// RebuildAdj recomputes every node's incident-edge list. Adjacency is an
+// index INTO Edges, and a self-loop is listed once — anything building a
+// Network from outside this package (internal/corridor) must land on the
+// same invariant, so it calls this rather than reimplementing it.
+func RebuildAdj(net *Network) { rebuildAdj(net) }
 
 // Segment is one emitted ribbon feature (parchment transit_line_segments
 // contract: kind steady|transition|bridge, color-trunked, travel-frame

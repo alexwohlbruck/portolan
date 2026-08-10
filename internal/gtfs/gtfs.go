@@ -36,6 +36,12 @@ type Pattern struct {
 	Trips   int      // how many trips ride this shape (for coverage pruning)
 	Shape   []geo.LL // ordered shape points
 	StopIDs []string // every stop this shape serves, sorted (stations stage)
+	// StopSeq is the same stops in RIDING order. StopIDs is sorted and
+	// therefore says nothing about traversal; this says everything about
+	// it, which is what a corridor build needs when there is no shape to
+	// map-match — the stop order is the only statement of which way
+	// round a fork the pattern actually goes.
+	StopSeq []string
 	// TermA/TermB: the pattern's first/last STOP locations. Shapes (and
 	// the trim margin) overrun the terminal by tail trackage; these are
 	// where service actually ends — the terminal-cut pass cuts here.
@@ -207,17 +213,33 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		}
 	}
 
-	// phase 2: trips (needs Routes for the keep predicate)
-	tf, err := need("trips.txt")
-	if err != nil {
-		return nil, err
+	// A feed drawn on an AUTHORED corridor graph need not have a
+	// timetable at all: shapes.txt is the geometry the graph replaces,
+	// and a planning tool that has not scheduled anything yet ships
+	// neither trips.txt nor stop_times.txt. All three are optional from
+	// here down. Missing trips.txt simply means no patterns — routes and
+	// stops still load, and `chart --corridors` draws from the graph's
+	// own route membership.
+	tf, hasTrips := files["trips.txt"]
+	_, hasShapes := files["shapes.txt"]
+	if !hasTrips {
+		return feed, nil
 	}
 	type key struct{ route, shape string }
 	tripCount := map[key]int{}
 	tripShape := map[string]string{}
+	// tripRoute is only populated SHAPELESS: there, a pattern is a
+	// distinct ordered stop sequence rather than a distinct shape, so
+	// grouping needs each kept trip's route. Shaped feeds skip it —
+	// on Chicago that map would be 5.8M entries for nothing.
+	tripRoute := map[string]string{}
 	if err := eachRowCols(tf, []string{"route_id", "shape_id", "trip_id"},
 		func(v []string) {
 			if keep != nil && !keep(feed.Routes[v[0]]) {
+				return
+			}
+			if !hasShapes {
+				tripRoute[v[2]] = v[0]
 				return
 			}
 			if v[1] != "" {
@@ -240,18 +262,43 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 	}
 	shapeEnds := map[string]*ends{}
 	shapeStops := map[string]map[string]bool{}
+	// shapeOrder is the stop sequence BY stop_sequence number, which
+	// StopIDs (sorted) throws away. Keyed by seq rather than appended so
+	// that the many trips sharing a shape collapse instead of
+	// concatenating, and so a loop pattern calling twice at one stop
+	// keeps both calls.
+	shapeOrder := map[string]map[int]string{}
+	// tripOrder is the same thing per TRIP, for shapeless feeds where
+	// the sequence IS the pattern key. Bounded by the kept trips, which
+	// is why it is only filled when there are no shapes to key on.
+	tripOrder := map[string]map[int]string{}
 	type spt struct {
 		seq int
 		ll  geo.LL
 	}
 	shapes := map[string][]spt{}
 	var stErr, shErr error
-	if stf, err := need("stop_times.txt"); err == nil && len(stopLL) > 0 {
+	if stf, ok := files["stop_times.txt"]; ok && len(stopLL) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			stErr = eachRowCols(stf, []string{"trip_id", "stop_sequence", "stop_id"},
 				func(v []string) {
+					seq, err := strconv.Atoi(v[1])
+					if err != nil {
+						return
+					}
+					sid := v[2]
+					if !hasShapes {
+						if _, kept := tripRoute[v[0]]; !kept {
+							return
+						}
+						if tripOrder[v[0]] == nil {
+							tripOrder[v[0]] = map[int]string{}
+						}
+						tripOrder[v[0]][seq] = sid
+						return
+					}
 					shape, ok := tripShape[v[0]]
 					if !ok {
 						return
@@ -261,15 +308,12 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 						e = &ends{}
 						shapeEnds[shape] = e
 					}
-					seq, err := strconv.Atoi(v[1])
-					if err != nil {
-						return
-					}
-					sid := v[2]
 					if shapeStops[shape] == nil {
 						shapeStops[shape] = map[string]bool{}
+						shapeOrder[shape] = map[int]string{}
 					}
 					shapeStops[shape][sid] = true
+					shapeOrder[shape][seq] = sid
 					if !e.ok || seq < e.firstSeq {
 						e.firstSeq, e.firstStop = seq, sid
 					}
@@ -280,28 +324,25 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 				})
 		}()
 	}
-	sf2, err := need("shapes.txt")
-	if err != nil {
-		wg.Wait() // the stop_times goroutine must not outlive the zip close
-		return nil, err
+	if sf2, ok := files["shapes.txt"]; ok {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			shErr = eachRowCols(sf2, []string{"shape_id", "shape_pt_lat",
+				"shape_pt_lon", "shape_pt_sequence"},
+				func(v []string) {
+					if keep != nil && !shapeNeeded[v[0]] {
+						return
+					}
+					lat, e1 := strconv.ParseFloat(v[1], 64)
+					lon, e2 := strconv.ParseFloat(v[2], 64)
+					seq, e3 := strconv.Atoi(v[3])
+					if e1 == nil && e2 == nil && e3 == nil {
+						shapes[v[0]] = append(shapes[v[0]], spt{seq, geo.LL{Lon: lon, Lat: lat}})
+					}
+				})
+		}()
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		shErr = eachRowCols(sf2, []string{"shape_id", "shape_pt_lat",
-			"shape_pt_lon", "shape_pt_sequence"},
-			func(v []string) {
-				if keep != nil && !shapeNeeded[v[0]] {
-					return
-				}
-				lat, e1 := strconv.ParseFloat(v[1], 64)
-				lon, e2 := strconv.ParseFloat(v[2], 64)
-				seq, e3 := strconv.Atoi(v[3])
-				if e1 == nil && e2 == nil && e3 == nil {
-					shapes[v[0]] = append(shapes[v[0]], spt{seq, geo.LL{Lon: lon, Lat: lat}})
-				}
-			})
-	}()
 	wg.Wait()
 	if stErr != nil {
 		return nil, stErr
@@ -314,6 +355,30 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		sort.Slice(s, func(i, j int) bool { return s[i].seq < s[j].seq })
 		shapes[id] = s
 	}
+	// SHAPELESS: fold the per-trip sequences into patterns. Two trips
+	// with the same ordered stop list are the same pattern, exactly as
+	// two trips with the same shape_id are — the synthetic id is a hash
+	// of the sequence, so it is stable across runs and across feeds.
+	if !hasShapes {
+		for tid, seqs := range tripOrder {
+			rid, ok := tripRoute[tid]
+			if !ok || len(seqs) < 2 {
+				continue
+			}
+			order := orderedStops(seqs)
+			sid := "seq:" + seqHash(order)
+			if shapeOrder[sid] == nil {
+				shapeOrder[sid] = seqs
+				shapeStops[sid] = map[string]bool{}
+				for _, s := range order {
+					shapeStops[sid][s] = true
+				}
+				shapeEnds[sid] = &ends{ok: true,
+					firstStop: order[0], lastStop: order[len(order)-1]}
+			}
+			tripCount[key{rid, sid}]++
+		}
+	}
 
 	// per route: keep the largest patterns until coverFrac of trips covered
 	byRoute := map[string][]Pattern{}
@@ -322,25 +387,28 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		if !ok {
 			continue
 		}
-		raw, ok := shapes[k.shape]
-		if !ok || len(raw) < 2 {
-			continue
-		}
-		pts := make([]geo.LL, len(raw))
-		for i, sp := range raw {
-			pts[i] = sp.ll
-		}
-		if e := shapeEnds[k.shape]; e != nil && e.ok {
-			pts = trimToStops(pts, stopLL[e.firstStop], stopLL[e.lastStop])
-			var sll []geo.LL
-			for sid := range shapeStops[k.shape] {
-				if ll, ok := stopLL[sid]; ok {
-					sll = append(sll, ll)
-				}
+		var pts []geo.LL
+		if raw, ok := shapes[k.shape]; ok && len(raw) >= 2 {
+			pts = make([]geo.LL, len(raw))
+			for i, sp := range raw {
+				pts[i] = sp.ll
 			}
-			pts = exciseLoops(pts, sll)
-		}
-		if len(pts) < 2 {
+			if e := shapeEnds[k.shape]; e != nil && e.ok {
+				pts = trimToStops(pts, stopLL[e.firstStop], stopLL[e.lastStop])
+				var sll []geo.LL
+				for sid := range shapeStops[k.shape] {
+					if ll, ok := stopLL[sid]; ok {
+						sll = append(sll, ll)
+					}
+				}
+				pts = exciseLoops(pts, sll)
+			}
+			if len(pts) < 2 {
+				continue
+			}
+		} else if hasShapes {
+			// a shaped feed whose shape did not parse has no geometry
+			// and no substitute — same as before
 			continue
 		}
 		var sids []string
@@ -350,6 +418,7 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		sort.Strings(sids)
 		pat := Pattern{
 			Route: r, ShapeID: k.shape, Trips: n, Shape: pts, StopIDs: sids,
+			StopSeq: orderedStops(shapeOrder[k.shape]),
 		}
 		if e := shapeEnds[k.shape]; e != nil && e.ok {
 			pat.TermA, pat.TermB = stopLL[e.firstStop], stopLL[e.lastStop]
@@ -387,6 +456,42 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		}
 	}
 	return feed, nil
+}
+
+// orderedStops flattens a stop_sequence→stop_id map into riding order.
+// GTFS only requires stop_sequence to increase along a trip, not to be
+// contiguous or to start at any particular number, so sorting the keys
+// is the only correct reading.
+func orderedStops(seqs map[int]string) []string {
+	if len(seqs) == 0 {
+		return nil
+	}
+	ks := make([]int, 0, len(seqs))
+	for k := range seqs {
+		ks = append(ks, k)
+	}
+	sort.Ints(ks)
+	out := make([]string, len(ks))
+	for i, k := range ks {
+		out[i] = seqs[k]
+	}
+	return out
+}
+
+// seqHash names a shapeless pattern by its stop sequence — fnv-1a, hex.
+// The id has to be stable run to run (it keys activity masks and shows
+// up in scenario ids), which rules out anything derived from map order.
+func seqHash(order []string) string {
+	h := uint64(1469598103934665603)
+	for _, s := range order {
+		for i := 0; i < len(s); i++ {
+			h ^= uint64(s[i])
+			h *= 1099511628211
+		}
+		h ^= 0x1f
+		h *= 1099511628211
+	}
+	return strconv.FormatUint(h, 16)
 }
 
 // trimToStops cuts a shape polyline to the span between its terminal

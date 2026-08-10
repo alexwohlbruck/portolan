@@ -100,6 +100,21 @@ func levelClass(tags map[string]string) int {
 type ChartOpts struct {
 	GTFS string
 	Rail string
+	// Corridors: an AUTHORED corridor graph (GeoJSON), the alternative
+	// to Rail and mutually exclusive with it. Setting it skips the whole
+	// inference half of the pipeline — internal/osm, internal/bundle,
+	// MATCH, SPLIT — because the caller has already stated what those
+	// stages exist to work out. See docs/CORRIDORS.md; "-" reads stdin.
+	Corridors string
+	// CorridorNodes: the nodes half of the graph, when it arrives as the
+	// two FeatureCollections writeNetwork emits rather than as one mixed
+	// collection. Optional either way.
+	CorridorNodes string
+	// Anchor: the projection origin, pinned. Unset means derived — from
+	// the OSM extent on the Rail path (unchanged), and from a quantized
+	// graph extent on the Corridors path (see frameFor). Pin it when a
+	// growing network must keep byte-identical geometry as it grows.
+	Anchor *geo.LL
 	// Streets: optional street extract (osm.LoadStreets). Bus patterns are
 	// drawn only when set; the streets join the MATCH graph but never the
 	// strand pool.
@@ -136,6 +151,13 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	stages.SetTuning(d.tuning())
 	style.Set_(o.Style)
+	if o.Corridors != "" {
+		if o.Rail != "" {
+			return fmt.Errorf("--rail and --corridors are alternatives: " +
+				"either portolan infers the corridor graph or the caller supplies it")
+		}
+		return chartCorridors(o, d, logf)
+	}
 	t0 := time.Now()
 
 	ways, err := osm.Load(o.Rail)
@@ -347,23 +369,61 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if err := writeNetwork(o.Out, net, frame); err != nil {
 		return err
 	}
+	return layout(layoutIn{
+		o: o, d: d, frame: frame, t0: t0,
+		net: net, feed: feed, rail: railPaths, bus: busPaths,
+		pats: rail, acts: patActs,
+	}, logf)
+}
+
+// layoutIn is everything the drawing half of the pipeline needs, once
+// the corridor graph exists. The two geometry sources — inferred from
+// OSM, or handed over by the caller — meet here and share every stage
+// from ORDER on, so neither can drift from the other.
+type layoutIn struct {
+	o     ChartOpts
+	d     Dials
+	frame geo.Frame
+	t0    time.Time
+	net   *stages.Network
+	feed  *gtfs.Feed
+	// rail: the walks FAIR attests junction movements from, and the
+	// terminal-cut pass reads pattern terminals from. May be empty on
+	// an authored graph whose routes need no attestation.
+	rail []stages.Path
+	// bus: classes with trunk policy "none" — their matched path IS the
+	// deliverable, emitted directly. Never populated on a corridor graph:
+	// there is no street matching to do when the corridors are given.
+	bus []stages.Path
+	// pats: the patterns the stations stage groups stops from.
+	pats []gtfs.Pattern
+	acts map[string]gtfs.Mask168
+}
+
+// layout: ORDER → FAIR → terminal cuts → stations → caterpillars → emit.
+func layout(in layoutIn, logf func(string, ...any)) error {
+	o, d, frame, t0 := in.o, in.d, in.frame, in.t0
+	net, feed := in.net, in.feed
+
 	slots, err := stages.Order(net, feed.Routes)
 	if err != nil {
 		return fmt.Errorf("ORDER: %w", err)
 	}
 	logf("order: slots on %d edges (%.1fs)", len(slots), time.Since(t0).Seconds())
-	segs, err := stages.Fair(net, slots, feed.Routes, railPaths)
+	segs, err := stages.Fair(net, slots, feed.Routes, in.rail)
 	if err != nil {
 		return fmt.Errorf("FAIR: %w", err)
 	}
 	logf("fair: %d segments (%.1fs)", len(segs), time.Since(t0).Seconds())
 	// terminal cuts: per-piece activity at short-turn terminals, so the
 	// M's weekend map ends at Essex St and its night map at Myrtle Av —
-	// geometry-only post-pass, no ORDER/FAIR decisions change
+	// geometry-only post-pass, no ORDER/FAIR decisions change. A feed
+	// with no calendar has no pattern masks, and the pass returns the
+	// segments untouched — there are no hours to cut at.
 	nb := len(segs)
-	terms := make([][2]geo.Pt, len(railPaths))
-	for i := range railPaths {
-		pat := railPaths[i].Pattern
+	terms := make([][2]geo.Pt, len(in.rail))
+	for i := range in.rail {
+		pat := in.rail[i].Pattern
 		if pat.TermA != (geo.LL{}) {
 			terms[i][0] = frame.ToXY(pat.TermA)
 		}
@@ -371,24 +431,24 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 			terms[i][1] = frame.ToXY(pat.TermB)
 		}
 	}
-	segs = stages.CutSegmentsAtTerminals(segs, railPaths, terms)
+	segs = stages.CutSegmentsAtTerminals(segs, in.rail, terms)
 	logf("terminal cuts: %d segments → %d (%.1fs)", nb, len(segs), time.Since(t0).Seconds())
-	if len(busPaths) > 0 {
-		bsegs := stages.DirectSegments(busPaths)
-		logf("direct: %d paths → %d deduped segments", len(busPaths), len(bsegs))
+	if len(in.bus) > 0 {
+		bsegs := stages.DirectSegments(in.bus)
+		logf("direct: %d paths → %d deduped segments", len(in.bus), len(bsegs))
 		segs = append(segs, bsegs...)
 	}
 	// STATIONS: platforms → merged, classed, ranked stations, snapped
 	// onto the drawn ribbons (docs/STOP-LABELS.md). Built from the same
 	// pattern list that drew the map, so a scenario build's stations are
 	// that scenario's too.
-	sts := BuildStations(feed, rail, o.BBox, patActs)
+	sts := BuildStations(feed, in.pats, o.BBox, in.acts)
 	SnapStations(sts, segs, frame, d.FairGapPx, feed.Routes, o.BBox)
 	nm := 0
 	for i := range sts {
 		nm += len(sts[i].Markers)
 	}
-	logf("stations: %d (%d markers) from %d patterns", len(sts), nm, len(rail))
+	logf("stations: %d (%d markers) from %d patterns", len(sts), nm, len(in.pats))
 	// OSM stop matching: give each station its OSM object id, and adopt
 	// the name on the sign over the feed's bookkeeping. Entirely opt-in —
 	// a city with no stops extract loads nothing and matches nothing.
@@ -539,17 +599,36 @@ func writePaths(path string, paths []stages.Path, frame geo.Frame) error {
 	return writeFC(path, fc)
 }
 
-// writeNetwork dumps the SPLIT graph: refined segment centerlines
-// (trackcenter layer) and junction nodes with degree (nodes layer).
+// writeNetwork dumps the SPLIT graph: segment centerlines (trackcenter
+// layer) and junction nodes with degree (nodes layer). This pair is ALSO
+// the public corridor-graph input contract (docs/CORRIDORS.md) — feeding
+// them back through `chart --corridors` must reproduce the same map — so
+// two things are load-bearing here and not merely cosmetic.
+//
+// `node` on every point and `from`/`to` on every edge: node identity is
+// explicit, and a reader never has to guess topology by snapping
+// coordinates. The dump used to carry `degree` alone, which made the
+// round trip ambiguous exactly where it matters — a throat where four
+// endpoints sit within a metre of each other.
+//
+// Edges emit their OWN vertices rather than a resample. The 8 m resample
+// this used to do was fine for a debug layer and lossy as an input
+// format: every junction corner came back rounded off, so a re-chart of
+// a dumped network was not the same network.
 func writeNetwork(out string, net *stages.Network, frame geo.Frame) error {
 	fc := collection{Type: "FeatureCollection"}
 	for ei, e := range net.Edges {
 		l := geo.NewLine(e.Pts)
-		if f, ok := lineFeature(map[string]any{
+		props := map[string]any{
 			"kind": "segment", "edge": ei,
+			"from": e.From, "to": e.To,
 			"routes": strings.Join(e.Routes, ","), "nroutes": len(e.Routes),
 			"tracks": e.Tracks, "gap": e.Gap, "len_m": int(l.Len()),
-		}, l, 8, frame); ok {
+		}
+		if e.OneWay != "" {
+			props["oneway"] = e.OneWay
+		}
+		if f, ok := vertexFeature(props, l, frame); ok {
 			fc.Features = append(fc.Features, f)
 		}
 	}
@@ -557,12 +636,12 @@ func writeNetwork(out string, net *stages.Network, frame geo.Frame) error {
 		return err
 	}
 	nfc := collection{Type: "FeatureCollection"}
-	for _, n := range net.Nodes {
+	for ni, n := range net.Nodes {
 		ll := frame.ToLL(n.At)
 		raw, _ := json.Marshal([2]float64{ll.Lon, ll.Lat})
 		nfc.Features = append(nfc.Features, feature{
 			Type:  "Feature",
-			Props: map[string]any{"degree": len(n.Adj)},
+			Props: map[string]any{"node": ni, "degree": len(n.Adj)},
 			Geom:  geomJSON{Type: "Point", Coords: raw},
 		})
 	}
