@@ -37,6 +37,7 @@ type Station struct {
 	Routes   []string // route ids — the activity-mask join key
 	Labels   []string // short names — the future bullet text
 	RouteHex []string // display color per route (FAIR's precedence)
+	Shapes   []string // bullet outline per route ("" = the default circle)
 	Modes    []string // class per route — the class-toggle join key
 	Agencies []string // distinct agency display names
 	Lines    int      // distinct trunk keys — the marker rule (dot vs disc)
@@ -74,6 +75,17 @@ type Station struct {
 	// own marker.
 	LabelLL geo.LL
 	Markers []Marker
+}
+
+// shapeOf is the curated bullet outline for a route ("" = default circle).
+// Route override first, then its agency's — an operator brands the whole
+// family (every Vienna U-Bahn numeral sits in a square), and a single line
+// is the exception.
+func shapeOf(rt gtfs.Route) string {
+	sh, _ := style.Active().RouteShape(
+		[]string{rt.ID, rt.ShortName, rt.LongName},
+		[]string{rt.Agency, mode.AgencyName(rt.Agency)})
+	return sh
 }
 
 // rankStations scores importance and converts it to a within-city
@@ -144,6 +156,7 @@ type Marker struct {
 	Routes   []string
 	Labels   []string // aligned with Routes — this corridor's own bullets
 	RouteHex []string // aligned with Routes
+	Shapes   []string // aligned with Routes — bullet outline per route
 	Modes    []string // aligned with Routes
 	Acts     []string // aligned with Routes — hours at this marker ("" unknown)
 	Lines    int      // distinct trunks at THIS marker
@@ -472,6 +485,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 			st.Labels = append(st.Labels, displayLabel(rt))
 			hx := routeHex(rt)
 			st.RouteHex = append(st.RouteHex, hx)
+			st.Shapes = append(st.Shapes, shapeOf(rt))
 			st.Modes = append(st.Modes, mode.Of(rt.Type).String())
 			tk := mode.TrunkKey(rt)
 			if trunkHexes[tk] == nil {
@@ -696,6 +710,7 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 				m.Modes = append(m.Modes, modeOf[r])
 				m.Labels = append(m.Labels, displayLabel(routes[r]))
 				m.RouteHex = append(m.RouteHex, routeHex(routes[r]))
+				m.Shapes = append(m.Shapes, shapeOf(routes[r]))
 				m.Acts = append(m.Acts, actOf(r))
 			}
 			trunks := map[string]bool{}
@@ -1077,6 +1092,7 @@ func writeStations(path string, sts []Station, cats []CatBullet) error {
 			"routes":       strings.Join(s.Routes, ","),
 			"labels":       strings.Join(s.Labels, ","),
 			"route_colors": strings.Join(s.RouteHex, ","),
+			"shapes":       strings.Join(s.Shapes, ","),
 			"modes":        strings.Join(s.Modes, ","),
 			"agencies":     strings.Join(s.Agencies, ","),
 			"nroutes":      len(s.Routes),
@@ -1105,6 +1121,7 @@ func writeStations(path string, sts []Station, cats []CatBullet) error {
 				"routes":       strings.Join(m.Routes, ","),
 				"labels":       strings.Join(m.Labels, ","),
 				"route_colors": strings.Join(m.RouteHex, ","),
+				"shapes":       strings.Join(m.Shapes, ","),
 				"modes":        strings.Join(m.Modes, ","),
 				"acts":         strings.Join(m.Acts, ";"),
 				"nlines":       m.Lines,

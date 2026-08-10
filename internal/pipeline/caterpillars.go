@@ -8,9 +8,7 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
-	"github.com/alexwohlbruck/portolan/internal/mode"
 	"github.com/alexwohlbruck/portolan/internal/stages"
-	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // Caterpillars: inline route bullets riding the drawn ribbons (Apple's
@@ -153,7 +151,6 @@ func catPitchFor(labels []string) float64 {
 // final drawn segments (post terminal cuts); sts the snapped stations.
 func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]gtfs.Route, frame geo.Frame) []CatBullet {
 	median := medianLabelLen(segs, routes)
-	sty := style.Active()
 	// station markers in frame coords — chains keep clear of them
 	var stPts []geo.Pt
 	for i := range sts {
@@ -271,11 +268,7 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				if asText && len([]rune(label)) > 24 {
 					continue
 				}
-				shp := ""
-				if sh, ok := sty.RouteShape([]string{rt.ID, rt.ShortName, rt.LongName},
-					[]string{rt.Agency, mode.AgencyName(rt.Agency)}); ok {
-					shp = sh
-				}
+				shp := shapeOf(rt)
 				acts := ""
 				if ri < len(s.Acts) {
 					acts = s.Acts[ri]

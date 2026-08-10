@@ -523,11 +523,74 @@ const DOT_D = 7 // dot diameter; also the pill height and its corner radius ×2
 
 // one bullet as a canvas: MTA-style circle for 1–2 char labels, a
 // rounded-corner word pill (the Chicago 'Red'/'Brown' shape) for longer
+// Bullet OUTLINES. Systems brand these and the feed says nothing about
+// them, so the shape is curation (style docs, `shape:` on a route or
+// agency) with circle as the default. The set is what transit systems
+// actually use:
+//
+//   circle    NYC, WMATA, Boston, Moscow, Seoul, Tokyo Metro — the default
+//   square    the German-speaking U-Bahnen: Berlin, Vienna, Munich, Hamburg
+//   rounded   Barcelona TMB, Singapore MRT, Shanghai, Delhi
+//   notch     one corner squared off — Mexico City's house style
+//   diamond   NYC EXPRESS variants (6◇, 7◇), Madrid's rhombus
+//   hexagon   several Japanese private railways, Lyon
+//   octagon   a few Chinese systems
+//   triangle  rare, and only ever for special services
+//
+// Non-circular outlines need a wider box to hold the same glyphs — a
+// diamond's inscribed rectangle is barely half its width — so each shape
+// declares how much it has to grow.
+const SHAPE_PAD: Record<string, number> = {
+  circle: 1, square: 1, rounded: 1, notch: 1,
+  hexagon: 1.18, octagon: 1.06, diamond: 1.42, triangle: 1.6,
+}
+
+function shapePath(ctx: CanvasRenderingContext2D, shape: string, w: number, h: number) {
+  const cx = w / 2
+  const cy = h / 2
+  const poly = (pts: [number, number][]) => {
+    ctx.moveTo(pts[0][0], pts[0][1])
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1])
+    ctx.closePath()
+  }
+  switch (shape) {
+    case 'square':
+      ctx.rect(0, 0, w, h)
+      return
+    case 'rounded':
+      ctx.roundRect(0, 0, w, h, Math.min(4, h / 3))
+      return
+    case 'notch':
+      // three square corners and one rounded, the Mexico City look
+      ctx.roundRect(0, 0, w, h, [0, 0, Math.min(6, h / 2), 0])
+      return
+    case 'diamond':
+      poly([[cx, 0], [w, cy], [cx, h], [0, cy]])
+      return
+    case 'triangle':
+      poly([[cx, 0], [w, h], [0, h]])
+      return
+    case 'hexagon': {
+      const i = w * 0.25
+      poly([[i, 0], [w - i, 0], [w, cy], [w - i, h], [i, h], [0, cy]])
+      return
+    }
+    case 'octagon': {
+      const i = Math.min(w, h) * 0.29
+      poly([[i, 0], [w - i, 0], [w, i], [w, h - i], [w - i, h], [i, h], [0, h - i], [0, i]])
+      return
+    }
+    default:
+      ctx.arc(cx, cy, Math.min(w, h) / 2, 0, Math.PI * 2)
+  }
+}
+
 function bulletCanvas(id: string): HTMLCanvasElement | null {
-  const m = id.match(/^blt-([0-9a-fA-F]{6})-(.+)$/)
+  const m = id.match(/^blt-([0-9a-fA-F]{6})-([a-z]*)-(.+)$/)
   if (!m) return null
   const hex = m[1]
-  const label = m[2]
+  const shape = m[2] || 'circle'
+  const label = m[3]
   const h = 14
   const cv = document.createElement('canvas')
   cv.width = 2
@@ -535,22 +598,27 @@ function bulletCanvas(id: string): HTMLCanvasElement | null {
   let ctx = cv.getContext('2d')!
   ctx.font = '600 9.5px system-ui, sans-serif'
   const tw = ctx.measureText(label).width
-  const circle = label.length <= 2
-  const w = circle ? h : Math.ceil(tw) + 9
+  // 1:1 for one or two glyphs, a pill once it is a word — and whatever
+  // the outline needs on top of that
+  const compact = label.length <= 2
+  const pad = SHAPE_PAD[shape] ?? 1
+  const w = Math.ceil((compact ? h : Math.ceil(tw) + 9) * pad)
+  const hh = Math.ceil(h * (shape === 'triangle' ? 1.15 : 1))
   cv.width = w * 2
-  cv.height = h * 2
+  cv.height = hh * 2
   ctx = cv.getContext('2d')!
   ctx.scale(2, 2)
   ctx.fillStyle = '#' + hex
   ctx.beginPath()
-  if (circle) ctx.arc(w / 2, h / 2, h / 2, 0, Math.PI * 2)
-  else ctx.roundRect(0, 0, w, h, 3.5)
+  if (!compact && (shape === 'circle' || !SHAPE_PAD[shape])) ctx.roundRect(0, 0, w, hh, 3.5)
+  else shapePath(ctx, shape, w, hh)
   ctx.fill()
   ctx.fillStyle = lumaOf(hex) > 160 ? '#111111' : '#ffffff'
   ctx.font = '600 9.5px system-ui, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(label, w / 2, h / 2 + 0.5)
+  // a triangle's usable area sits low; everything else centres
+  ctx.fillText(label, w / 2, hh / 2 + (shape === 'triangle' ? 2.5 : 0.5))
   return cv
 }
 
@@ -764,6 +832,7 @@ function timeFilteredBullets(f: any, date: Date | null, off: Set<string>): any {
         labels: pick(p.labels),
         route_colors: pick(p.route_colors),
         modes: pick(p.modes),
+        shapes: pick(p.shapes),
       })
       const np = props ?? { ...p }
       if (ids.length) np.brow = 'row-' + ids.join('|')
@@ -873,7 +942,8 @@ function addLayers() {
     id: 'cats', type: 'symbol', source: 'stations', minzoom: 12,
     filter: catBandStep(false),
     layout: {
-      'icon-image': ['concat', 'blt-', ['get', 'hex'], '-', ['get', 'label']],
+      'icon-image': ['concat', 'blt-', ['get', 'hex'], '-',
+        ['coalesce', ['get', 'shape'], ''], '-', ['get', 'label']],
       // real collision, junior to everything: placement runs top layer
       // first, and the station layers sit above this one, so stop
       // labels always win — a bullet under a label yields. ignore-
