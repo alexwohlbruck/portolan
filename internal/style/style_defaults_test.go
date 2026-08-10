@@ -6,6 +6,10 @@ import "testing"
 // across mode.go, fair.go and map.html before this package existed —
 // a config-driven rewrite that silently restyles every city is a bug.
 //
+// Changed deliberately 2026-08-10: ferry moved from route to AGENCY
+// trunking — a harbour is a few routes over the same water, and parallel
+// ribbons there assert a geography that does not exist.
+//
 // Changed deliberately 2026-08-09: aerial, funicular and cable moved from
 // band floor 15 to 0. They are fixed infrastructure, as permanent as
 // track, and a floor of 15 hid Mexico City's three Cablebús lines at every
@@ -22,7 +26,7 @@ func TestDefaultsMatchShippedBehaviour(t *testing.T) {
 		{"tram", TrunkColor, "", 0.75, 1, 0},
 		{"regional", TrunkAgency, "", 1, 1, 0},
 		{"monorail", TrunkColor, "", 0.85, 1, 0},
-		{"ferry", TrunkRoute, "4A9EDB", 0.7, 0.65, 13},
+		{"ferry", TrunkAgency, "4A9EDB", 0.7, 0.65, 13},
 		{"bus", TrunkNone, "888888", 0.5, 0.9, 15},
 		{"aerial", TrunkRoute, "", 0.6, 0.75, 0},
 		{"funicular", TrunkRoute, "", 0.7, 1, 0},
@@ -44,7 +48,7 @@ func TestLayeringIsPerField(t *testing.T) {
 	if f.Color != "FF0000" {
 		t.Errorf("color override not applied: %q (the # must be stripped)", f.Color)
 	}
-	if f.Width != 0.7 || f.BandFloor != 13 || f.Trunk != TrunkRoute {
+	if f.Width != 0.7 || f.BandFloor != 13 || f.Trunk != TrunkAgency {
 		t.Errorf("naming color disturbed other fields: %+v", f)
 	}
 }

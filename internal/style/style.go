@@ -122,9 +122,14 @@ var defaults = map[string]Class{
 	"funicular": {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(1), BandFloor: i(0)},
 	"cable":     {Trunk: TrunkRoute, Width: f(0.75), Opacity: f(1), BandFloor: i(0)},
 	"aerial":    {Trunk: TrunkRoute, Width: f(0.6), Opacity: f(0.75), BandFloor: i(0)},
-	"ferry":     {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(0.65), BandFloor: i(13), Color: "4A9EDB"},
-	"bus":       {Trunk: TrunkNone, Width: f(0.5), Opacity: f(0.9), BandFloor: i(15), Color: "888888"},
-	"unknown":   {Trunk: TrunkColor, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
+	// Ferries trunk by AGENCY, like commuter rail and for the same reason:
+	// a harbour is a handful of routes over the same water, and drawing
+	// them as parallel ribbons says something about the geography that is
+	// not true. Boston's nine MBTA harbour routes converge on Long Wharf
+	// and crossed each other into thousands of slivers.
+	"ferry":   {Trunk: TrunkAgency, Width: f(0.7), Opacity: f(0.65), BandFloor: i(13), Color: "4A9EDB"},
+	"bus":     {Trunk: TrunkNone, Width: f(0.5), Opacity: f(0.9), BandFloor: i(15), Color: "888888"},
+	"unknown": {Trunk: TrunkColor, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
 }
 
 func f(v float64) *float64 { return &v }
