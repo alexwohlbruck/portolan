@@ -90,6 +90,25 @@ var crossoverWays map[string]bool
 
 func SetCrossoverWays(m map[string]bool) { crossoverWays = m }
 
+// serviceWays: ways tagged service=yard|siding|spur. These used to be
+// dropped at the door, which is right for the STRAND pools — a yard's
+// twenty parallel tracks would drown any median vote — but wrong for the
+// graph. A railway that runs THROUGH a yard throat (Mexico's Tren
+// Suburbano past the Vallejo yard) has no running-class track to walk,
+// so MATCH detoured onto whatever was adjacent — there, Metro Línea 6's
+// steel — and drew a kilometre-wide excursion the trains never make.
+//
+// So they join the graph for ROUTING and are excluded from the median
+// vote in SPLIT, exactly the treatment street ways already get. The
+// penalty makes them a last resort: any running track wins, and only a
+// route whose shape genuinely crosses the yard pays it.
+var serviceWays map[string]bool
+
+func SetServiceWays(m map[string]bool) { serviceWays = m }
+
+// IsServiceWay reports the yard/siding/spur set to other stages.
+func IsServiceWay(id string) bool { return serviceWays[id] }
+
 // wayLevels: vertical class per way (+1 elevated, -1 tunnel, 0 surface).
 // A walk step directly between opposite classes is a physical
 // impossibility — a train reaches an el from a tunnel through ramps, never
@@ -127,7 +146,17 @@ func classCompat(routeType int, cls string) bool {
 		// track is near — hasCompat still makes real subway steel win
 		// wherever it exists, so the Metro-stays-on-the-metro rule holds
 		// everywhere it can be applied.
-		return cls == "subway" || cls == "light_rail" || cls == "narrow_gauge"
+		//
+		// "rail" joins them for the same reason, one rung further out.
+		// Mexico City's Tren Suburbano is agency SUB, route_type 1 — the
+		// feed brands it a metro — and it runs on mainline railway=rail
+		// through the Vallejo yard. With rail barred, the longChord branch
+		// below left it no admissible candidate at all, opened GAP, and
+		// bridged a triangle across two neighbourhoods onto Línea 6's
+		// steel. hasCompat still gives real subway track the win wherever
+		// any exists, so a genuine metro beside a mainline is unmoved.
+		return cls == "subway" || cls == "light_rail" ||
+			cls == "narrow_gauge" || cls == "rail"
 	case mode.Tram, mode.Cable: // SF cable cars ride tram-class street track
 		// "aerial" and "monorail" are admissible because feeds mislabel
 		// them as trams (Roosevelt Island Tram and the JFK AirTrain are
@@ -184,6 +213,11 @@ const classPen = 100.0
 
 const crossoverPen = 120.0
 const levelJumpPen = 300.0
+
+// servicePen: riding yard/siding/spur steel. Above crossoverPen — a yard
+// is a stronger statement than a switch — and far below a gap, so a
+// shape that must cross a yard walks it instead of bridging or detouring.
+const servicePen = 220.0
 
 // Match path-matches each GTFS pattern onto the mode-appropriate OSM layer
 // (rails for trains, roads for buses, sea routes for ferries). Owner's
@@ -604,6 +638,9 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 				c += el*p.WWalk + p.WHop
 				if g.isXover[nx] {
 					c += crossoverPen
+				}
+				if g.isSvc[nx] {
+					c += servicePen
 				}
 				if g.lvl[lab.edge]*g.lvl[nx] < 0 {
 					c += levelJumpPen

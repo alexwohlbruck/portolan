@@ -21,6 +21,7 @@ type trackGraph struct {
 	grid    *geo.Grid   // indexes pieces (line index == piece id)
 	turn    [][]float64 // turnDeg per directed edge, aligned with To-node's Out
 	isXover []bool      // crossoverWays[edge.Way], snapshotted at build
+	isSvc   []bool      // serviceWays[edge.Way] — yard/siding/spur steel
 	lvl     []int       // wayLevels[edge.Way], snapshotted at build
 }
 
@@ -185,9 +186,11 @@ func buildTrackGraph(tracks []bundle.Track) *trackGraph {
 	// crossover/level registries — computed once, identical values
 	g.turn = make([][]float64, len(g.edges))
 	g.isXover = make([]bool, len(g.edges))
+	g.isSvc = make([]bool, len(g.edges))
 	g.lvl = make([]int, len(g.edges))
 	for e := range g.edges {
 		g.isXover[e] = crossoverWays[g.edges[e].Way]
+		g.isSvc[e] = serviceWays[g.edges[e].Way]
 		g.lvl[e] = wayLevels[g.edges[e].Way]
 		outs := g.nodes[g.edges[e].To].Out
 		t := make([]float64, len(outs))

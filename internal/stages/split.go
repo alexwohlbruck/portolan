@@ -411,7 +411,8 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// buses landed).
 	var riddenTracks []bundle.Track
 	for _, t := range tracks {
-		if usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
+		if usedWays[t.ID] && wayRailClass[t.ID] != "street" &&
+			wayRailClass[t.ID] != "seaway" && !IsServiceWay(t.ID) {
 			riddenTracks = append(riddenTracks, t)
 		}
 	}
@@ -440,7 +441,8 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// so the South Ferry law holds.
 	var unriddenTracks []bundle.Track
 	for _, t := range tracks {
-		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
+		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" &&
+			wayRailClass[t.ID] != "seaway" && !IsServiceWay(t.ID) {
 			unriddenTracks = append(unriddenTracks, t)
 		}
 	}

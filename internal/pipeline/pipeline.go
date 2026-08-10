@@ -167,12 +167,38 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	tracks := toTracks(ways)
 	// the corridor pool: every rail-class way INCLUDING yards, sidings and
-	// spurs. Geometry only — it never reaches MATCH or the strand pools,
-	// it only tells gap-bridge healing where the steel physically runs.
+	// spurs. It tells gap-bridge healing where the steel physically runs,
+	// and (since 2026-08-10) its service-only remainder also joins the
+	// MATCH graph under servicePen — never the strand pools.
+	var serviceTracks []bundle.Track
 	if cways, cerr := osm.LoadCorridor(o.Rail); cerr == nil {
 		stages.SetCorridorTracks(toTracks(cways))
+		// yard/siding/spur steel — the corridor pool minus the running
+		// track. It joins the MATCH graph (penalised, see servicePen) so a
+		// route whose shape genuinely crosses a yard walks it instead of
+		// detouring onto a neighbour's line, and it is kept out of every
+		// STRAND pool below so a yard's parallel tracks never vote in a
+		// median.
+		running := make(map[string]bool, len(ways))
+		for _, w := range ways {
+			running[w.ID] = true
+		}
+		svc := map[string]bool{}
+		var svcWays []osm.Way
+		for _, w := range cways {
+			if running[w.ID] {
+				continue
+			}
+			svc[w.ID] = true
+			svcWays = append(svcWays, w)
+		}
+		stages.SetServiceWays(svc)
+		serviceTracks = toTracks(svcWays)
+		ways = append(ways, svcWays...) // class/level maps must cover them
+		logf("chart: %d yard/siding ways admitted to the graph (penalised)", len(svcWays))
 	} else {
 		stages.SetCorridorTracks(nil)
+		stages.SetServiceWays(nil)
 	}
 	// streets are a separate opt-in layer for bus matching: they join the
 	// class/level maps and the MATCH graph, but never the strand pool —
@@ -189,6 +215,11 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	lvls := map[string]int{}
 	for _, t := range tracks {
+		if t.Level != 0 {
+			lvls[t.ID] = t.Level
+		}
+	}
+	for _, t := range serviceTracks {
 		if t.Level != 0 {
 			lvls[t.ID] = t.Level
 		}
@@ -317,10 +348,9 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	mode.SetLineAgencies(la)
 	stages.SetAgencyNames(feed.Agencies)
 	mode.SetAgencyNames(feed.Agencies)
-	matchTracks := tracks
-	if len(streetTracks) > 0 {
-		matchTracks = append(append([]bundle.Track{}, tracks...), streetTracks...)
-	}
+	matchTracks := append([]bundle.Track{}, tracks...)
+	matchTracks = append(matchTracks, serviceTracks...)
+	matchTracks = append(matchTracks, streetTracks...)
 	paths, err := stages.Match(rail, matchTracks, frame)
 	if err != nil {
 		return fmt.Errorf("MATCH: %w", err)
