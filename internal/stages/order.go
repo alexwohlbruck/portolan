@@ -81,7 +81,6 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		}
 		return dx / l, dy / l
 	}
-	outTan := func(ei, ni int) (float64, float64) { return outTanD(ei, ni, 12) }
 	crossingsAt := func(ni int) int {
 		adjE := n.Nodes[ni].Adj
 		total := 0
@@ -99,16 +98,34 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 				// when some third edge opposes BOTH better than they
 				// oppose each other (they fan from a common continuation);
 				// a corner with no third edge is a continuation and votes.
-				ax, ay := outTan(a, ni)
-				bx, by := outTan(b, ni)
+				// tangents at 80 m, not 12: the first metres out of a weld
+				// node are tail geometry running parallel to the corridor
+				// (the same lesson as the side-crossing window below), so
+				// the short window read the SW Loop corner's two through
+				// legs as near-parallel, found the south branch "opposing"
+				// both, and skipped the node's main continuation pair as
+				// siblings — five slot inversions between Wells and Van
+				// Buren went unscored and Pink/Orange crossed at Quincy.
+				ax, ay := outTanD(a, ni, 80)
+				bx, by := outTanD(b, ni, 80)
 				dab := ax*bx + ay*by
 				sibling := false
 				for _, c := range adjE {
 					if c == a || c == b {
 						continue
 					}
-					cx, cy := outTan(c, ni)
-					if ax*cx+ay*cy < dab && bx*cx+by*cy < dab {
+					cx, cy := outTanD(c, ni, 80)
+					// c must genuinely OPPOSE both (the trunk they fan
+					// from), not merely beat their mutual dot: at a 90°
+					// corner dab ≈ 0, and the straight-through leg beyond
+					// the corner "won" with a perpendicular −0.18 — the
+					// corner's own continuation pair was skipped as a fan
+					// and five slot inversions went unscored (Pink/Orange
+					// crossing at Quincy). A real fan's trunk opposes both
+					// tines at ≈ −0.9; −0.5 (120°) separates the cases.
+					da := ax*cx + ay*cy
+					db := bx*cx + by*cy
+					if da < dab && db < dab && da < -0.5 && db < -0.5 {
 						sibling = true
 						break
 					}
@@ -352,6 +369,70 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 	climb(25, false)
 	climb(15, true)
 	climb(10, false)
+	if os.Getenv("PORTOLAN_DBG3") != "" {
+		for ni := range n.Nodes {
+			if n.Nodes[ni].At.Dist(dbg3Pt) > 150 {
+				continue
+			}
+			fmt.Printf("ORD3 node=%d at=(%.0f,%.0f) cross=%d\n", ni, n.Nodes[ni].At.X, n.Nodes[ni].At.Y, crossingsAt(ni))
+			for _, ei := range n.Nodes[ni].Adj {
+				fmt.Printf("  ORD3 edge=%d perm=%v routes=%v from=%d to=%d\n",
+					ei, perm[ei], n.Edges[ei].Routes, n.Edges[ei].From, n.Edges[ei].To)
+			}
+			adjE := n.Nodes[ni].Adj
+			for ai := 0; ai < len(adjE); ai++ {
+				for bi := ai + 1; bi < len(adjE); bi++ {
+					a, b := adjE[ai], adjE[bi]
+					ax, ay := outTanD(a, ni, 80)
+					bx, by := outTanD(b, ni, 80)
+					dab := ax*bx + ay*by
+					sib := false
+					for _, c := range adjE {
+						if c == a || c == b {
+							continue
+						}
+						cx, cy := outTanD(c, ni, 80)
+						dca := ax*cx + ay*cy
+						dcb := bx*cx + by*cy
+						if dca < dab && dcb < dab && dca < -0.5 && dcb < -0.5 {
+							sib = true
+						}
+					}
+					aSt := n.Edges[a].To == ni
+					bSt := n.Edges[b].From == ni
+					inv := 0
+					for _, x := range perm[a] {
+						for _, y := range perm[a] {
+							if x >= y || pos(b, x, true) < 0 || pos(b, y, true) < 0 {
+								continue
+							}
+							da := pos(a, x, aSt) - pos(a, y, aSt)
+							db := pos(b, x, bSt) - pos(b, y, bSt)
+							if da*db < 0 {
+								inv++
+							}
+						}
+					}
+					fmt.Printf("  ORD3 pair(%d,%d) sib=%v dab=%.2f tanA=(%.2f,%.2f) tanB=(%.2f,%.2f) inv=%d\n",
+						a, b, sib, dab, ax, ay, bx, by, inv)
+				}
+			}
+			for _, ei := range n.Nodes[ni].Adj {
+				if len(perm[ei]) < 2 || len(perm[ei]) > 4 {
+					continue
+				}
+				cur := append([]string(nil), perm[ei]...)
+				base := edgeCost(ei)
+				permute(cur, func(cand []string) {
+					copy(perm[ei], cand)
+					if c := edgeCost(ei); c < base {
+						fmt.Printf("  ORD3 edge=%d BETTER perm=%v cost=%d (base %d)\n", ei, cand, c, base)
+					}
+				})
+				copy(perm[ei], cur)
+			}
+		}
+	}
 
 	// Chain-consistency pass. Hill climbing cannot cross plateaus: a
 	// gratuitous flip between two long consistent runs costs the same
