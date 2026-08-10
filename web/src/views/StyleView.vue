@@ -32,9 +32,9 @@ const TRUNKS = [
 const loading = ref(false)
 const saving = ref(false)
 const resolved = ref<StyleSet | null>(null)
-const city = ref<StyleConfig>({ modes: {}, colors: {} })
+const city = ref<StyleConfig>({ modes: {}, agencies: {}, routes: {}, stops: {}, options: {} })
 const scope = ref<'city' | 'global'>('city')
-const globalCfg = ref<StyleConfig>({ modes: {}, colors: {} })
+const globalCfg = ref<StyleConfig>({ modes: {}, agencies: {}, routes: {}, stops: {}, options: {} })
 
 const layer = computed(() => (scope.value === 'city' ? city.value : globalCfg.value))
 
@@ -44,8 +44,12 @@ async function load() {
   try {
     const [res, cfg] = await Promise.all([api.style(feed.value), api.styleConfig(feed.value)])
     resolved.value = res
-    city.value = { modes: cfg.city?.modes ?? {}, colors: cfg.city?.colors ?? {}, bullet_order: cfg.city?.bullet_order, caterpillars: cfg.city?.caterpillars }
-    globalCfg.value = { modes: cfg.global?.modes ?? {}, colors: cfg.global?.colors ?? {}, bullet_order: cfg.global?.bullet_order, caterpillars: cfg.global?.caterpillars }
+    const norm = (d: any): StyleConfig => ({
+      modes: d?.modes ?? {}, agencies: d?.agencies ?? {}, routes: d?.routes ?? {},
+      stops: d?.stops ?? {}, options: d?.options ?? {},
+    })
+    city.value = norm(cfg.city)
+    globalCfg.value = norm(cfg.global)
   } catch (e: any) {
     toast({ title: 'Could not load style', description: e.message, variant: 'error' })
   } finally {
@@ -84,9 +88,35 @@ const routeQuery = ref('')
 const newHex = ref('')
 const newKey = ref('')
 
-const colorRows = computed(() =>
-  Object.entries(layer.value.colors ?? {}).map(([k, v]) => ({ key: k, hex: v.replace('#', '') })),
-)
+/** every subject that carries a colour, flattened for the table */
+const KINDS = ['agency', 'route', 'stop'] as const
+type Kind = (typeof KINDS)[number]
+const bucket = (k: Kind) =>
+  k === 'agency' ? 'agencies' : k === 'route' ? 'routes' : 'stops'
+
+function rowsWith(field: 'color' | 'name') {
+  const out: { kind: Kind; key: string; value: string }[] = []
+  for (const k of KINDS) {
+    const m = (layer.value as any)[bucket(k)] ?? {}
+    for (const [name, ent] of Object.entries(m as Record<string, any>)) {
+      if (ent?.[field]) out.push({ kind: k, key: name, value: String(ent[field]).replace('#', '') })
+    }
+  }
+  return out
+}
+function setField2(kind: Kind, key: string, field: 'color' | 'name', v: string) {
+  const doc = layer.value as any
+  const m = (doc[bucket(kind)] ??= {})
+  const ent = (m[key] ??= {})
+  if (!v) delete ent[field]
+  else ent[field] = field === 'color' ? v.replace('#', '').toUpperCase() : v
+  if (!Object.keys(ent).length) delete m[key]
+}
+function dropField(kind: Kind, key: string, field: 'color' | 'name') {
+  setField2(kind, key, field, '')
+}
+
+const colorRows = computed(() => rowsWith('color').map((r) => ({ ...r, hex: r.value })))
 
 async function openAdd() {
   addOpen.value = true
@@ -120,22 +150,71 @@ const filteredRoutes = computed(() => {
 
 function addOverride(key: string, hex: string) {
   if (!key || !/^#?[0-9a-fA-F]{6}$/.test(hex)) return
-  ;(layer.value.colors ??= {})[key] = hex.replace('#', '').toUpperCase()
+  const [kind, name] = splitKey(key)
+  setField2(kind, name, 'color', hex)
   addOpen.value = false
 }
-function removeOverride(key: string) {
-  if (layer.value.colors) delete layer.value.colors[key]
+/** accepts either a bare subject with an explicit kind, or "route:501" */
+function splitKey(key: string): [Kind, string] {
+  const i = key.indexOf(':')
+  if (i > 0) {
+    const k = key.slice(0, i) as Kind
+    if (KINDS.includes(k)) return [k, key.slice(i + 1)]
+  }
+  return ['route', key]
+}
+
+// ── name overrides ────────────────────────────────────────────────────
+// Same shape as colours, same reason: the feed is what got it wrong.
+// CTA files its lines as "Red Line" and the bullet wants "Red"; CATS
+// files the LYNX Blue Line as route 501 and a rider calls it Blue.
+const nameAddOpen = ref(false)
+const newNameKey = ref('')
+const newNameKind = ref('route')
+const newName = ref('')
+
+const nameRows = computed(() => rowsWith('name').map((r) => ({ ...r, name: r.value })))
+
+async function openNameAdd() {
+  nameAddOpen.value = true
+  newNameKey.value = ''
+  newName.value = ''
+  newNameKind.value = 'route'
+  if (!routes.value.length && feed.value) {
+    try {
+      routes.value = await api.routes(feed.value)
+    } catch {
+      /* the picker is a convenience; typing a key still works */
+    }
+  }
+}
+function addName(key: string, name: string) {
+  if (!key || !name.trim()) return
+  const [kind, subj] = splitKey(key)
+  setField2(kind, subj, 'name', name.trim())
+  nameAddOpen.value = false
 }
 
 /** caterpillars tri-state for the active layer: '' = inherit, 'on', 'off' */
 const catState = computed<string>(() => {
-  const v = layer.value.caterpillars
+  const v = layer.value.options?.caterpillars
   return v === undefined ? '' : v ? 'on' : 'off'
 })
 const catResolved = computed(() => (resolved.value as any)?.caterpillars !== false)
 function setCaterpillars(v: string) {
-  if (v === '') delete layer.value.caterpillars
-  else layer.value.caterpillars = v === 'on'
+  const o = (layer.value.options ??= {})
+  if (v === '') delete o.caterpillars
+  else o.caterpillars = v === 'on'
+}
+const osmState = computed<string>(() => {
+  const v = layer.value.options?.osm_stop_names
+  return v === undefined ? '' : v ? 'on' : 'off'
+})
+const osmResolved = computed(() => (resolved.value as any)?.osm_stop_names !== false)
+function setOSMStopNames(v: string) {
+  const o = (layer.value.options ??= {})
+  if (v === '') delete o.osm_stop_names
+  else o.osm_stop_names = v === 'on'
 }
 
 async function save() {
@@ -157,7 +236,11 @@ async function save() {
 }
 
 const overrideCount = computed(
-  () => Object.keys(layer.value.modes ?? {}).length + Object.keys(layer.value.colors ?? {}).length,
+  () =>
+    Object.keys(layer.value.modes ?? {}).length +
+    Object.keys(layer.value.agencies ?? {}).length +
+    Object.keys(layer.value.routes ?? {}).length +
+    Object.keys(layer.value.stops ?? {}).length,
 )
 </script>
 
@@ -344,22 +427,55 @@ const overrideCount = computed(
               class="flex items-center gap-3 rounded-lg border border-border px-3 py-2"
             >
               <span class="size-6 shrink-0 rounded border border-border" :style="{ background: `#${row.hex}` }" />
-              <Badge variant="muted" class="shrink-0 text-[10px]">
-                {{ row.key.startsWith('agency:') ? 'agency' : 'route' }}
-              </Badge>
-              <span class="min-w-0 flex-1 truncate text-sm">{{ row.key.replace(/^(agency|route):/, '') }}</span>
+              <Badge variant="muted" class="shrink-0 text-[10px]">{{ row.kind }}</Badge>
+              <span class="min-w-0 flex-1 truncate text-sm">{{ row.key }}</span>
               <Input
                 class="h-8 w-28 font-mono text-xs"
                 :model-value="row.hex"
-                @update:model-value="(v) => ((layer.colors as any)[row.key] = v.replace('#', '').toUpperCase())"
+                @update:model-value="(v) => setField2(row.kind, row.key, 'color', v)"
               />
-              <Button variant="ghost" size="icon" @click="removeOverride(row.key)"><Trash2 class="size-4" /></Button>
+              <Button variant="ghost" size="icon" @click="dropField(row.kind, row.key, 'color')"><Trash2 class="size-4" /></Button>
             </div>
           </div>
           <p v-if="colorRows.length" class="mt-3 text-xs text-muted-foreground">
             An agency trunk always takes the agency override — a route override inside one would repaint whichever
             member sorted first, so the shared ribbon would change colour at every membership seam.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader class="flex-row items-center justify-between pb-3">
+          <div>
+            <CardTitle class="text-sm">Name overrides</CardTitle>
+            <CardDescription>
+              Rename an agency, a route or a stop. A route override replaces the bullet text and the trunk label; a
+              stop override replaces the station's identity, so the pill and the complex it belongs to always agree.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" @click="openNameAdd"><Plus class="size-4" /> Add</Button>
+        </CardHeader>
+        <CardContent>
+          <div v-if="!nameRows.length" class="flex flex-col items-center gap-2 py-10 text-muted-foreground">
+            <span class="text-sm">No overrides — every name comes from the feed.</span>
+          </div>
+          <div v-else class="grid gap-2">
+            <div
+              v-for="row in nameRows"
+              :key="row.key"
+              class="flex items-center gap-3 rounded-lg border border-border px-3 py-2"
+            >
+              <Badge variant="muted" class="shrink-0 text-[10px]">{{ row.kind }}</Badge>
+              <span class="min-w-0 flex-1 truncate text-sm text-muted-foreground">{{ row.key }}</span>
+              <span class="shrink-0 text-muted-foreground">→</span>
+              <Input
+                class="h-8 w-40 text-xs"
+                :model-value="row.name"
+                @update:model-value="(v) => setField2(row.kind, row.key, 'name', v)"
+              />
+              <Button variant="ghost" size="icon" @click="dropField(row.kind, row.key, 'name')"><Trash2 class="size-4" /></Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -422,6 +538,75 @@ const overrideCount = computed(
           <Input id="rawkey" v-model="newKey" placeholder="agency:Metra" class="font-mono" />
         </div>
         <Button :disabled="!newKey || !/^#?[0-9a-fA-F]{6}$/.test(newHex)" @click="addOverride(newKey, newHex)">
+          Add
+        </Button>
+      </div>
+    </div>
+  </Dialog>
+
+  <Dialog
+    :open="nameAddOpen"
+    title="Add name override"
+    description="Pick a route, or type any key. Ids, short names and long names all match."
+    class="max-w-xl"
+    @update:open="(v) => (nameAddOpen = v)"
+  >
+    <div class="flex flex-col gap-4">
+      <div class="flex gap-2">
+        <div class="relative flex-1">
+          <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input v-model="routeQuery" placeholder="Search routes and agencies" class="pl-9" />
+        </div>
+        <Input v-model="newName" placeholder="Blue" class="w-40" />
+      </div>
+
+      <div class="max-h-72 overflow-y-auto rounded-lg border border-border">
+        <div v-if="agencies.length" class="border-b border-border bg-muted/40 px-3 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Agencies
+        </div>
+        <button
+          v-for="a in agencies"
+          :key="a.name"
+          class="flex w-full items-center gap-2 border-b border-border/50 px-3 py-2 text-left text-sm last:border-0 hover:bg-accent/40"
+          @click="addName(`agency:${a.name}`, newName)"
+        >
+          <Badge variant="secondary" class="text-[10px] capitalize">{{ a.mode }}</Badge>
+          <span class="truncate">{{ a.name }}</span>
+        </button>
+
+        <div class="border-y border-border bg-muted/40 px-3 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Routes
+        </div>
+        <button
+          v-for="r in filteredRoutes"
+          :key="r.id"
+          class="flex w-full items-center gap-2 border-b border-border/50 px-3 py-2 text-left text-sm last:border-0 hover:bg-accent/40"
+          @click="addName(`route:${r.long_name || r.short_name || r.id}`, newName)"
+        >
+          <span class="w-14 shrink-0 truncate font-medium">{{ r.short_name || r.id }}</span>
+          <span class="min-w-0 flex-1 truncate text-muted-foreground">{{ r.long_name }}</span>
+          <Badge variant="muted" class="shrink-0 text-[10px] capitalize">{{ r.mode }}</Badge>
+        </button>
+      </div>
+
+      <div class="flex items-end gap-2">
+        <div class="flex w-32 flex-col gap-1.5">
+          <Label for="namekind">Kind</Label>
+          <select
+            id="namekind"
+            v-model="newNameKind"
+            class="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          >
+            <option value="route">route</option>
+            <option value="agency">agency</option>
+            <option value="stop">stop</option>
+          </select>
+        </div>
+        <div class="flex flex-1 flex-col gap-1.5">
+          <Label for="rawnamekey">Or type a key</Label>
+          <Input id="rawnamekey" v-model="newNameKey" placeholder="Red Line" class="font-mono" />
+        </div>
+        <Button :disabled="!newNameKey || !newName.trim()" @click="addName(`${newNameKind}:${newNameKey}`, newName)">
           Add
         </Button>
       </div>

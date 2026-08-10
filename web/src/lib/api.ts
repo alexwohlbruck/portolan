@@ -16,19 +16,37 @@ export interface ModeStyle {
 export interface StyleSet {
   modes: Record<string, ModeStyle>
   colors?: Record<string, string>
+  names?: Record<string, string>
   /** resolved: inline route bullets riding the ribbons */
   caterpillars?: boolean
+  /** resolved: adopt matched OSM stop names */
+  osm_stop_names?: boolean
 }
 
-/** Editable style layer — only the fields a city (or the global block)
- *  actually overrides. Absent fields inherit. */
+/** One curated subject — a route, an agency or a stop. */
+export interface StyleEntity {
+  name?: string
+  color?: string
+  /** agencies only: this operator's route colours are real line identities */
+  line_colors?: boolean
+}
+
+/** One curation document — style/_default.json or style/<city>.json.
+ *  Subject-keyed: a route is named once and carries everything known
+ *  about it. Absent fields inherit. */
 export interface StyleConfig {
   modes?: Record<string, Partial<Omit<ModeStyle, 'hidden'>> & { hidden?: boolean }>
-  colors?: Record<string, string>
-  /** bullet ordering policy: 'color' (default) | 'feed' | 'natural' */
-  bullet_order?: string
-  /** inline route bullets riding the ribbons; absent inherits (default on) */
-  caterpillars?: boolean
+  agencies?: Record<string, StyleEntity>
+  routes?: Record<string, StyleEntity>
+  stops?: Record<string, StyleEntity>
+  options?: {
+    /** bullet ordering policy: 'color' (default) | 'feed' | 'natural' */
+    bullet_order?: string
+    /** inline route bullets riding the ribbons; absent inherits (default on) */
+    caterpillars?: boolean
+    /** adopt matched OSM stop names; absent inherits (default on) */
+    osm_stop_names?: boolean
+  }
 }
 
 export interface City {
@@ -41,8 +59,7 @@ export interface City {
   network?: string
   bbox?: BBox
   line_agencies?: string[]
-  modes?: StyleConfig['modes']
-  colors?: StyleConfig['colors']
+  stops?: string
   /** server-computed: which inputs actually exist on disk */
   status?: CityStatus
 }
