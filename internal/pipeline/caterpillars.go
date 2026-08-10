@@ -375,6 +375,7 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		}
 
 		lastAt := math.Inf(-1)
+		seq := 0
 		for gi := 1; gi < len(bounds); gi++ {
 			lo, hi := bounds[gi-1], bounds[gi]
 			// the gap must hold the chain plus clearances on both sides
@@ -408,7 +409,7 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			tf := ref.AtArc(arc + 6).Sub(ref.AtArc(arc - 6)).Unit()
 			tm := geo.Pt{X: tf.X, Y: -tf.Y}
 			props = append(props, catProposal{
-				band: k.band, pt: ref.AtArc(arc), tm: tm,
+				band: k.band, pt: ref.AtArc(arc), tm: tm, seq: seq,
 				roster: append([]catEntry(nil), func() []catEntry {
 					es := make([]catEntry, len(roster))
 					for i, b := range roster {
@@ -419,6 +420,7 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				}()...),
 			})
 			lastAt = arc
+			seq++
 		}
 	}
 
@@ -485,11 +487,20 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		// Text labels run ALONG the ribbon, so they need no along-track
 		// stagger — each sits at its own lateral offset and reads like a
 		// road name. Only the bullets form a chain.
+		// bullets chain; text takes ONE slot per anchor, cycled by seq so
+		// every line of the bundle gets labelled as the corridor runs on
 		nb := 0
+		var texts []catEntry
 		for _, b := range host.roster {
-			if !b.text {
+			if b.text {
+				texts = append(texts, b)
+			} else {
 				nb++
 			}
+		}
+		var pick *catEntry
+		if len(texts) > 0 {
+			pick = &texts[host.seq%len(texts)]
 		}
 		// screen rotation of the tangent, kept upright: text that reads
 		// bottom-up is worse than text that reads against the travel
@@ -503,6 +514,9 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		}
 		bi := -1
 		for _, b := range host.roster {
+			if b.text && (pick == nil || b.route != pick.route) {
+				continue // another anchor along this corridor carries it
+			}
 			along := 0.0
 			if !b.text {
 				bi++
@@ -536,9 +550,17 @@ type catEntry struct {
 }
 
 type catProposal struct {
-	band   int
-	pt     geo.Pt
-	tm     geo.Pt
+	band int
+	pt   geo.Pt
+	tm   geo.Pt
+	// seq counts this anchor along its corridor. Text labels CYCLE on it:
+	// a bundle's word labels cannot all sit at one anchor (they are ~60 px
+	// long and only ~6 px apart laterally, so four of them land on top of
+	// each other), and they cannot stagger along the track either, because
+	// each label already occupies the along-track direction. So each
+	// anchor labels ONE line of the bundle and the next anchor labels the
+	// next — which is exactly how a road map handles concurrent highways.
+	seq    int
 	roster []catEntry
 }
 
