@@ -983,7 +983,11 @@ function addLayers() {
     filter: catBandStep(true),
     layout: {
       'text-field': ['get', 'label'],
-      'text-font': ['Montserrat Medium'],
+      // ITALIC, the way a road map sets a route name — it separates a
+      // line's identity from the upright station names around it at a
+      // glance. Matches the weight of the rest of the map's type;
+      // CARTO's glyph CDN serves this stack.
+      'text-font': ['Montserrat Medium Italic'],
       'text-size': ['interpolate', ['linear'], ['zoom'], 12, 10, 16, 13],
       'text-rotate': ['get', 'ang'],
       'text-rotation-alignment': 'map',

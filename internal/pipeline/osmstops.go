@@ -481,6 +481,22 @@ func sameNameFolded(a, b string) bool {
 	return strings.Join(nameTokens(a), " ") == strings.Join(nameTokens(b), " ")
 }
 
+// shouty reports a name set entirely in capitals. Judged on the letters
+// only, so "CTC/Arena" or "Line 1" are not caught by their punctuation
+// and digits, and a name with no cased letters at all (CJK) never is.
+func shouty(s string) bool {
+	letters, upper := 0, 0
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			letters++
+			if unicode.IsUpper(r) {
+				upper++
+			}
+		}
+	}
+	return letters > 1 && upper == letters
+}
+
 // accents counts the diacritics a spelling carries — the tiebreak when
 // two spellings are otherwise identical.
 func accents(s string) int {
@@ -507,9 +523,13 @@ const maxLostInfo = 0.45
 // measured rather than listed:
 //
 //   - Typographic: where the two are the SAME name differing only in case
-//     or diacritics, the richer spelling wins. Mexico City keeps its
-//     feed's "Tláhuac" over OSM's "Tlahuac" and takes OSM's "Peñón Viejo"
-//     over the feed's "Penón Viejo". A dead heat keeps the feed's.
+//     or diacritics, the better-set spelling wins. Richer diacritics
+//     first — Mexico City keeps its feed's "Tláhuac" over OSM's "Tlahuac"
+//     and takes OSM's "Peñón Viejo" over "Penón Viejo". Then CASE: a feed
+//     that SHOUTS loses to a properly cased name, because all-caps is
+//     worse typography for a map label and half the world's feeds shout.
+//     Atlanta files "DOBBS PLAZA" where OSM has "Dobbs Plaza". A dead
+//     heat keeps the feed's, so nothing churns for free.
 //   - Informational: where OSM is a strict subset of the feed's words,
 //     adopt it only if what it drops is weightless in this city. Toronto's
 //     "King Station - Southbound Platform" → "King" drops words nearly
@@ -521,7 +541,10 @@ func betterName(feedName, osmName string, lost float64) bool {
 		return false
 	}
 	if sameNameFolded(feedName, osmName) {
-		return accents(osmName) > accents(feedName)
+		if af, ao := accents(feedName), accents(osmName); af != ao {
+			return ao > af
+		}
+		return shouty(feedName) && !shouty(osmName)
 	}
 	return lost <= maxLostInfo
 }

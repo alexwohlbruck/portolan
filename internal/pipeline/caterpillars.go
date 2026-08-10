@@ -335,7 +335,13 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		if k.band == 0 {
 			bandZoom = 12
 		}
-		mPerPx := 156543.03 * math.Cos(frame.ToLL(ref.Pts[0]).Lat*math.Pi/180) / math.Pow(2, bandZoom+8)
+		// 156543.03 is already the equatorial circumference over 256, so
+		// the divisor is 2^zoom — an extra +8 here made every metre-based
+		// gate 256x too small, which silently disabled them: a four-bullet
+		// chain measured 1 m instead of 246 m, so the "does this chain fit
+		// the gap" test was really "is the gap wider than 40 m", and the
+		// straightness window collapsed to its 70 m floor.
+		mPerPx := 156543.03 * math.Cos(frame.ToLL(ref.Pts[0]).Lat*math.Pi/180) / math.Pow(2, bandZoom)
 		labs := make([]string, len(roster))
 		for i, b := range roster {
 			labs[i] = b.label
@@ -344,14 +350,31 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		win := math.Max(70, chainM*0.7+30)
 		// a chain must not wallpaper the line: the further out the band
 		// draws, the more ground each chain has to cover
-		spacing := 700.0
+		spacing := 320.0
 		switch k.band {
 		case 14:
-			spacing = 1400.0
+			spacing = 640.0
 		case 13:
-			spacing = 3000.0
+			spacing = 1408.0
 		case 0:
-			spacing = 6500.0
+			spacing = 3200
+		}
+		// A bundle's word labels take one anchor each in turn, so a line
+		// on a four-way trunk is only named every fourth anchor. Tighten
+		// the spacing by the size of the rotation — up to a point, since
+		// consecutive anchors still have to clear each other along the
+		// track — so a shared corridor names its lines about as often as
+		// a solo one does.
+		if nText := func() int {
+			n := 0
+			for _, b := range roster {
+				if b.text {
+					n++
+				}
+			}
+			return n
+		}(); nText > 1 {
+			spacing /= math.Min(float64(nText), 2)
 		}
 
 		// anchors CENTER between the stops they sit between: boundaries
