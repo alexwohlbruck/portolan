@@ -2,12 +2,21 @@ GO ?= go
 
 # every target names an action, not a file — without this the build/ directory
 # makes `build` (and everything depending on it) a silent no-op.
-.PHONY: build test smoke atlas nyc cities rail city dist clean-dist
+.PHONY: build test check smoke atlas nyc cities rail city dist clean-dist
 
 build:
 	$(GO) build ./...
 
 test:
+	$(GO) test ./...
+
+# check — exactly what CI runs, in the same order. `go test` runs only a
+# SUBSET of vet's analyzers, so a full `go vet ./...` catches things a
+# green local `make test` does not: an httpresponse misuse got through
+# that way and failed the release after the tag was already cut. Run this
+# before pushing to main.
+check: build
+	$(GO) vet ./...
 	$(GO) test ./...
 
 # dist — the release archives, built exactly as CI builds them, so what

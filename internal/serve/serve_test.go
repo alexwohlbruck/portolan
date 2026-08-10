@@ -177,7 +177,10 @@ func TestChartJobRunsAndServesArtifacts(t *testing.T) {
 		}
 	}
 	// route ids must survive the whole round trip verbatim
-	r, _ := http.Get(srv.URL + "/chart/" + id + "/build")
+	r, err := http.Get(srv.URL + "/chart/" + id + "/build")
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := new(bytes.Buffer)
 	body.ReadFrom(r.Body)
 	r.Body.Close()
@@ -294,7 +297,10 @@ func TestBadRequestsAreRejected(t *testing.T) {
 			t.Errorf("%s: got %d (%s), want 400", c.name, code, strings.TrimSpace(msg))
 		}
 	}
-	r, _ := http.Get(srv.URL + "/chart/deadbeef/progress")
+	r, err := http.Get(srv.URL + "/chart/deadbeef/progress")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if r.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown job: got %d, want 404", r.StatusCode)
 	}
@@ -406,7 +412,10 @@ func TestUnstampedBuildSaysDevel(t *testing.T) {
 	s := New(t.TempDir())
 	srv := httptest.NewServer(s.mux())
 	defer srv.Close()
-	r, _ := http.Get(srv.URL + "/version")
+	r, err := http.Get(srv.URL + "/version")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer r.Body.Close()
 	var v struct {
 		Version string `json:"version"`
@@ -466,7 +475,10 @@ func TestTokenGuardsTheFileReadingEndpoints(t *testing.T) {
 		}
 	}
 	// and /version should advertise that auth is on
-	r, _ := http.Get(srv.URL + "/version")
+	r, err := http.Get(srv.URL + "/version")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var v struct {
 		Auth bool `json:"auth"`
 	}
