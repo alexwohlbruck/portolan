@@ -197,3 +197,185 @@ atlas fix.
 - Inline trunk bullets skip offset ribbons (an express/local pair shows
   bullets only on the centered one); following the ribbon offset needs
   renderer support.
+
+## Station names: overrides, and matching OSM
+
+Two mechanisms answer "what is this station called", and they are
+deliberately different in kind.
+
+**Manual overrides** are curation, and live in files — one document per
+city under `style/`, not a database and not mixed into the feed registry.
+A city's colours and names are source code: reviewed in a diff, blamed,
+reverted. `portolan.json` stays what it always was, the list of inputs and
+where they live on disk.
+
+    style/_default.json     applies to every city
+    style/<city>.json       one city, layered on top field by field
+
+The document is **subject-keyed**: a route is named once and carries
+everything known about it. The older tables were keyed by attribute —
+`"route:501"` appeared once in `colors` and again in `names` — so one
+line's identity was split across the file and every new attribute meant a
+new table.
+
+    {
+      "routes": {
+        "501":      { "name": "Blue", "color": "0067B1" },
+        "Red Line": { "name": "Red" }
+      },
+      "agencies": { "IDFM:71": { "line_colors": true } },
+      "stops":    { "place-pktrm": { "name": "Park Street" } },
+      "modes":    { "tram": { "width": 0.8 } },
+      "options":  { "caterpillars": true, "osm_stop_names": false }
+    }
+
+Subject keys are **matchers, not ids**: a route matches on its id, its
+short name OR its long name, an agency on id or name, a stop on id or
+name, all case-insensitively. Ids are feed bookkeeping (`f2:1`) and the
+config should be able to say what a human would say.
+
+A **route** override replaces the bullet text and the trunk label
+(`stages.fair`'s `label()` and `displayLabel` both consult it). An
+**agency** override replaces a multi-route agency trunk's label;
+`line_colors` on an agency is the old `line_agencies` array, moved here so
+one operator decision does not live in a different file from every other
+operator decision. A **stop** override replaces the station's IDENTITY,
+not just its drawn text: the same string feeds `normName` and the
+same-name merge, so a renamed station cannot disagree with itself between
+the pill and the complex it belongs to.
+
+Both the CLI and the atlas resolve through `style.LoadDir`, so there is
+exactly **one merge implementation**. The previous design had the shell
+merge the layers with `jq` and Go merge them again for the dashboard, and
+the two drifted: CLI builds silently dropped `bullet_order` for weeks.
+
+Only what a human typed is persisted. Names discovered by the OSM matcher
+below are derived at build time and are never written back — a config
+that recorded them would freeze one day's OSM against every later build
+and quietly stop tracking upstream.
+
+**OSM matching** is automatic, and fills in the rest of the world.
+`tools/city.sh stops <city>` fetches the window's named transit stops
+(`railway=station|halt|tram_stop`, `public_transport=station|stop_position`,
+`aerialway=station`, `amenity=ferry_terminal`) and `internal/pipeline/
+osmstops.go` pairs each drawn station with the one that is really the same
+place. Three signals must agree, because a wrong rename is worse than no
+rename: **proximity** (220 m ceiling, distance still weighted inside it),
+**name** (token-set similarity after folding case, accents, punctuation,
+"Station"/"Estación"/"Bahnhof", and the directional suffixes feeds
+append), and **class** (a light-rail station may not match a bus
+`stop_position` sharing its corner, however similar the names). Matching
+is one-to-one and greedy by score. The extract is opt-in per city, and its
+presence IS the switch — a city with no `stops` path is untouched.
+
+A match always attaches the OSM object id, emitted as `osm` on the station
+feature (`"node/5106080553"`), so a consumer can join a drawn station back
+to OpenStreetMap. Whether it also renames is the `osm_stop_names` knob
+(default on), and two laws constrain the rename:
+
+**A rename must ADD information.** OSM is not uniformly better. Mexico
+City's feed has "Tláhuac" and "Textitlán" where OSM has them unaccented,
+and "Lomas de la Estancia" where OSM shouts "De La"; Boston's feed has
+"Green Street" where OSM has a bare "Green". So: same name modulo case,
+punctuation and noise words → richer diacritics win, then the shorter
+spelling (which drops the feed's "Station" suffix without letting OSM's
+"Back Bay Station" back in), and a dead heat keeps the feed's. And if
+OSM's words are a strict subset of the feed's, the feed keeps its name —
+OSM is the abbreviation there, not the improvement.
+
+**A rename may not merge two distinct station names into one, and must
+apply uniformly to every station that shared the old name.** Both halves
+earn their keep on NYC. Without the first, OSM renames "Whitehall
+St-South Ferry" to "South Ferry", which is a different station on the 1.
+Without the second, the three genuinely distinct "Fort Hamilton Pkwy"
+stations rename one at a time and the map shows one "Parkway" beside two
+"Pkwy". Measured: NYC's duplicate-name count is identical before and
+after matching (60 groups, 148 stations), which is the invariant to check
+when touching this.
+
+**NYC opts out of renaming** (`"osm_stop_names": false`) while keeping its
+ids. The MTA's own abbreviations — "42 St-Port Authority Bus Terminal" —
+are what the MTA and Apple print and what fits a label pill; OSM's
+"42nd Street–Port Authority Bus Terminal" is better English and worse
+cartography. That is a curation call, so it lives in config.
+
+Match rates are a data-quality signal worth watching: Mexico City 221/225
+stations, Boston 184/198, Charlotte 28/43, NYC 179/566 (NYC's low rate is
+its enormous bus-stop population in the extract diluting nothing — the
+rail stations that matter mostly match; the misses are minor complexes
+OSM models as several nodes with none tagged as the station).
+
+**Transitland onestop ids are reachable but not wired.** `GET /stops?
+feed_onestop_id=…` returns `onestop_id` alongside the feed's own
+`stop_id`, so the join is a straight `stop_id` lookup — verified against
+`f-drt-mbta`. What it needs is a `feed_onestop_id` per city row, a
+paginated fetch into a cache file (the pipeline must stay offline and
+deterministic), and un-prefixing the `f2:` overlay tags loadFeeds stamps
+on multi-feed ids.
+
+## Ranking: which stations show first
+
+Label and dot density is gated per zoom by **importance**, and importance
+is a **percentile within the city**, not a raw count. That distinction is
+the whole fix. The gate used to read `rank` = number of routes calling,
+with absolute cut-offs (≥6 at z11, ≥2 at z13) tuned on NYC. Charlotte's
+busiest station has two routes and every other has one, so the map drew
+**one** label at z13 and **none** at z11 — with acres of empty space.
+
+`rankStations` scores four signals the pipeline already knows:
+
+    score = routes + 1.5·lines + 2·transfer-degree + 0.5·markers
+          + 6 if terminus
+
+**Transfer degree** — how many other stations `transfers.txt` links this
+one to — is what lets a one-route station read as major, and it is the
+honest signal: an interchange matters because you change there, which is
+exactly what the file records. In Charlotte it puts CTC/Arena (31 links)
+first and the downtown stops next, all of which route count called equal.
+
+**Terminus** is the other end of that idea: the last stop of a line names
+where the line GOES, so it earns a label ahead of the mid-line stops
+around it however few routes call there. `Pattern.StopIDs` is sorted and
+cannot answer this, so the loader now carries `TermAID`/`TermBID` beside
+the existing `TermA`/`TermB` coordinates and the stations stage joins on
+them exactly. The bonus is worth about three transfer links — enough to
+lift a quiet end-of-line stop clear of its neighbours, not enough to
+outrank a real interchange. Charlotte's UNC Charlotte–Main goes from
+percentile 0 to 5 and I-485/South Boulevard to 43; NYC flags 74 of 566
+stations and ranks Coney Island–Stillwell 98, Pelham Bay Park 87,
+Flushing–Main St 87, Van Cortlandt Park–242 St 79. Short-turn terminals
+count too, which is correct — they are destinations on the headsign.
+
+The score is then converted to a 0–100 percentile, ties sharing a value
+so that which of three equal stations survives is not decided by sort
+order. The gate asks "top n% of THIS city", which is the question it
+always meant.
+
+**Labels crowd in progressively**, and getting there took overshooting in
+both directions. Thresholds that are too tight label only the hubs and
+leave the outer half of a line bare — the original failure, one label in
+all of Charlotte. Thresholds that are too loose hand the decision to
+collision, which fills every gap it can find and reads as a wall of text
+(every station in Brooklyn labelled at z13). The balance: importance opens
+by roughly a fifth of the city per zoom step, and collision thins whatever
+still competes inside that. `symbol-sort-key` by importance settles who
+wins where they do compete.
+
+Dots start at **z12** with the majors and fill in by z14. Below that a
+system reads better as clean ribbons than as a string of beads.
+
+Admitted by the gate before collision trims:
+
+| zoom | NYC dots | NYC labels | Charlotte dots | Charlotte labels |
+|---|---|---|---|---|
+| z12 | 307 | 123 | 20 | 10 |
+| z13 | 413 | 227 | 38 | 18 |
+| z14 | 600 | 273 | 44 | 25 |
+| z16 | 600 | 566 | 44 | 43 |
+
+Against the old rank gate, Charlotte drew 0 labels at z11 and 1 at z13.
+
+**Known gap:** terminals score low when they have no transfers — Charlotte's
+UNC Charlotte–Main sits at percentile 0 despite being the end of the line.
+`Pattern.StopIDs` is sorted, so first/last stop is not recoverable there;
+giving termini a bump needs the terminal set threaded out of the cut stage.
