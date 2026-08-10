@@ -1,6 +1,7 @@
 package stages
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -23,7 +24,21 @@ import (
 //
 // slots[ei] is the edge's group-key order left→right in its STORAGE
 // (From→To) travel frame.
+// Order is OrderCtx without cancellation, for callers that run one
+// build to completion (the CLI, the tests, the atlas workbench).
 func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
+	return OrderCtx(context.Background(), n, routes)
+}
+
+// OrderCtx is Order, abandonable. A long-lived server supersedes builds
+// continuously — an interactive client edits a corridor and the build in
+// flight is already stale — and a descent that cannot be killed piles
+// up behind the one the caller actually wants. Cancellation is checked
+// once per descent PASS rather than per edge: a pass over the whole
+// network is the unit of work that takes long enough to be worth
+// abandoning, and checking inside the inner loop would put an atomic
+// load in the hottest path in the stage for no gain.
+func OrderCtx(ctx context.Context, n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 	colorOf := func(rid string) string {
 		return mode.TrunkKey(routes[rid])
 	}
@@ -316,9 +331,14 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 	// (sliding the crossing along the chain) before the improving step
 	// exists, and strict climbing refuses it (the Bergen St B/Q flip).
 	// The per-edge history makes plateau walking terminate.
+	cancelled := false
 	climb := func(passes int, ties bool) {
 		improved := true
 		for pass := 0; pass < passes && improved; pass++ {
+			if ctx.Err() != nil {
+				cancelled = true
+				return
+			}
 			improved = false
 			for ei := range n.Edges {
 				if len(perm[ei]) < 2 {
@@ -636,6 +656,11 @@ func Order(n *Network, routes map[string]gtfs.Route) (map[int][]string, error) {
 		}
 	}
 
+	if cancelled {
+		// a half-descended layout is not a cheaper map, it is a wrong
+		// one — the caller gets the error, never partial slots
+		return nil, ctx.Err()
+	}
 	slots := map[int][]string{}
 	for ei := range n.Edges {
 		slots[ei] = perm[ei]

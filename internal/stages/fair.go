@@ -1,6 +1,7 @@
 package stages
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -64,7 +65,18 @@ var dbg3Pt geo.Pt
 
 func SetDbg3(p geo.Pt) { dbg3Pt = p }
 
+// Fair is FairCtx without cancellation, for callers that run one build
+// to completion (the CLI, the tests, the atlas workbench).
 func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, paths []Path) ([]Segment, error) {
+	return FairCtx(context.Background(), n, slots, routes, paths)
+}
+
+// FairCtx is Fair, abandonable — see OrderCtx for why a long-lived
+// server needs that. The check sits at the top of the per-band emit,
+// which is both the outer loop over the stage's real work and a point
+// where nothing is half-written.
+func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
+	routes map[string]gtfs.Route, paths []Path) ([]Segment, error) {
 	p := defaultFairParams()
 
 	// the group key is the TRUNK KEY (docs/MODES.md): the color string
@@ -478,6 +490,9 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 
 	var segs []Segment
 	for _, band := range fairBands {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		gapNow = p.GapPx * band.gap
 		cut := make([][2]float64, len(n.Edges)) // per edge: cut at From, To
 		lines := make([]*geo.Line, len(n.Edges))

@@ -6,6 +6,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -134,7 +135,7 @@ type ChartOpts struct {
 	// Style: class defaults and color overrides, already merged
 	// global-then-city. Nil means the shipped defaults.
 	Style *style.Set
-	Out string
+	Out   string
 	// Format: "geojson" (default) or "bin" — the flat typed-array form
 	// in binary.go, for clients that rebuild interactively and cannot
 	// afford to parse 11 MB of text per rebuild.
@@ -143,8 +144,13 @@ type ChartOpts struct {
 	// the union of all four. A POINTER because 0 is itself one of
 	// FAIR's bands (15/14/13/0) — an int zero value would silently cut
 	// every existing caller down to band 0. Nil is the union.
-	Band  *int
-	Dials *Dials
+	Band *int
+	// Progress, when set, is called at each stage boundary with the
+	// stage's name and a monotonic 0-100. Per-stage granularity is all a
+	// supervising client can use — sub-stage percentages would be
+	// invented numbers.
+	Progress func(stage string, pct int)
+	Dials    *Dials
 	// Scenario: build the layout for one service scenario (gtfs.Scenario
 	// ID) instead of the all-service union — the patterns are restricted
 	// to that scenario's set and everything downstream lays out only what
@@ -152,8 +158,16 @@ type ChartOpts struct {
 	Scenario string
 }
 
-// Chart: CHART (load, proven) → MATCH → SPLIT → ORDER → FAIR (stubs) → EMIT.
+// Chart: CHART (load, proven) → MATCH → SPLIT → ORDER → FAIR → EMIT.
 func Chart(o ChartOpts, logf func(string, ...any)) error {
+	return ChartCtx(context.Background(), o, logf)
+}
+
+// ChartCtx is Chart, abandonable. An interactive caller supersedes
+// builds continuously — the client edits a corridor and the build in
+// flight is already stale — so a build that cannot be killed piles up
+// behind the one that is actually wanted.
+func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error {
 	d := DefaultDials()
 	if o.Dials != nil {
 		d = *o.Dials
@@ -165,7 +179,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 			return fmt.Errorf("--rail and --corridors are alternatives: " +
 				"either portolan infers the corridor graph or the caller supplies it")
 		}
-		return chartCorridors(o, d, logf)
+		return chartCorridors(ctx, o, d, logf)
 	}
 	t0 := time.Now()
 
@@ -379,7 +393,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		return err
 	}
 	return layout(layoutIn{
-		o: o, d: d, frame: frame, t0: t0,
+		ctx: ctx, o: o, d: d, frame: frame, t0: t0,
 		net: net, feed: feed, rail: railPaths, bus: busPaths,
 		pats: rail, acts: patActs,
 	}, logf)
@@ -390,6 +404,7 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 // OSM, or handed over by the caller — meet here and share every stage
 // from ORDER on, so neither can drift from the other.
 type layoutIn struct {
+	ctx   context.Context
 	o     ChartOpts
 	d     Dials
 	frame geo.Frame
@@ -413,13 +428,24 @@ type layoutIn struct {
 func layout(in layoutIn, logf func(string, ...any)) error {
 	o, d, frame, t0 := in.o, in.d, in.frame, in.t0
 	net, feed := in.net, in.feed
+	ctx := in.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	step := func(stage string, pct int) {
+		if o.Progress != nil {
+			o.Progress(stage, pct)
+		}
+	}
 
-	slots, err := stages.Order(net, feed.Routes)
+	step("order", 55)
+	slots, err := stages.OrderCtx(ctx, net, feed.Routes)
 	if err != nil {
 		return fmt.Errorf("ORDER: %w", err)
 	}
 	logf("order: slots on %d edges (%.1fs)", len(slots), time.Since(t0).Seconds())
-	segs, err := stages.Fair(net, slots, feed.Routes, in.rail)
+	step("fair", 65)
+	segs, err := stages.FairCtx(ctx, net, slots, feed.Routes, in.rail)
 	if err != nil {
 		return fmt.Errorf("FAIR: %w", err)
 	}
@@ -451,6 +477,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	// onto the drawn ribbons (docs/STOP-LABELS.md). Built from the same
 	// pattern list that drew the map, so a scenario build's stations are
 	// that scenario's too.
+	step("stations", 80)
 	sts := BuildStations(feed, in.pats, o.BBox, in.acts)
 	SnapStations(sts, segs, frame, d.FairGapPx, feed.Routes, o.BBox)
 	nm := 0
@@ -477,6 +504,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	// straight mid-station stretches (fork symbol-anchor-offset does the
 	// pixel-space group placement client-side). Style knob, global or
 	// per-city: style caterpillars=false builds a map without them.
+	step("caterpillars", 90)
 	var cats []CatBullet
 	if style.Active().Caterpillars {
 		cats = BuildCaterpillars(segs, sts, feed.Routes, frame)
@@ -501,7 +529,12 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 			return err
 		}
 	}
-	return writeSegments(o, segs, frame, logf)
+	step("emit", 95)
+	if err := writeSegments(o, segs, frame, logf); err != nil {
+		return err
+	}
+	step("done", 100)
+	return nil
 }
 
 // writeSegments emits the ribbons in the requested form. Band filtering

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -62,8 +63,14 @@ func frameFor(anchor *geo.LL, w, s, e, n float64) geo.Frame {
 	return geo.NewFrame(geo.LL{Lon: q((w + e) / 2), Lat: q((s + n) / 2)})
 }
 
-func chartCorridors(o ChartOpts, d Dials, logf func(string, ...any)) error {
+func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string, ...any)) error {
 	t0 := time.Now()
+	step := func(stage string, pct int) {
+		if o.Progress != nil {
+			o.Progress(stage, pct)
+		}
+	}
+	step("load", 5)
 	lap := func(stage string, since time.Time) time.Time {
 		logf("  %-14s %6.0f ms", stage, time.Since(since).Seconds()*1000)
 		return time.Now()
@@ -109,6 +116,7 @@ func chartCorridors(o ChartOpts, d Dials, logf func(string, ...any)) error {
 	logf("corridors: %d routes, %d stops, %d patterns",
 		len(feed.Routes), len(feed.Stops), len(feed.Patterns))
 	mark = lap("gtfs", mark)
+	step("gtfs", 20)
 
 	net, err := g.Network(frame)
 	if err != nil {
@@ -118,6 +126,7 @@ func chartCorridors(o ChartOpts, d Dials, logf func(string, ...any)) error {
 		return err
 	}
 	mark = lap("topology", mark)
+	step("topology", 30)
 
 	// service scenarios still work: the graph's route membership is
 	// static, so building one scenario means dropping the routes that do
@@ -173,6 +182,7 @@ func chartCorridors(o ChartOpts, d Dials, logf func(string, ...any)) error {
 
 	paths := g.Traversals(net, feed, frame, logf)
 	mark = lap("traversal", mark)
+	step("traversal", 45)
 
 	if err := writeNetwork(o.Out, net, frame); err != nil {
 		return err
@@ -187,7 +197,7 @@ func chartCorridors(o ChartOpts, d Dials, logf func(string, ...any)) error {
 	_ = mark
 
 	err = layout(layoutIn{
-		o: o, d: d, frame: frame, t0: t0,
+		ctx: ctx, o: o, d: d, frame: frame, t0: t0,
 		net: net, feed: feed, rail: paths,
 		pats: pats, acts: patActs,
 	}, logf)

@@ -4,6 +4,7 @@
 //	portolan chart --gtfs feed.zip --corridors corridors.geojson --out build.geojson
 //	portolan sound --network sketches/nyc.json --build build.geojson
 //	portolan atlas [--config portolan.json] [--addr 127.0.0.1:8765]
+//	portolan serve [--addr 127.0.0.1:0]   (prints the bound port on stdout)
 package main
 
 import (
@@ -18,6 +19,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
+	"github.com/alexwohlbruck/portolan/internal/serve"
 	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
@@ -34,13 +36,15 @@ func main() {
 		scenarios(os.Args[2:])
 	case "atlas":
 		atlasCmd(os.Args[2:])
+	case "serve":
+		serveCmd(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: portolan chart|sound|scenarios|atlas [flags] (see README.md)")
+	fmt.Fprintln(os.Stderr, "usage: portolan chart|sound|scenarios|atlas|serve [flags] (see README.md)")
 	os.Exit(2)
 }
 
@@ -184,6 +188,14 @@ func sound(args []string) {
 	if res.Failures > 0 {
 		os.Exit(1)
 	}
+}
+
+func serveCmd(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:0", "listen address (:0 picks a free port)")
+	styleDir := fs.String("style-dir", style.DefaultDir, "curation documents")
+	fs.Parse(args)
+	die(serve.New(*styleDir).ListenAndServe(*addr))
 }
 
 func atlasCmd(args []string) {

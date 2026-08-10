@@ -28,7 +28,7 @@ type Route struct {
 	// N·Q·R·W right and gets a mid-tone brand colour wrong about as
 	// often as not. Empty falls back to the luminance rule.
 	TextColor string
-	Type      int // GTFS route_type
+	Type      int    // GTFS route_type
 	Agency    string // agency_id — trunk-key fallback for colorless regional
 	// SortOrder: route_sort_order, the feed's own presentation order
 	// (MBTA, TriMet and PATH ship it); -1 when absent.
