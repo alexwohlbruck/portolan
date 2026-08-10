@@ -358,6 +358,11 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	if n := stages.HealGapBridges(net); n > 0 {
 		logf("gap heal: %d bridges redrawn along the corridor", n)
 	}
+	// ...and a bridge no corridor explains, past the length where a
+	// straight line stops standing in for anything, is not drawn at all
+	if n := stages.DropRunawayBridges(net); n > 0 {
+		logf("gap heal: %d runaway bridges dropped (over the draw limit)", n)
+	}
 	// trunk throat weld: collapse same-trunk parallel strands (terminal
 	// interlockings hand every service its own platform track) and drop
 	// same-trunk gap chords — one spine per trunk wherever the strands

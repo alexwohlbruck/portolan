@@ -170,6 +170,38 @@ func HealGapBridges(net *Network) int {
 	return healed
 }
 
+// DropRunawayBridges removes gap bridges too long to be standing in for
+// anything. A bridge is a stand-in for track the map cannot see, and the
+// longer it is the more it asserts: a 300 m chord across a station throat
+// claims almost nothing, while Paris drew a 23.9 km DEAD-HORIZONTAL line
+// at constant latitude clear across the window — the signature of a
+// broken shape, not of a tunnel.
+//
+// Past a few kilometres the honest thing is to draw nothing. The two
+// ribbon ends simply stop, which reads as "the map does not know", where
+// a straight line reads as "the train goes this way" and is false. No
+// real urban gap — a tunnel, a river crossing, an unmapped viaduct — runs
+// this long, and healing has already had its chance at every one that
+// follows a real corridor.
+func DropRunawayBridges(net *Network) int {
+	bar := dial("bridge_max_draw", 5000)
+	dropped := 0
+	for i := 0; i < len(net.Edges); {
+		e := &net.Edges[i]
+		if e.Gap && len(e.Pts) >= 2 && geo.NewLine(e.Pts).Len() > bar {
+			net.Edges = append(net.Edges[:i], net.Edges[i+1:]...)
+			dropped++
+			continue
+		}
+		i++
+	}
+	if dropped > 0 {
+		compactNodes(net)
+		rebuildAdj(net)
+	}
+	return dropped
+}
+
 // healOne searches the corridor for a path between the chord's ends.
 func healOne(chord []geo.Pt, l *geo.Line) ([]geo.Pt, bool, string) {
 	a, b := chord[0], chord[len(chord)-1]
