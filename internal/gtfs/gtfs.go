@@ -4,7 +4,6 @@
 package gtfs
 
 import (
-	"archive/zip"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -95,17 +94,28 @@ func Load(path string, coverFrac float64) (*Feed, error) {
 // consumers re-filter by route type, so the kept routes' patterns are
 // identical to an unfiltered load's.
 func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed, error) {
-	zr, err := zip.OpenReader(path)
+	files, closeFeed, err := feedFiles(path)
 	if err != nil {
 		return nil, err
 	}
-	defer zr.Close()
+	defer closeFeed()
+	return loadFiles(files, path, coverFrac, keep)
+}
 
-	files := map[string]*zip.File{}
-	for _, f := range zr.File {
-		files[f.Name] = f
+// LoadTables is LoadFiltered over a feed held in memory — what an
+// interactive caller sends instead of writing a zip to disk on every
+// rebuild. See source.go.
+func LoadTables(t Tables, coverFrac float64, keep func(Route) bool) (*Feed, error) {
+	if err := t.Valid(); err != nil {
+		return nil, err
 	}
-	need := func(name string) (*zip.File, error) {
+	return loadFiles(tableFiles(t), "inline tables", coverFrac, keep)
+}
+
+func loadFiles(files map[string]opener, path string, coverFrac float64,
+	keep func(Route) bool) (*Feed, error) {
+
+	need := func(name string) (opener, error) {
 		if f, ok := files[name]; ok {
 			return f, nil
 		}
@@ -626,8 +636,8 @@ func exciseLoops(pts []geo.LL, stops []geo.LL) []geo.LL {
 // once, with csv.ReuseRecord (field strings are substrings of a fresh
 // per-record backing string, so retaining them is safe). Missing columns
 // and short rows read as "" — the same fallback eachRow's get() applies.
-func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
-	rc, err := f.Open()
+func eachRowCols(open opener, cols []string, fn func(vals []string)) error {
+	rc, err := open()
 	if err != nil {
 		return err
 	}
@@ -675,8 +685,8 @@ func eachRowCols(f *zip.File, cols []string, fn func(vals []string)) error {
 	}
 }
 
-func eachRow(f *zip.File, fn func(get func(string) string)) error {
-	rc, err := f.Open()
+func eachRow(open opener, fn func(get func(string) string)) error {
+	rc, err := open()
 	if err != nil {
 		return err
 	}

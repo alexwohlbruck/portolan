@@ -100,7 +100,13 @@ func levelClass(tags map[string]string) int {
 
 type ChartOpts struct {
 	GTFS string
-	Rail string
+	// GTFSInline: the feed held in memory instead of on disk — table
+	// name to CSV text. For an interactive caller whose route and stop
+	// tables ARE live editor state, writing a zip per rebuild is a
+	// filesystem round trip bought for nothing. Takes precedence over
+	// GTFS when set; overlay feeds are a path-only feature.
+	GTFSInline gtfs.Tables
+	Rail       string
 	// Corridors: an AUTHORED corridor graph (GeoJSON), the alternative
 	// to Rail and mutually exclusive with it. Setting it skips the whole
 	// inference half of the pipeline — internal/osm, internal/bundle,
@@ -269,7 +275,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		}
 		return c.Drawable()
 	}
-	feed, err := loadFeeds(o.GTFS, loadCover, drawable)
+	feed, err := loadFeeds(o, o.GTFS, loadCover, drawable)
 	if err != nil {
 		return err
 	}
@@ -826,7 +832,12 @@ func LoadServiceInfo(gtfsPaths string) (*gtfs.ServiceInfo, error) {
 // loadFeeds loads and merges every feed in the comma list. Overlay route
 // ids are prefixed f<i>: unconditionally — deterministic, and route ids
 // only surface in the routes prop; labels come from short names.
-func loadFeeds(paths string, cover float64, keep func(gtfs.Route) bool) (*gtfs.Feed, error) {
+func loadFeeds(o ChartOpts, paths string, cover float64,
+	keep func(gtfs.Route) bool) (*gtfs.Feed, error) {
+
+	if len(o.GTFSInline) > 0 {
+		return gtfs.LoadTables(o.GTFSInline, cover, keep)
+	}
 	parts := strings.Split(paths, ",")
 	base, err := gtfs.LoadFiltered(strings.TrimSpace(parts[0]), cover, keep)
 	if err != nil {
@@ -937,4 +948,16 @@ func runLenKm(run []geo.LL) float64 {
 		km += math.Hypot(dx, dy)
 	}
 	return km
+}
+
+// serviceInfoFor reads the weekly service picture for a build. An
+// inline feed has no path to re-open, and the service loader is
+// path-based, so an in-memory feed simply builds without hours — which
+// is the same best-effort path a feed with no calendar already takes,
+// and exactly what an authored network has anyway.
+func serviceInfoFor(o ChartOpts) (*gtfs.ServiceInfo, error) {
+	if len(o.GTFSInline) > 0 {
+		return nil, fmt.Errorf("inline tables carry no service calendar")
+	}
+	return LoadServiceInfo(o.GTFS)
 }

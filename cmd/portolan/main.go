@@ -311,7 +311,7 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 	},
 	flags: func(fs *flag.FlagSet) any {
 		c := &chartFlags{}
-		fs.StringVar(&c.gtfs, "gtfs", "", "GTFS zip; comma list for overlay feeds (primary,overlay,…)")
+		fs.StringVar(&c.gtfs, "gtfs", "", "GTFS zip or directory; comma list for overlay feeds")
 		fs.StringVar(&c.rail, "rail", "", "OSM rail extract (GeoJSON) — portolan infers the corridors")
 		fs.StringVar(&c.corridors, "corridors", "", "corridor graph you already have (GeoJSON, - for stdin)")
 		fs.StringVar(&c.corridorNodes, "corridor-nodes", "", "nodes half of the corridor graph, if split across two files")

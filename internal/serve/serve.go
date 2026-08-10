@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
+	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
 	"github.com/alexwohlbruck/portolan/internal/style"
 )
@@ -220,6 +221,7 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 // than storing it, as GeoJSON inline in the request.
 type Request struct {
 	GTFS          string      `json:"gtfs"`
+	GTFSInline    gtfs.Tables `json:"gtfs_inline"`
 	Rail          string      `json:"rail"`
 	Corridors     string      `json:"corridors"`
 	CorridorsJSON interface{} `json:"corridors_inline"`
@@ -326,9 +328,15 @@ func (s *Server) optsFor(req *Request) (pipeline.ChartOpts, string, error) {
 		os.RemoveAll(dir)
 		return zero, "", fmt.Errorf("give exactly one of rail or corridors/corridors_inline")
 	}
-	if req.GTFS == "" {
+	if req.GTFS == "" && len(req.GTFSInline) == 0 {
 		os.RemoveAll(dir)
-		return zero, "", fmt.Errorf("gtfs is required")
+		return zero, "", fmt.Errorf("gtfs or gtfs_inline is required")
+	}
+	if len(req.GTFSInline) > 0 {
+		if err := req.GTFSInline.Valid(); err != nil {
+			os.RemoveAll(dir)
+			return zero, "", err
+		}
 	}
 	band, err := pipeline.ParseBand(req.Band)
 	if err != nil {
@@ -365,7 +373,7 @@ func (s *Server) optsFor(req *Request) (pipeline.ChartOpts, string, error) {
 		name = "build.bin"
 	}
 	return pipeline.ChartOpts{
-		GTFS: req.GTFS, Rail: req.Rail,
+		GTFS: req.GTFS, GTFSInline: req.GTFSInline, Rail: req.Rail,
 		Corridors: corridors, CorridorNodes: req.CorridorNodes,
 		Stops: req.Stops, Streets: req.Streets, BBox: req.BBox,
 		LineAgencies: las, Scenario: req.Scenario, Style: sty,

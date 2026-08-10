@@ -30,7 +30,6 @@
 package gtfs
 
 import (
-	"archive/zip"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -141,17 +140,12 @@ func LoadServiceFeeds(paths string, opts ServiceOpts) (*ServiceInfo, error) {
 }
 
 func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
-	zr, err := zip.OpenReader(path)
+	files, closeFeed, err := feedFiles(path)
 	if err != nil {
 		return err
 	}
-	defer zr.Close()
-
-	files := map[string]*zip.File{}
-	for _, f := range zr.File {
-		files[f.Name] = f
-	}
-	need := func(name string) (*zip.File, error) {
+	defer closeFeed()
+	need := func(name string) (opener, error) {
 		if f, ok := files[name]; ok {
 			return f, nil
 		}

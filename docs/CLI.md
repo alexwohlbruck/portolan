@@ -65,7 +65,7 @@ Exactly one geometry source is required, and the two are alternatives:
 
 | flag | meaning |
 |---|---|
-| `--gtfs` | GTFS zip. A comma list merges feeds: `primary.zip,overlay.zip`. Overlay route and stop ids are prefixed `f1:`, `f2:` … so ids from different agencies cannot collide. |
+| `--gtfs` | GTFS zip **or a directory of the `.txt` tables**. A comma list merges feeds: `primary.zip,overlay.zip`. Overlay route and stop ids are prefixed `f1:`, `f2:` … so ids from different agencies cannot collide. A zip made from a containing folder (`gtfs/routes.txt`) works too. |
 | `--rail` | OSM rail extract (GeoJSON). `tools/city.sh rail <city>` fetches one. |
 | `--corridors` | A corridor graph (GeoJSON). `-` reads stdin. |
 | `--corridor-nodes` | The nodes half of that graph, when it arrives as two files rather than one mixed collection. |
@@ -272,6 +272,7 @@ portolan serve [--addr 127.0.0.1:0]
 |---|---|
 | `--addr` | Listen address. `:0` picks a free port (default `127.0.0.1:0`). |
 | `--style-dir` | Curation directory for requests that name a city. |
+| `--token` | Require `Authorization: Bearer <token>` on every request. |
 
 **The first line on stdout is the bound port**, so a supervising process
 can read it back from a `:0` request instead of guessing a free one and
@@ -288,7 +289,8 @@ Takes the same inputs as `chart`, as JSON. Returns `202` and
 
 | field | type | notes |
 |---|---|---|
-| `gtfs` | string | required |
+| `gtfs` | string | a zip or a directory; required unless `gtfs_inline` is given |
+| `gtfs_inline` | object | the feed itself: table name → CSV text. See below. |
 | `rail` | string | a path the server can read |
 | `corridors` | string | a path — alternative to `rail` |
 | `corridors_inline` | object | the corridor graph itself, as GeoJSON — for a client editing a network rather than storing one |
@@ -303,8 +305,40 @@ Takes the same inputs as `chart`, as JSON. Returns `202` and
 | `band` | string | `"15"`, `"14"`, `"13"`, `"0"`, or omitted for all |
 | `cover` | number | |
 
-Exactly one of `rail`, `corridors` or `corridors_inline` is required;
-anything else is `400`.
+Exactly one of `rail`, `corridors` or `corridors_inline` is required,
+and one of `gtfs` or `gtfs_inline`; anything else is `400`.
+
+#### `gtfs_inline`
+
+For a caller whose route and stop tables *are* live editor state, a
+colour change touches `routes.txt` and every route edit touches
+`stop_times.txt` — so writing a zip per rebuild is a filesystem round
+trip bought for nothing. Send the tables instead:
+
+```json
+{
+  "corridors_inline": { "type": "FeatureCollection", "features": [] },
+  "gtfs_inline": {
+    "routes.txt": "route_id,route_short_name,route_type,route_color\nR1,1,1,EE352E\n",
+    "stops.txt":  "stop_id,stop_name,stop_lat,stop_lon\ns1,Alpha,40.7,-74.0\n",
+    "trips.txt":  "route_id,service_id,trip_id\nR1,wk,t1\n",
+    "stop_times.txt": "trip_id,stop_sequence,stop_id\nt1,1,s1\n"
+  }
+}
+```
+
+Values are raw CSV text, header row included. Names are accepted with or
+without `.txt`. `routes.txt` is the only hard requirement — it is what
+the corridor graph's route ids mean — and a feed with no `stops.txt`
+draws lines and no stations.
+
+Together with `corridors_inline` this makes a rebuild touch no file the
+caller had to write.
+
+Two limits: overlay feeds are a path-only feature (`gtfs` accepts a
+comma list, `gtfs_inline` is one feed), and inline tables build **without
+a service calendar**, so `scenario` needs a path. An authored network
+has no timetable anyway.
 
 ### GET /chart/{id}/progress
 
@@ -349,6 +383,25 @@ failed.
 
 Job status: `{"id":…,"done":true}`, plus `"error"` if it failed.
 
+### GET /version
+
+What this binary is and what it speaks — so a caller can refuse to draw
+against a contract it does not understand, rather than discovering the
+mismatch in the geometry.
+
+```json
+{"version":"0.1.0","plnb":1,"formats":["geojson","bin"],
+ "bands":[15,14,13,0],"auth":false}
+```
+
+`version` is the bare semver, no leading `v` and no revision: it is
+compared, not displayed. An unstamped build reports `devel` rather than
+claiming a release it does not have. `plnb` is the binary layout version
+from the PLNB header — the number a renderer actually has to agree with,
+and the one that changes when a column moves.
+
+Open even when `--token` is set.
+
 ### Operational notes
 
 **Builds are serialized.** Portolan's build configuration is still
@@ -356,6 +409,14 @@ process-wide state — dials, agency names, ferry route sets, the resolved
 style — so two builds at once would read each other's settings. The lock
 is correctness, not throughput management. Cancellation still works
 while a build waits behind it.
+
+**Set `--token` whenever anything else on the machine might reach the
+port.** A request body names files to read — `gtfs`, `style_dir`,
+`corridors` — so an open port is a file-read oracle for every local
+process, including a plugin running inside the calling application.
+Binding to loopback is not a boundary between processes on one host. The
+token is compared in constant time. `/healthz` and `/version` stay open,
+so a supervisor can tell "not up yet" from "wrong token".
 
 **Idle cost is nothing.** No tickers, no background workers, no warmed
 caches. A job's goroutine lives only while its build runs, and finished

@@ -88,7 +88,7 @@ func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string,
 	w, s, e, n := g.Bounds()
 	frame := frameFor(o.Anchor, w, s, e, n)
 
-	if o.GTFS == "" {
+	if o.GTFS == "" && len(o.GTFSInline) == 0 {
 		return fmt.Errorf("chart --corridors needs --gtfs: the corridor graph names routes by " +
 			"route_id, and routes.txt is what those ids mean")
 	}
@@ -109,7 +109,7 @@ func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string,
 	if o.Scenario != "" {
 		cover = 1.01
 	}
-	feed, err := loadFeeds(o.GTFS, cover, drawable)
+	feed, err := loadFeeds(o, o.GTFS, cover, drawable)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string,
 	// The viewer then falls back to route-level masks, which for a
 	// network with no timetable is the whole truth anyway.
 	var patActs map[string]gtfs.Mask168
-	if si, err := LoadServiceInfo(o.GTFS); err == nil {
+	if si, err := serviceInfoFor(o); err == nil {
 		pm := si.PatternMasks()
 		patActs = make(map[string]gtfs.Mask168, len(pm))
 		for k, m := range pm {
@@ -282,7 +282,7 @@ func applyEdgeActs(net *stages.Network, feed *gtfs.Feed, patActs map[string]gtfs
 func restrictToScenario(net *stages.Network, feed *gtfs.Feed, o ChartOpts,
 	d Dials, logf func(string, ...any)) error {
 
-	si, err := LoadServiceInfo(o.GTFS)
+	si, err := serviceInfoFor(o)
 	if err != nil {
 		return fmt.Errorf("scenario build: %w", err)
 	}

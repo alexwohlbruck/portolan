@@ -476,3 +476,72 @@ func TestTokenGuardsTheFileReadingEndpoints(t *testing.T) {
 		t.Error("auth not advertised on a token-protected server")
 	}
 }
+
+// TestFullyInlineChart is the interactive loop the game runs: the
+// corridor graph AND the feed tables both live in the request body, so
+// a rebuild touches no file the caller had to write.
+func TestFullyInlineChart(t *testing.T) {
+	dir := t.TempDir()
+	s := New(filepath.Join(dir, "style"))
+	srv := httptest.NewServer(s.mux())
+	defer srv.Close()
+
+	id, code := postChart(t, srv, map[string]any{
+		"corridors_inline": inlineGraph(),
+		"gtfs_inline": map[string]string{
+			"agency.txt": "agency_id,agency_name\nA,Authored\n",
+			"routes.txt": "route_id,agency_id,route_short_name,route_type,route_color,route_text_color\n" +
+				"R1,A,1,1,EE352E,FFFFFF\nR2,A,2,1,0039A6,FFFFFF\n",
+			"stops.txt": "stop_id,stop_name,stop_lat,stop_lon\n" +
+				"s1,Alpha,40.700,-74.000\ns2,Beta,40.700,-73.990\ns3,Gamma,40.700,-73.980\n",
+			"trips.txt": "route_id,service_id,trip_id\nR1,wk,t1\nR2,wk,t2\n",
+			"stop_times.txt": "trip_id,stop_sequence,stop_id\n" +
+				"t1,1,s1\nt1,2,s2\nt1,3,s3\nt2,1,s1\nt2,2,s2\n",
+		},
+		"format": "bin", "band": "15",
+	})
+	if code != http.StatusAccepted {
+		t.Fatalf("POST /chart: %d %s", code, id)
+	}
+	waitDone(t, srv, id)
+
+	r, err := http.Get(srv.URL + "/chart/" + id + "/build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(r.Body)
+	if buf.Len() < 32 || string(buf.Bytes()[:4]) != "PLNB" {
+		t.Fatalf("expected a PLNB payload, got %d bytes", buf.Len())
+	}
+	// stations must still be built — they come from stops.txt, which
+	// arrived inline like everything else
+	sr, err := http.Get(srv.URL + "/chart/" + id + "/build?artifact=stations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sr.Body.Close()
+	sb := new(bytes.Buffer)
+	sb.ReadFrom(sr.Body)
+	if !strings.Contains(sb.String(), "Alpha") {
+		t.Error("stations were not built from the inline stops.txt")
+	}
+}
+
+func TestInlineFeedWithoutRoutesIsRejectedBeforeAnyWork(t *testing.T) {
+	dir := t.TempDir()
+	s := New(filepath.Join(dir, "style"))
+	srv := httptest.NewServer(s.mux())
+	defer srv.Close()
+	msg, code := postChart(t, srv, map[string]any{
+		"corridors_inline": inlineGraph(),
+		"gtfs_inline":      map[string]string{"stops.txt": "stop_id\ns1\n"},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", code)
+	}
+	if !strings.Contains(msg, "routes.txt") {
+		t.Errorf("the error should name what is missing, got: %s", strings.TrimSpace(msg))
+	}
+}
