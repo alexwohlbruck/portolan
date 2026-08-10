@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
@@ -60,24 +61,43 @@ type CatBullet struct {
 // while the CTA, Amtrak and most commuter operators use words that only
 // read as text along the line.
 //
-// Length decides, with the system breaking ties. One or two characters is
-// always a bullet — that is what "1:1 aspect" means. Four or more is
-// always a word. THREE is genuinely ambiguous ("SIR", "L12", "L9N", "Red")
-// and is settled by the median label length of the routes around it: in
-// CDMX, where the median is 1, "L12" is a bullet; in Chicago, where the
-// median is 5, "Red" is a word. No city-specific code, and it answers the
-// mixed systems correctly too — Boston's Green Line branches stay bullets
-// (B, C, D, E) while "Red Line" beside them becomes text.
+// Length decides, with two refinements. One or two characters is always a
+// bullet — that is what "1:1 aspect" means.
+//
+// A short label CONTAINING A DIGIT is a route CODE, not a word, and codes
+// belong in bullets however long they run: Toronto prints its streetcars
+// as "501" in a roundel, Barcelona sets "L10N", NYC "M14A". Words of the
+// same length do not — "Red" is a word. Digits are the language-agnostic
+// tell, and without it Toronto split half its network into running text.
+//
+// THREE characters with no digit is genuinely ambiguous ("SIR", "Red")
+// and is settled by the median label length of the routes around it: in a
+// system of single letters it is a bullet, in Chicago's system of colour
+// words it is text.
+//
+// This answers the MIXED systems too, which a per-system rule cannot —
+// Boston keeps B, C, D, E as bullets while "Red Line" beside them becomes
+// text.
 func bulletLike(label string, median int) bool {
-	n := len([]rune(label))
-	switch {
-	case n <= 2:
+	r := []rune(label)
+	n := len(r)
+	if n <= 2 {
 		return true
-	case n >= 4:
-		return false
-	default:
-		return median <= 2
 	}
+	digit := false
+	for _, c := range r {
+		if unicode.IsDigit(c) {
+			digit = true
+			break
+		}
+	}
+	if digit && n <= 4 {
+		return true
+	}
+	if n >= 4 {
+		return false
+	}
+	return median <= 2
 }
 
 // medianLabelLen is the middle display-label length of the routes that
