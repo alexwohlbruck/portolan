@@ -6,6 +6,7 @@
 #   tools/city.sh gtfs london       # Transitland feeds covering the city bbox
 #   tools/city.sh gtfs london 1234  # …download one of them
 #   tools/city.sh rail london       # Overpass → the city's rail geojson
+#   tools/city.sh stops london      # Overpass → the city's named transit stops
 #   tools/city.sh build london      # chart (+ sound when a sketch exists)
 #   tools/city.sh all london        # rail then build
 #
@@ -149,10 +150,10 @@ out geom;"
 }
 
 build() { # $1 = feed key
-  local feed=$1 gtfs rail out net streets bboxarg first
+  local feed=$1 gtfs rail out net streets stops bboxarg first
   gtfs=$(get "$feed" gtfs); rail=$(get "$feed" rail)
   out=$(get "$feed" out);   net=$(get "$feed" network)
-  streets=$(get "$feed" streets)
+  streets=$(get "$feed" streets); stops=$(get "$feed" stops)
   [ -s "$rail" ] || { echo "$feed: no rail extract at $rail — tools/city.sh rail $feed"; exit 2; }
   # gtfs may be a comma list (primary + overlay feeds) — every part must exist
   local IFS=','
@@ -161,31 +162,20 @@ build() { # $1 = feed key
   done
   unset IFS
   bboxarg=$(jq -r --arg f "$feed" '.feeds[$f].bbox // empty | join(",")' "$CFG")
-  lineag=$(jq -r --arg f "$feed" '.feeds[$f].line_agencies // empty | join(",")' "$CFG")
   set -- --gtfs "$gtfs" --rail "$rail" --out "$out"
   [ -n "$bboxarg" ] && set -- "$@" --bbox "$bboxarg"
-  [ -n "$lineag" ] && set -- "$@" --line-agencies "$lineag"
-  # style: config-wide block with the city's own layered on top (deep merge
-  # for modes so a city naming one field keeps the rest). The atlas does the
-  # same merge in Go — both paths must agree or a CLI build looks different
-  # from the same build launched from the dashboard.
-  local stylefile
-  stylefile=$(mktemp -t portolan-style)
-  jq --arg f "$feed" '{
-        modes:  ((.style.modes  // {}) * (.feeds[$f].modes  // {})),
-        colors: ((.style.colors // {}) + (.feeds[$f].colors // {}))
-      }
-      + (if .feeds[$f].bullet_order != null then {bullet_order: .feeds[$f].bullet_order}
-         elif .style.bullet_order != null then {bullet_order: .style.bullet_order} else {} end)
-      + (if .feeds[$f].caterpillars != null then {caterpillars: .feeds[$f].caterpillars}
-         elif .style.caterpillars != null then {caterpillars: .style.caterpillars} else {} end)' "$CFG" > "$stylefile"
-  if [ -s "$stylefile" ] && [ "$(jq -r 'if (.modes|length)==0 and (.colors|length)==0 and (.bullet_order == null) and (.caterpillars == null) then "empty" else "set" end' "$stylefile")" = set ]; then
-    set -- "$@" --style "$stylefile"
-  fi
+  # style: ONE loader, in Go. This used to be a jq merge here plus a
+  # second merge in the atlas, and the two drifted — CLI builds silently
+  # dropped bullet_order for weeks. chart now reads style/_default.json
+  # and style/<city>.json itself, so both paths cannot disagree.
+  set -- "$@" --style-dir style --city "$feed"
   if [ -n "$streets" ]; then
     if [ -s "$streets" ]; then set -- "$@" --streets "$streets"
     else echo "$feed: streets configured but missing at $streets — tools/city.sh streets $feed (building rail-only)"; fi
   fi
+  # stops are opt-in and silent when absent: the extract's presence IS the
+  # switch for OSM station naming, so a city without one is unchanged
+  if [ -n "$stops" ] && [ -s "$stops" ]; then set -- "$@" --stops "$stops"; fi
   go run ./cmd/portolan chart "$@"
   if [ -s "$net" ]; then
     go run ./cmd/portolan sound --network "$net" --build "$out" || true
@@ -224,6 +214,50 @@ out geom;"
   rm -f "$tmp.json"
   mv "$tmp" "$out"
   echo "$feed: $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["features"]),"ways")' "$out"), $(du -h "$out" | cut -f1)"
+}
+
+# stops: the named transit STOPS of the window — what the station-name
+# matcher scores GTFS stops against. Small next to the rail extract (a few
+# thousand points), and opt-in per city via a 'stops' path.
+stops() { # $1 = feed key
+  local feed=$1 out w s e n query tmp
+  out=$(get "$feed" stops)
+  [ -n "$out" ] || { echo "$feed: no 'stops' path in $CFG"; exit 2; }
+  bbox "$feed"
+  # every element that can carry a station name: nodes for stop positions
+  # and tram stops, ways/relations for station buildings and complexes.
+  # 'out center' gives ways and relations a representative point.
+  query="[out:json][timeout:600];
+(
+node[\"railway\"~\"^(station|halt|tram_stop)\$\"]($s,$w,$n,$e);
+way[\"railway\"~\"^(station|halt)\$\"]($s,$w,$n,$e);
+relation[\"railway\"~\"^(station|halt)\$\"]($s,$w,$n,$e);
+node[\"public_transport\"~\"^(station|stop_position)\$\"]($s,$w,$n,$e);
+way[\"public_transport\"=\"station\"]($s,$w,$n,$e);
+relation[\"public_transport\"=\"station\"]($s,$w,$n,$e);
+node[\"aerialway\"=\"station\"]($s,$w,$n,$e);
+node[\"amenity\"=\"ferry_terminal\"]($s,$w,$n,$e);
+way[\"amenity\"=\"ferry_terminal\"]($s,$w,$n,$e);
+);
+out center;"
+
+  mkdir -p "$(dirname "$out")"
+  tmp="$out.tmp"
+  echo "$feed: Overpass stops $w,$s,$e,$n → $out"
+  local try ok=0
+  for try in 1 2 3; do
+    if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+       "$OVERPASS" -o "$tmp.json"; then ok=1; break; fi
+    echo "$feed: attempt $try failed — public Overpass under load; waiting…"
+    sleep $((try * 20))
+  done
+  [ "$ok" = 1 ] || { echo "$feed: Overpass gave up after 3 tries"; rm -f "$tmp.json"; exit 1; }
+  head -c 200 "$tmp.json" | grep -q '"elements"\|"version"' || {
+    echo "$feed: not Overpass JSON:"; head -c 300 "$tmp.json"; rm -f "$tmp.json"; exit 1; }
+  python3 tools/overpass2geojson.py --stops < "$tmp.json" > "$tmp"
+  rm -f "$tmp.json"
+  mv "$tmp" "$out"
+  echo "$feed: $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["features"]),"named stops")' "$out"), $(du -h "$out" | cut -f1)"
 }
 
 # shapes: regenerate the feed's shapes.txt with pfaedle (docs/CITIES.md).
@@ -299,8 +333,9 @@ case "${1:-list}" in
   gtfs)  known "${2:-}" gtfs;  gtfs "$2" "${3:-}" ;;
   rail)  known "${2:-}" rail;  rail "$2" ;;
   streets) known "${2:-}" streets; streets "$2" ;;
+  stops) known "${2:-}" stops; stops "$2" ;;
   shapes) known "${2:-}" shapes; shapes "$2" ;;
   build) known "${2:-}" build; build "$2" ;;
   all)   known "${2:-}" all;   rail "$2"; build "$2" ;;
-  *) echo "usage: $0 list|gtfs|rail|shapes|build|all [city] [transitland-feed-id]"; exit 2 ;;
+  *) echo "usage: $0 list|gtfs|rail|stops|streets|shapes|build|all [city] [transitland-feed-id]"; exit 2 ;;
 esac

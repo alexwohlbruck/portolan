@@ -83,6 +83,15 @@ type Config struct {
 	// bookkeeping ("f1:1") and nobody wants to look those up to recolor
 	// Metro-North.
 	Colors map[string]string `json:"colors,omitempty"`
+	// Names: display-name overrides, keyed exactly like Colors —
+	// "agency:<id or name>", "route:<id, short name or long name>",
+	// "stop:<id or name>". Same reason as colors: the feed is what got it
+	// wrong, and there is no signal in the data to compute the fix from.
+	// CTA files its lines as "Red Line"; the bullet wants "Red". CATS
+	// files the LYNX Blue Line as route 501; a rider calls it Blue.
+	Names map[string]string `json:"names,omitempty"`
+	// Shapes: route-bullet outlines, keyed like Colors and Names.
+	Shapes map[string]string `json:"shapes,omitempty"`
 	// BulletOrder: one of the Bullets* policies above. Empty inherits
 	// (default BulletsColor).
 	BulletOrder string `json:"bullet_order,omitempty"`
@@ -90,17 +99,29 @@ type Config struct {
 	// inherits (default on); a city can switch them off over a global
 	// on, or vice versa.
 	Caterpillars *bool `json:"caterpillars,omitempty"`
+	// OSMStopNames: adopt the matched OSM stop's name for a station.
+	// Nil inherits (default on). The real gate is whether the city has a
+	// stops extract at all — with no extract nothing matches and this
+	// knob does nothing. Turn it OFF to keep feed names while still
+	// attaching OSM ids, which is what a city with hand-curated station
+	// names wants.
+	OSMStopNames *bool `json:"osm_stop_names,omitempty"`
 }
 
 // defaults are the shipped behaviour: change these and every city moves.
 var defaults = map[string]Class{
-	"metro":     {Trunk: TrunkColor, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
-	"tram":      {Trunk: TrunkColor, Width: f(0.75), Opacity: f(1), BandFloor: i(0)},
-	"regional":  {Trunk: TrunkAgency, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
-	"monorail":  {Trunk: TrunkColor, Width: f(0.85), Opacity: f(1), BandFloor: i(0)},
-	"funicular": {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(1), BandFloor: i(15)},
-	"cable":     {Trunk: TrunkRoute, Width: f(0.75), Opacity: f(1), BandFloor: i(15)},
-	"aerial":    {Trunk: TrunkRoute, Width: f(0.6), Opacity: f(0.75), BandFloor: i(15)},
+	"metro":    {Trunk: TrunkColor, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
+	"tram":     {Trunk: TrunkColor, Width: f(0.75), Opacity: f(1), BandFloor: i(0)},
+	"regional": {Trunk: TrunkAgency, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
+	"monorail": {Trunk: TrunkColor, Width: f(0.85), Opacity: f(1), BandFloor: i(0)},
+	// Aerialways, cable cars and funiculars are FIXED INFRASTRUCTURE, as
+	// permanent as track, so they draw from the same band as rail. A
+	// floor of 15 hid Mexico City's three Cablebús lines everywhere but
+	// the closest zoom while their station dots kept drawing, which read
+	// as a broken map rather than as a hidden class.
+	"funicular": {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(1), BandFloor: i(0)},
+	"cable":     {Trunk: TrunkRoute, Width: f(0.75), Opacity: f(1), BandFloor: i(0)},
+	"aerial":    {Trunk: TrunkRoute, Width: f(0.6), Opacity: f(0.75), BandFloor: i(0)},
 	"ferry":     {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(0.65), BandFloor: i(13), Color: "4A9EDB"},
 	"bus":       {Trunk: TrunkNone, Width: f(0.5), Opacity: f(0.9), BandFloor: i(15), Color: "888888"},
 	"unknown":   {Trunk: TrunkColor, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
@@ -125,14 +146,23 @@ type Resolved struct {
 type Set struct {
 	Modes  map[string]Resolved `json:"modes"`
 	Colors map[string]string   `json:"colors,omitempty"`
+	Names  map[string]string   `json:"names,omitempty"`
+	Shapes map[string]string   `json:"shapes,omitempty"`
 	// BulletOrder: resolved Bullets* policy, never empty.
 	BulletOrder string `json:"bullet_order"`
 	// Caterpillars: resolved on/off for inline route bullets.
 	Caterpillars bool `json:"caterpillars"`
+	// OSMStopNames: resolved on/off for adopting matched OSM stop names.
+	OSMStopNames bool `json:"osm_stop_names"`
 
 	// lookup tables for overrides, lowercased; built by New.
 	byAgency map[string]string
 	byRoute  map[string]string
+	nAgency  map[string]string
+	nRoute   map[string]string
+	nStop    map[string]string
+	sAgency  map[string]string
+	sRoute   map[string]string
 }
 
 // New resolves configs in precedence order — later ones win field by field.
@@ -140,7 +170,12 @@ type Set struct {
 // keeps every other default.
 func New(layers ...Config) *Set {
 	s := &Set{Modes: map[string]Resolved{}, Colors: map[string]string{},
-		byAgency: map[string]string{}, byRoute: map[string]string{}}
+		Names:    map[string]string{},
+		Shapes:   map[string]string{},
+		byAgency: map[string]string{}, byRoute: map[string]string{},
+		nAgency: map[string]string{}, nRoute: map[string]string{},
+		nStop:   map[string]string{},
+		sAgency: map[string]string{}, sRoute: map[string]string{}}
 	for name, d := range defaults {
 		merged := d
 		for _, l := range layers {
@@ -156,15 +191,25 @@ func New(layers ...Config) *Set {
 	}
 	s.BulletOrder = BulletsColor
 	s.Caterpillars = true
+	s.OSMStopNames = true
 	for _, l := range layers {
 		for k, v := range l.Colors {
 			s.Colors[k] = v
+		}
+		for k, v := range l.Names {
+			s.Names[k] = v
+		}
+		for k, v := range l.Shapes {
+			s.Shapes[k] = v
 		}
 		if l.BulletOrder != "" {
 			s.BulletOrder = l.BulletOrder
 		}
 		if l.Caterpillars != nil {
 			s.Caterpillars = *l.Caterpillars
+		}
+		if l.OSMStopNames != nil {
+			s.OSMStopNames = *l.OSMStopNames
 		}
 	}
 	for k, v := range s.Colors {
@@ -175,6 +220,27 @@ func New(layers ...Config) *Set {
 			s.byAgency[strings.TrimPrefix(key, "agency:")] = hex
 		case strings.HasPrefix(key, "route:"):
 			s.byRoute[strings.TrimPrefix(key, "route:")] = hex
+		}
+	}
+	for k, v := range s.Shapes {
+		key := strings.ToLower(strings.TrimSpace(k))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.sAgency[strings.TrimPrefix(key, "agency:")] = strings.ToLower(strings.TrimSpace(v))
+		case strings.HasPrefix(key, "route:"):
+			s.sRoute[strings.TrimPrefix(key, "route:")] = strings.ToLower(strings.TrimSpace(v))
+		}
+	}
+	for k, v := range s.Names {
+		key := strings.ToLower(strings.TrimSpace(k))
+		name := strings.TrimSpace(v)
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.nAgency[strings.TrimPrefix(key, "agency:")] = name
+		case strings.HasPrefix(key, "route:"):
+			s.nRoute[strings.TrimPrefix(key, "route:")] = name
+		case strings.HasPrefix(key, "stop:"):
+			s.nStop[strings.TrimPrefix(key, "stop:")] = name
 		}
 	}
 	return s
@@ -251,6 +317,65 @@ func (s *Set) AgencyColor(ids ...string) (string, bool) {
 // the lookups entirely on the overwhelmingly common empty config.
 func (s *Set) Any() bool {
 	return s != nil && (len(s.byAgency) > 0 || len(s.byRoute) > 0)
+}
+
+// lookup walks every identifier the caller knows — id, short name, long
+// name — so the config can say what a human would say ("route:Red Line"
+// beats "route:f2:1"). Shared by all three name lookups.
+func lookup(tbl map[string]string, ids []string) (string, bool) {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if n, ok := tbl[strings.ToLower(strings.TrimSpace(id))]; ok {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+// RouteName is the display-name override for a route, by id, short name
+// or long name. CTA's "Red Line" becomes "Red" this way.
+func (s *Set) RouteName(ids ...string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	return lookup(s.nRoute, ids)
+}
+
+// AgencyName is the display-name override for an agency, by id or name.
+// An agency trunk is labelled with it (docs/MODES.md).
+func (s *Set) AgencyName(ids ...string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	return lookup(s.nAgency, ids)
+}
+
+// StopName is the display-name override for a stop, by id or by the
+// feed's own name.
+func (s *Set) StopName(ids ...string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	return lookup(s.nStop, ids)
+}
+
+// RouteShape is the bullet-outline override for a route, then its agency.
+func (s *Set) RouteShape(routeIDs []string, agencyIDs []string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	if v, ok := lookup(s.sRoute, routeIDs); ok {
+		return v, true
+	}
+	return lookup(s.sAgency, agencyIDs)
+}
+
+// AnyName reports whether any name override exists — the same cheap skip
+// Any() gives the color path.
+func (s *Set) AnyName() bool {
+	return s != nil && (len(s.nAgency) > 0 || len(s.nRoute) > 0 || len(s.nStop) > 0)
 }
 
 // MarshalManifest renders the resolved set for the viewer to render from.
