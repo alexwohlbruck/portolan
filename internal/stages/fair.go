@@ -112,24 +112,29 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 		}
 		return o
 	}
+	sty := style.Active()
 	label := func(ei int, color string) string {
 		rs := colorRoutes[ei][color]
 		// a MULTI-route agency trunk is labelled as the agency — "Long
 		// Island Rail Road", not four branch names and a +9. A lone route
 		// keeps its own name (the SIR is not "MTA New York City Transit").
 		if len(rs) > 1 && strings.HasPrefix(color, "agency:") {
-			if n := agencyNames[strings.TrimPrefix(color, "agency:")]; n != "" {
+			aid := strings.TrimPrefix(color, "agency:")
+			n := agencyNames[aid]
+			if o, ok := sty.AgencyName(aid, n); ok {
+				return o
+			}
+			if n != "" {
 				return n
 			}
 		}
-		// a trunk can carry many routes — the label is a sample, not a
-		// roster
-		const maxNames = 4
-		out := ""
-		for i, r := range rs {
-			if i == maxNames && len(rs) > maxNames+1 {
-				return fmt.Sprintf("%s +%d", out, len(rs)-maxNames)
-			}
+		// One LINE can be many route_ids: Wiener Linien files a route per
+		// service variant, so tram 11 arrives as a dozen routes that all
+		// display "11". The label is about lines, not feed bookkeeping —
+		// fold repeats before counting, or the trunk reads "11·11·11·11 +37".
+		names := make([]string, 0, len(rs))
+		seen := make(map[string]bool, len(rs))
+		for _, r := range rs {
 			sn := routes[r].ShortName
 			if sn == "" {
 				sn = routes[r].LongName // Amtrak names its trains, not numbers
@@ -137,12 +142,21 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 			if sn == "" {
 				sn = r
 			}
-			if out != "" {
-				out += "·"
+			if o, ok := sty.RouteName(r, routes[r].ShortName, routes[r].LongName); ok {
+				sn = o
 			}
-			out += sn
+			if seen[sn] {
+				continue
+			}
+			seen[sn] = true
+			names = append(names, sn)
 		}
-		return out
+		// a trunk can carry many lines — the label is a sample, not a roster
+		const maxNames = 4
+		if len(names) > maxNames+1 {
+			return fmt.Sprintf("%s +%d", strings.Join(names[:maxNames], "·"), len(names)-maxNames)
+		}
+		return strings.Join(names, "·")
 	}
 	routeType := func(ei int, color string) int {
 		rs := colorRoutes[ei][color]
@@ -192,7 +206,6 @@ func Fair(n *Network, slots map[int][]string, routes map[string]gtfs.Route, path
 	// class's canonical color (Apple paints every ferry one blue — a harbor
 	// of per-route brand colors reads as seven unrelated lines), the
 	// agency's majority color, then the route's own.
-	sty := style.Active()
 	hexOf := func(ei int, color string) string {
 		rs := colorRoutes[ei][color]
 		if sty.Any() {
