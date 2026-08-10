@@ -5,6 +5,11 @@ import "testing"
 // The shipped defaults must reproduce the behaviour that was hardcoded
 // across mode.go, fair.go and map.html before this package existed —
 // a config-driven rewrite that silently restyles every city is a bug.
+//
+// Changed deliberately 2026-08-09: aerial, funicular and cable moved from
+// band floor 15 to 0. They are fixed infrastructure, as permanent as
+// track, and a floor of 15 hid Mexico City's three Cablebús lines at every
+// zoom but the closest while their station dots kept drawing.
 func TestDefaultsMatchShippedBehaviour(t *testing.T) {
 	s := New()
 	for _, c := range []struct {
@@ -19,9 +24,9 @@ func TestDefaultsMatchShippedBehaviour(t *testing.T) {
 		{"monorail", TrunkColor, "", 0.85, 1, 0},
 		{"ferry", TrunkRoute, "4A9EDB", 0.7, 0.65, 13},
 		{"bus", TrunkNone, "888888", 0.5, 0.9, 15},
-		{"aerial", TrunkRoute, "", 0.6, 0.75, 15},
-		{"funicular", TrunkRoute, "", 0.7, 1, 15},
-		{"cable", TrunkRoute, "", 0.75, 1, 15},
+		{"aerial", TrunkRoute, "", 0.6, 0.75, 0},
+		{"funicular", TrunkRoute, "", 0.7, 1, 0},
+		{"cable", TrunkRoute, "", 0.75, 1, 0},
 	} {
 		got := s.Class(c.name)
 		if got.Trunk != c.trunk || got.Color != c.color ||
