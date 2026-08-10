@@ -116,7 +116,18 @@ func classCompat(routeType int, cls string) bool {
 	}
 	switch mode.Of(routeType) {
 	case mode.Metro:
-		return cls == "subway"
+		// light_rail and narrow_gauge are admissible for metro-typed
+		// routes, the same accommodation Regional already makes for the
+		// DLR and Tram for mislabelled aerials. A feed types a service by
+		// how it is BRANDED; OSM tags the steel by what it IS. Barcelona's
+		// L8 is branded metro and runs on FGC's narrow-gauge Llobregat
+		// line: with narrow_gauge barred, every sparse-shape stretch had
+		// no admissible candidate at all, opened GAP, and drew kilometre
+		// chords across the city. This only ever loosens where no subway
+		// track is near — hasCompat still makes real subway steel win
+		// wherever it exists, so the Metro-stays-on-the-metro rule holds
+		// everywhere it can be applied.
+		return cls == "subway" || cls == "light_rail" || cls == "narrow_gauge"
 	case mode.Tram, mode.Cable: // SF cable cars ride tram-class street track
 		// "aerial" and "monorail" are admissible because feeds mislabel
 		// them as trams (Roosevelt Island Tram and the JFK AirTrain are
@@ -746,6 +757,13 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 			}
 			if len(gp) < 2 || geo.NewLine(gp).Len() < 0.5 {
 				continue // start/end-of-route stub with no real extent
+			}
+			if dbgMatch {
+				flanked := i > 0 && i < len(events)-1 &&
+					events[i-1].edge != gapState && events[i+1].edge != gapState
+				println("BRIDGE", pat.Route.ID, pat.ShapeID,
+					int(geo.NewLine(gp).Len()), "m flanked", flanked,
+					"at", int(gp[0].X), int(gp[0].Y))
 			}
 			appendPts(gp)
 			wayIDs = append(wayIDs, "gap")

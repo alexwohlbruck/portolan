@@ -40,7 +40,11 @@ var aerialValues = map[string]bool{
 // the graph loses the connectivity that real trains use — the Manhattan
 // Bridge tracks reach Broadway only through one, and dropping it forced
 // whole patterns onto the wrong track pair and into phantom gap bridges.
-func Load(path string) ([]Way, error) {
+func Load(path string) ([]Way, error) { return loadRail(path, false) }
+
+// loadRail is Load's body; withService keeps the yards, sidings and spurs
+// for LoadCorridor's geometry-only pool.
+func loadRail(path string, withService bool) ([]Way, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -81,7 +85,7 @@ func Load(path string) ([]Way, error) {
 				continue
 			}
 		}
-		if s := tags["service"]; s != "" && s != "crossover" {
+		if s := tags["service"]; s != "" && s != "crossover" && !withService {
 			continue
 		}
 		var coords [][]float64
@@ -102,6 +106,27 @@ func Load(path string) ([]Way, error) {
 		out = append(out, Way{ID: id, Coords: lls, Tags: tags})
 	}
 	return out, nil
+}
+
+// LoadCorridor reads EVERY rail-class way, including the service tracks
+// Load drops at the door. This pool is GEOMETRY ONLY: it never enters
+// MATCH, never chains into strands, never votes in a median. Its single
+// job is to say where the steel physically runs, so a gap bridge can be
+// drawn along the corridor instead of as a straight chord across the
+// city.
+//
+// The distinction matters because "not revenue track" and "not there" are
+// different facts. Barcelona's FGC corridor is through-connected only via
+// ways a mapper tagged service=siding: with them dropped the running-track
+// graph falls into separate components, MATCH can find no walk, and the
+// map drew 1-2 km chords crossing each other. The steel is real; it just
+// isn't service. Drawing along it is honest; the straight line is not.
+func LoadCorridor(path string) ([]Way, error) {
+	ways, err := loadRail(path, true)
+	if err != nil {
+		return nil, err
+	}
+	return ways, nil
 }
 
 // streetValues: highway classes buses ride. Service ways, footways and

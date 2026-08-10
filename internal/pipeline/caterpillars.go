@@ -137,6 +137,11 @@ const (
 	catStraightDeg   = 7.0 // max heading change across the chain window
 	catEndClearM     = 180.0
 	catStationClearM = 160.0
+	// how far ACROSS the ribbon two proposals may sit and still be the
+	// same bundle. Siblings share exact geometry, so this only has to
+	// absorb the metre-scale drift of independently centred chains — it
+	// must stay far below the spacing between neighbouring corridors.
+	catMergeCrossM = 15.0
 )
 
 // bulletWidthPx mirrors the viewer's bulletCanvas: a circle for 1–2
@@ -521,11 +526,34 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		}
 		host := props[i]
 		mergeR := 60.0 + float64(len(host.roster))*20
+		// the corridor-extent mismatch this merge exists for is ALONG the
+		// ribbon: two groups of the same bundle centre their chains at
+		// different arcs because their segments were cut at different
+		// places. ACROSS the ribbon there is no mismatch to fix — sibling
+		// ribbons share exact geometry (that is what the signature groups
+		// on), so same-bundle proposals sit within metres of each other.
+		//
+		// A plain radius conflates the two. At Brooklyn Bridge the J/Z
+		// runs about 100 m from the 4·5·6, inside the radius, so its chain
+		// was absorbed: the J and Z bullets drew stacked on the GREEN
+		// ribbon, because a donor's laterals are offsets within its own
+		// bundle and carry no memory of the 100 m between the corridors.
+		// Split the separation into its components and bar the crossing
+		// one.
+		tanXY := geo.Pt{X: host.tm.X, Y: -host.tm.Y}
 		for j := i + 1; j < len(props); j++ {
 			if used[j] || props[j].band != host.band {
 				continue
 			}
-			if props[j].pt.Dist(host.pt) > mergeR {
+			d := props[j].pt.Sub(host.pt)
+			if math.Abs(d.Dot(tanXY)) > mergeR {
+				continue
+			}
+			if math.Abs(d.X*-tanXY.Y+d.Y*tanXY.X) > catMergeCrossM {
+				continue
+			}
+			// a corridor that merely crosses this one is not this bundle
+			if math.Abs(host.tm.Dot(props[j].tm)) < 0.85 {
 				continue
 			}
 			flip := host.tm.Dot(props[j].tm) < 0

@@ -166,6 +166,14 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		return ts
 	}
 	tracks := toTracks(ways)
+	// the corridor pool: every rail-class way INCLUDING yards, sidings and
+	// spurs. Geometry only — it never reaches MATCH or the strand pools,
+	// it only tells gap-bridge healing where the steel physically runs.
+	if cways, cerr := osm.LoadCorridor(o.Rail); cerr == nil {
+		stages.SetCorridorTracks(toTracks(cways))
+	} else {
+		stages.SetCorridorTracks(nil)
+	}
 	// streets are a separate opt-in layer for bus matching: they join the
 	// class/level maps and the MATCH graph, but never the strand pool —
 	// a street way IS the drawn road centerline already, and 100k street
@@ -344,6 +352,12 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	logf("split: %d nodes, %d edges (%.1fs)",
 		len(net.Nodes), len(net.Edges), time.Since(t0).Seconds())
+	// gap-bridge healing: where the shape was sparse, MATCH bridged and
+	// the map drew a straight chord. Redraw it along the corridor the
+	// steel actually takes (internal/stages/gapheal.go)
+	if n := stages.HealGapBridges(net); n > 0 {
+		logf("gap heal: %d bridges redrawn along the corridor", n)
+	}
 	// trunk throat weld: collapse same-trunk parallel strands (terminal
 	// interlockings hand every service its own platform track) and drop
 	// same-trunk gap chords — one spine per trunk wherever the strands
