@@ -211,6 +211,12 @@ func (c *command) printHelp(w io.Writer) {
 // binary it came from, so it must never be optimistic.
 var version = ""
 
+// releaseVersion is the bare semver a release was stamped with, or ""
+// for an unstamped build. /version reports it, and a supervising process
+// compares it against the contract its renderer speaks — so it must be
+// the number alone, with no "v", no revision and no decoration.
+func releaseVersion() string { return version }
+
 // versionString reports the release version, plus the VCS revision the
 // binary was built from when the toolchain recorded one.
 func versionString() string {
@@ -561,7 +567,7 @@ MapLibre renders the same build with fixed, pre-baked offsets.`,
 
 // ---------------------------------------------------------------- serve
 
-type serveFlags struct{ addr, styleDir string }
+type serveFlags struct{ addr, styleDir, token string }
 
 var serveCmd = &command{
 	name:    "serve",
@@ -576,22 +582,35 @@ than guessing a free one.
   GET  /chart/{id}/progress server-sent events: stage name and 0-100
   POST /chart/{id}/cancel   abandon a build in flight
   GET  /chart/{id}/build    the artifacts, ?artifact=stations|style|…
+  GET  /version             version and the formats this binary speaks
+
+--token is worth setting whenever anything else on the machine might
+reach the port. A request body names files to read (gtfs, style_dir,
+corridors), so an open port is a file-read oracle for every local
+process; loopback is not a boundary between processes on one host.
+/healthz and /version stay open so a supervisor can tell "not up yet"
+from "wrong token".
 
 Builds are serialized: portolan's build configuration is still process
 state, so two at once would read each other's colours and dials. See
 docs/CLI.md for the request body and the endpoints in full.`,
 	example: []string{
 		"portolan serve --addr 127.0.0.1:0",
+		"portolan serve --addr 127.0.0.1:0 --token $(openssl rand -hex 16)",
 		`curl -s localhost:$PORT/chart -d '{"gtfs":"nyc.zip","rail":"nyc-rail.geojson"}'`,
 	},
 	flags: func(fs *flag.FlagSet) any {
 		s := &serveFlags{}
 		fs.StringVar(&s.addr, "addr", "127.0.0.1:0", "listen address (:0 picks a free port)")
 		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory for requests that name a city")
+		fs.StringVar(&s.token, "token", "", "require `Authorization: Bearer <token>` on every request")
 		return s
 	},
 	run: func(fs *flag.FlagSet, cfg any) {
 		s := cfg.(*serveFlags)
-		die(serve.New(s.styleDir).ListenAndServe(s.addr))
+		srv := serve.New(s.styleDir)
+		srv.Version = releaseVersion()
+		srv.Token = s.token
+		die(srv.ListenAndServe(s.addr))
 	},
 }

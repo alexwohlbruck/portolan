@@ -23,6 +23,7 @@ package serve
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -106,6 +107,19 @@ func (j *job) subscribe() (<-chan event, []event, func()) {
 
 type Server struct {
 	styleDir string
+	// Version is the binary's release version, reported by /version so a
+	// supervising process can check on spawn that the binary speaks the
+	// contract its renderer expects, instead of parsing help text.
+	Version string
+	// Token, when set, is required on every request as
+	// `Authorization: Bearer <token>`.
+	//
+	// The endpoint reads file paths out of the request body — gtfs,
+	// style_dir, corridors — so an unauthenticated port is a file-read
+	// oracle for any process on the machine, including a plugin running
+	// inside the calling application. Binding to loopback is not a
+	// boundary between processes on the same host.
+	Token string
 
 	mu   sync.Mutex
 	jobs map[string]*job
@@ -150,10 +164,55 @@ func (s *Server) mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chart", s.postChart)
 	mux.HandleFunc("/chart/", s.jobRoute)
+	mux.HandleFunc("/version", s.version)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok\n"))
 	})
-	return mux
+	return s.authed(mux)
+}
+
+// authed enforces the bearer token when one is configured. /healthz and
+// /version stay open: a supervisor has to be able to tell "not up yet"
+// from "wrong token" while it is still working out how to talk to us,
+// and neither reveals anything a caller could not learn by looking at
+// the binary it just spawned.
+func (s *Server) authed(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Token == "" || r.URL.Path == "/healthz" || r.URL.Path == "/version" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		// constant time: the token is a secret and a timing oracle on a
+		// local port is still an oracle
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="portolan"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// version reports what this binary is and what it speaks, so a caller
+// can refuse to draw against a contract it does not understand rather
+// than discovering the mismatch in the geometry.
+func (s *Server) version(w http.ResponseWriter, r *http.Request) {
+	v := s.Version
+	if v == "" {
+		v = "devel"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"version": v,
+		// the PLNB header's own version field — the number that changes
+		// when the binary layout changes, which is the thing a renderer
+		// actually has to agree with
+		"plnb":    pipeline.BinaryVersion,
+		"formats": []string{"geojson", "bin"},
+		"bands":   []int{15, 14, 13, 0},
+		"auth":    s.Token != "",
+	})
 }
 
 // Request mirrors the chart verb. Geometry arrives either as a path the

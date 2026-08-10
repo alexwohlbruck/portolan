@@ -83,6 +83,11 @@ const (
 	binCoordScale = 1e7
 )
 
+// BinaryVersion is the PLNB header's version field — the number a
+// client checks to know whether it understands the byte layout. It
+// changes whenever a column moves, is added or changes width.
+const BinaryVersion = binVersion
+
 // BandUnion is the band value meaning "every band, as the GeoJSON emit
 // has always written".
 const BandUnion = -1

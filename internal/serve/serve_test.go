@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alexwohlbruck/portolan/internal/pipeline"
 )
 
 // A tiny authored network, inline — which is the case the server exists
@@ -357,4 +359,120 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- /version and --token -------------------------------------------
+
+func TestVersionReportsTheContract(t *testing.T) {
+	dir := t.TempDir()
+	s := New(filepath.Join(dir, "style"))
+	s.Version = "1.2.3"
+	srv := httptest.NewServer(s.mux())
+	defer srv.Close()
+
+	r, err := http.Get(srv.URL + "/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	var v struct {
+		Version string   `json:"version"`
+		PLNB    int      `json:"plnb"`
+		Formats []string `json:"formats"`
+		Bands   []int    `json:"bands"`
+		Auth    bool     `json:"auth"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		t.Fatal(err)
+	}
+	// the bare semver, no "v" and no revision — a caller compares it
+	// against the contract its renderer speaks
+	if v.Version != "1.2.3" {
+		t.Errorf("version %q, want the bare stamp 1.2.3", v.Version)
+	}
+	if v.PLNB != int(pipeline.BinaryVersion) {
+		t.Errorf("plnb %d, want %d — this is the number a renderer must agree with",
+			v.PLNB, pipeline.BinaryVersion)
+	}
+	if len(v.Formats) == 0 || len(v.Bands) == 0 {
+		t.Errorf("formats/bands empty: %+v", v)
+	}
+	if v.Auth {
+		t.Error("auth reported true on a server with no token")
+	}
+}
+
+func TestUnstampedBuildSaysDevel(t *testing.T) {
+	s := New(t.TempDir())
+	srv := httptest.NewServer(s.mux())
+	defer srv.Close()
+	r, _ := http.Get(srv.URL + "/version")
+	defer r.Body.Close()
+	var v struct {
+		Version string `json:"version"`
+	}
+	json.NewDecoder(r.Body).Decode(&v)
+	// never optimistic: an unstamped binary must not claim a release
+	if v.Version != "devel" {
+		t.Errorf("version %q, want devel", v.Version)
+	}
+}
+
+func TestTokenGuardsTheFileReadingEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	feed := tinyFeed(t, dir)
+	s := New(filepath.Join(dir, "style"))
+	s.Token = "sekrit"
+	srv := httptest.NewServer(s.mux())
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"gtfs": feed, "corridors_inline": inlineGraph(),
+	})
+	post := func(auth string) int {
+		req, _ := http.NewRequest("POST", srv.URL+"/chart", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		return r.StatusCode
+	}
+	// /chart names files to read, so it must be closed without the token
+	if got := post(""); got != http.StatusUnauthorized {
+		t.Errorf("no header: got %d, want 401", got)
+	}
+	if got := post("Bearer wrong"); got != http.StatusUnauthorized {
+		t.Errorf("wrong token: got %d, want 401", got)
+	}
+	if got := post("Bearer sekrit"); got != http.StatusAccepted {
+		t.Errorf("right token: got %d, want 202", got)
+	}
+
+	// a supervisor must be able to tell "not up yet" from "wrong token",
+	// so these two stay open
+	for _, p := range []string{"/healthz", "/version"} {
+		r, err := http.Get(srv.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Errorf("%s returned %d with a token set; it must stay open", p, r.StatusCode)
+		}
+	}
+	// and /version should advertise that auth is on
+	r, _ := http.Get(srv.URL + "/version")
+	var v struct {
+		Auth bool `json:"auth"`
+	}
+	json.NewDecoder(r.Body).Decode(&v)
+	r.Body.Close()
+	if !v.Auth {
+		t.Error("auth not advertised on a token-protected server")
+	}
 }
