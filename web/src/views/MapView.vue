@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
-import { Layers, Crosshair, RefreshCw, Clock } from 'lucide-vue-next'
+import { Layers, Crosshair, RefreshCw, Clock, Copy, Check } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
@@ -61,6 +61,40 @@ const labelPaint = () => {
   return { 'text-color': t.color, 'text-halo-color': t.halo, 'text-halo-width': 1.4 }
 }
 const LABEL_LAYERS = ['station-labels', 'station-labels-hi']
+
+// ── viewport readout ──────────────────────────────────────────────────
+// Where am I, and at what zoom? Every tuning conversation about label and
+// dot density needs both, and reading them out of the URL bar is not a
+// thing here — the map owns its own camera. Click to copy "lat,lon,zoom"
+// so a problem area can be pasted straight back.
+const view = ref({ lon: 0, lat: 0, zoom: 0, bearing: 0, pitch: 0 })
+const viewCopied = ref(false)
+const viewText = computed(
+  () => `${view.value.lat.toFixed(5)},${view.value.lon.toFixed(5)},${view.value.zoom.toFixed(2)}`,
+)
+async function copyView() {
+  try {
+    await navigator.clipboard.writeText(viewText.value)
+  } catch {
+    // clipboard is permission-gated; a selectable fallback beats failing
+    const ta = document.createElement('textarea')
+    ta.value = viewText.value
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    ta.remove()
+  }
+  viewCopied.value = true
+  setTimeout(() => (viewCopied.value = false), 1200)
+}
+function syncView() {
+  if (!map) return
+  const c = map.getCenter()
+  view.value = {
+    lon: c.lng, lat: c.lat, zoom: map.getZoom(),
+    bearing: map.getBearing(), pitch: map.getPitch(),
+  }
+}
 
 // The marker images (dots, pills, bullets) are NOT re-themed: every one
 // of them sits on top of a route's own colour, so they read the same
@@ -252,6 +286,9 @@ function modeExprs(st: StyleSet | null) {
 }
 
 const ribbonIds: string[] = []
+// which ribbon layers belong to which band — needed to stretch a loaded
+// band over a zoom whose own band has not arrived yet (see holdBands).
+const bandLayers = new Map<number, string[]>()
 
 // which bands have their data in already. A band is fetched the first time
 // the viewport enters it and then kept — flipping back and forth across a
@@ -265,10 +302,8 @@ const transferred = ref<{ geometries_sent: number; geometries_reused: number; by
 const bandForZoom = (z: number) =>
   (BANDS.find((b) => z >= b.min && z < b.max) ?? BANDS[BANDS.length - 1]).key
 
-async function ensureBand() {
-  if (!map || !feed.value) return
-  const key = bandForZoom(map.getZoom())
-  if (loadedBands.has(key)) return
+async function loadBand(key: number) {
+  if (!map || !feed.value || loadedBands.has(key)) return
   loadedBands.add(key)
   try {
     const { data, stats } = await fetchBuild(feed.value, key)
@@ -276,8 +311,61 @@ async function ensureBand() {
     refreshModes()
     applyBand(key)
     transferred.value = stats
+    holdBands()
   } catch {
     loadedBands.delete(key) // let a later zoom retry
+  }
+}
+
+async function ensureBand() {
+  if (!map) return
+  const key = bandForZoom(map.getZoom())
+  holdBands()
+  await loadBand(key)
+  // Prefetch the neighbours. Crossing a band boundary used to blank the
+  // map until the next band's GeoJSON arrived — the ribbons vanished for
+  // a beat on every step of a zoom, which across several boundaries
+  // reads as the map flashing. Fetching ahead means the data is almost
+  // always already there.
+  const i = BANDS.findIndex((b) => b.key === key)
+  for (const n of [BANDS[i - 1], BANDS[i + 1]]) {
+    if (n) loadBand(n.key)
+  }
+}
+
+/** Keep SOMETHING drawn at every zoom. A band whose data has not arrived
+ *  yet would otherwise leave its zoom range empty, so the nearest loaded
+ *  band is stretched to cover it and snaps back the moment the real one
+ *  lands. Only one band ever covers a given zoom, so nothing double-draws. */
+let heldAs = ''
+function holdBands() {
+  if (!map) return
+  const z = map.getZoom()
+  const want = bandForZoom(z)
+  const have = bandRaw.has(want)
+  // setLayerZoomRange re-lays out the layer, so only touch it when the
+  // decision actually changes — this runs on every frame of a zoom.
+  const sig = `${want}|${have}|${have ? '' : Math.round(z)}|${[...bandRaw.keys()].sort().join(',')}`
+  if (sig === heldAs) return
+  heldAs = sig
+  for (const b of BANDS) {
+    const ids = bandLayers.get(b.key)
+    if (!ids) continue
+    let lo = b.min === 0 ? 0 : b.min
+    let hi = b.max === 24 ? 24 : b.max
+    if (!have && bandRaw.has(b.key)) {
+      // nearest loaded band by key distance takes the orphaned zoom
+      const nearest = BANDS.filter((x) => bandRaw.has(x.key)).sort(
+        (x, y) => Math.abs(x.key - want) - Math.abs(y.key - want),
+      )[0]
+      if (nearest && nearest.key === b.key) {
+        lo = Math.min(lo, Math.floor(z))
+        hi = Math.max(hi, Math.ceil(z) + 1)
+      }
+    }
+    for (const id of ids) {
+      if (map.getLayer(id)) map.setLayerZoomRange(id, lo, hi)
+    }
   }
 }
 
@@ -293,12 +381,49 @@ function applyBand(key: number) {
     timePred || off.size
       ? (f: any) => !off.has(f.properties.mode) && (!timePred || timePred(f))
       : null
-  map.getSource(`build-${key}`)?.setData(pred ? applyDynamic(raw, pred) : raw)
+  const out = pred ? applyDynamic(raw, pred) : raw
+  map.getSource(`build-${key}`)?.setData(out)
+  // Record which routes actually SURVIVED into the drawn output. A
+  // station's own activity mask is not enough to decide whether to draw
+  // its dot: the two masks are computed from different evidence (stop
+  // membership vs the drawn segment) and they disagree — at Tue 02:00
+  // the NYC feed leaves 44 L stations "active" while the L has no live
+  // segment anywhere, which drew a string of dots along an invisible
+  // line. What the rider sees has to agree with itself, so a station is
+  // only drawn when one of its lines is.
+  if (pred) {
+    const live = new Set<string>()
+    for (const f of out.features as any[]) {
+      for (const r of String(f.properties.routes ?? '').split(',')) {
+        if (r) live.add(r)
+      }
+    }
+    liveRoutes.set(key, live)
+  } else {
+    liveRoutes.delete(key)
+  }
   if (key === 15) {
     // markers re-derive their icons against this band's bundles
     markerBundles = null
-    applyStations()
   }
+  applyStations()
+}
+
+// routes with at least one drawn segment, per band; empty when no filter
+// is active (everything is drawn, so nothing needs suppressing).
+const liveRoutes = new Map<number, Set<string>>()
+
+/** The live-route set for the band on screen. Falls back to the union of
+ *  every loaded band: while a band is still fetching, suppressing on a
+ *  set that does not know about it yet would blink stations out. */
+function liveNow(): Set<string> | null {
+  if (!map || !liveRoutes.size) return null
+  const key = bandForZoom(map.getZoom())
+  const own = liveRoutes.get(key)
+  if (own) return own
+  const all = new Set<string>()
+  for (const s of liveRoutes.values()) for (const r of s) all.add(r)
+  return all.size ? all : null
 }
 
 function applyBands() {
@@ -592,10 +717,16 @@ function applyStations() {
   const date = d && !Number.isNaN(d.getTime()) ? d : null
   const off = classesOff.value
   if ((date || off.size) && !markerBundles) buildMarkerBundles()
+  const live = liveNow()
+  const drawn = (p: any) => {
+    if (!live) return true
+    const rs = String(p.routes ?? '').split(',').filter(Boolean)
+    return rs.length === 0 || rs.some((r) => live.has(r))
+  }
   const feats =
     date || off.size
       ? raw.features
-          .filter((f: any) => stationVisible(f.properties, masks.value, date, off))
+          .filter((f: any) => stationVisible(f.properties, masks.value, date, off) && drawn(f.properties))
           .map((f: any) => timeFilteredBullets(f, date, off))
       : raw.features
   src.setData({ type: 'FeatureCollection', features: feats })
@@ -665,6 +796,7 @@ function addLayers() {
         paint: { 'line-color': COLOR, 'line-width': widthExpr(w), 'line-opacity': o, 'line-offset': off },
       })
       ribbonIds.push(id)
+      ;(bandLayers.get(b.key) ?? bandLayers.set(b.key, []).get(b.key)!).push(id)
       map.on('click', id, (e: any) => {
         inspect.value = e.features?.[0]?.properties ?? null
       })
@@ -679,18 +811,30 @@ function addLayers() {
   // each branch), and the LABEL economy is MapLibre's: symbol collision
   // never overlaps, symbol-sort-key places hubs first so locals are what
   // drop, variable anchors let a label take whichever side has room.
-  const gate = (cond: any, base: number[]) =>
-    ['step', ['zoom'],
-      ['all', cond, ['>=', ['get', 'rank'], base[0]]],
-      11, ['all', cond, ['>=', ['get', 'rank'], base[1]]],
-      12, ['all', cond, ['>=', ['get', 'rank'], base[2]]],
-      13, ['all', cond, ['>=', ['get', 'rank'], base[3]]],
-      14, cond] as any
+  // Importance is the PERCENTILE the pipeline computes per city (routes +
+  // distinct lines + transfers.txt degree), not a raw route count. Route
+  // count cannot gate a small system: every Charlotte station has one
+  // route, so a threshold of 2 showed exactly one label at z13 and a
+  // threshold of 6 showed none at z11. A percentile asks the question the
+  // gate actually means — "the top n% of THIS city".
+  //
+  // The thresholds are deliberately generous: MapLibre's collision is
+  // what decides whether a label FITS, and symbol-sort-key places the
+  // important ones first, so anything that survives collision was worth
+  // drawing. The gate exists to bound the work, not to ration labels.
+  const imp = ['coalesce', ['get', 'imp'], 0]
   const isMarker = ['==', ['get', 'ftype'], 'marker']
   const isStation = ['==', ['get', 'ftype'], 'station']
   map.addLayer({
-    id: 'station-markers', type: 'symbol', source: 'stations', minzoom: 10,
-    filter: gate(isMarker, [10, 6, 4, 2]),
+    // EVERY dot appears at once, at z10. Ranking them in was a mistake:
+    // a half-drawn set of stops does not read as "the important ones", it
+    // reads as missing data — you cannot tell a skipped stop from a gap
+    // in the feed. Labels are the scarce resource and get the ranking;
+    // dots are a few pixels with no collision box, so they are all-or-
+    // nothing. They still shrink at the outer end so they never swamp
+    // the ribbons.
+    id: 'station-markers', type: 'symbol', source: 'stations', minzoom: 11,
+    filter: isMarker as any,
     layout: {
       // the icon id is precomputed per feature (dot-<hex>-<off> or
       // pill-<span>) and DRAWN on demand by styleimagemissing. A dot's
@@ -698,7 +842,7 @@ function addLayers() {
       // the correct side of the corridor; icon-size then scales image
       // AND offset together, exactly matching zoomScaledOffset.
       'icon-image': ['get', 'icon'],
-      'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 14, 1],
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.38, 12, 0.5, 14, 1],
       'icon-rotate': ['get', 'bearing'],
       'icon-rotation-alignment': 'map',
       'icon-allow-overlap': true,
@@ -712,11 +856,17 @@ function addLayers() {
   // pixel-space group never stretches with zoom. Band 14 bullets show
   // z14-15, band 15 bullets take over above (offsets match zoomScaledOffset
   // only at z14+ where the slot pitch is fixed, so no cats below 14).
+  // Each cat rides the band that DRAWS at its zoom, so the bullet's
+  // lateral offset always matches the ribbon under it.
+  const isCat = ['==', ['get', 'ftype'], 'cat']
+  const catBand = (b: number) => ['all', isCat, ['==', ['get', 'band'], b]]
   map.addLayer({
-    id: 'cats', type: 'symbol', source: 'stations', minzoom: 14,
+    id: 'cats', type: 'symbol', source: 'stations', minzoom: 12,
     filter: ['step', ['zoom'],
-      ['all', ['==', ['get', 'ftype'], 'cat'], ['==', ['get', 'band'], 14]],
-      15, ['all', ['==', ['get', 'ftype'], 'cat'], ['==', ['get', 'band'], 15]]] as any,
+      catBand(0),
+      13, catBand(13),
+      14, catBand(14),
+      15, catBand(15)] as any,
     layout: {
       'icon-image': ['concat', 'blt-', ['get', 'hex'], '-', ['get', 'label']],
       // real collision, junior to everything: placement runs top layer
@@ -727,7 +877,13 @@ function addLayers() {
       // test happens where the bullet actually draws.)
       'icon-allow-overlap': false,
       'icon-ignore-placement': true,
-      'symbol-anchor-offset': ['get', 'vec'],
+      // The bundle NARROWS as you zoom out (zoomScaledOffset halves the
+      // slot pitch by z11), so a fixed pixel vector would walk the bullet
+      // off its ribbon. veclo carries the same along-track stagger with
+      // the lateral half scaled to 0.5, and interpolating between them
+      // reproduces the ribbons' own curve exactly.
+      'symbol-anchor-offset': ['interpolate', ['linear'], ['zoom'],
+        11, ['get', 'veclo'], 14, ['get', 'vec']],
       'symbol-anchor-offset-alignment': 'map',
     } as any,
   })
@@ -744,25 +900,45 @@ function addLayers() {
     ['case', ['>=', rk, 8], ['literal', [0, c]], ['>=', rk, 4], ['literal', [0, b]], ['literal', [0, a]]]
   const bulletOffset = ['match', ['get', 'nrows'],
     2, off(36, 39, 43), 3, off(50, 54, 60), off(21, 23, 26)] as any
+  // Labels reach much further out too. They DO carry collision boxes, so
+  // a loose gate cannot overdraw — MapLibre drops what will not fit and
+  // symbol-sort-key means the ones it keeps are the important ones. The
+  // gate's job is to bound work, and the previous thresholds were doing
+  // the renderer's rationing for it.
+  // Density is COLLISION's job, not the filter's. Every station is a
+  // candidate at every zoom; what changes with zoom is how much clear
+  // space each label demands (`text-padding` below). That is the right
+  // mechanism for three reasons: the thinning is SPATIAL, so labels
+  // spread evenly instead of clustering wherever the high-ranked
+  // stations happen to be; a stop on an empty stretch is never deleted
+  // just for scoring low; and there is one dial to turn instead of a
+  // ladder of per-zoom rank cut-offs that has to be retuned for every
+  // city. Importance survives as `symbol-sort-key`, which is exactly
+  // where it belongs — it decides who WINS a contested spot.
+  //
+  // From z15 the merged complex label yields to the per-corridor labels
+  // below, so only the solo-station test remains.
+  const solo = ['<', ['coalesce', ['get', 'nmarkers'], 1], 2]
   const labelGate = ['step', ['zoom'],
-    ['all', isStation, ['>=', rk, 10]],
-    11, ['all', isStation, ['>=', rk, 6]],
-    12, ['all', isStation, ['>=', rk, 4]],
-    13, ['all', isStation, ['>=', rk, 2]],
-    14, isStation,
-    15, ['all', isStation, ['<', ['coalesce', ['get', 'nmarkers'], 1], 2]]] as any
+    isStation,
+    15, ['all', isStation, solo]] as any
+  // Clear space demanded around each label, in px. Big when zoomed out
+  // (few labels survive), shrinking to normal as there is room for them.
+  const labelPadding = ['interpolate', ['linear'], ['zoom'],
+    11, 34, 12, 22, 13, 13, 14, 6, 16, 2] as any
   map.addLayer({
     id: 'station-labels', type: 'symbol', source: 'stations', minzoom: 11,
     filter: labelGate,
     layout: {
       'text-field': ['get', 'name'],
       'text-font': ['Montserrat Medium'],
-      'symbol-sort-key': ['*', -1, ['get', 'rank']],
+      'symbol-sort-key': ['*', -1, imp],
       // fixed top anchor: name under the marker, the bullet strip under
       // the name. (Variable anchors are off for now — the icon does not
       // follow the text's variable anchor, so the strip would detach.)
       'text-anchor': 'top',
       'text-offset': [0, 0.5],
+      'text-padding': labelPadding,
       // rank bump INSIDE the zoom stops: ["zoom"] is only legal as input
       // to a top-level interpolate/step, so the composite goes this way
       // around (same shape as zoomScaledOffset)
@@ -786,9 +962,10 @@ function addLayers() {
     layout: {
       'text-field': ['get', 'name'],
       'text-font': ['Montserrat Medium'],
-      'symbol-sort-key': ['*', -1, ['get', 'rank']],
+      'symbol-sort-key': ['*', -1, imp],
       'text-anchor': 'top',
       'text-offset': [0, 0.5],
+      'text-padding': labelPadding,
       'text-size': ['interpolate', ['linear'], ['zoom'],
         11, ['+', 10, rankBump], 16, ['+', 13, rankBump]],
       'icon-image': ['coalesce', ['get', 'brow'], ''],
@@ -954,6 +1131,14 @@ onMounted(async () => {
     applyStations() // the fetch may have finished before WebGL did
     // crossing a band boundary pulls that band in the first time
     map.on('zoomend', ensureBand)
+    // during the gesture, not just at the end: the boundary is crossed
+    // mid-zoom, which is exactly when the gap would show
+    map.on('zoom', () => {
+      holdBands()
+      ensureBand()
+    })
+    map.on('move', syncView)
+    syncView()
     await reload()
   })
   // the scenario list does not wait on the map: it is a plain API call,
@@ -1055,6 +1240,24 @@ watch(feed, async () => {
         <Switch :model-value="debug[k]" @update:model-value="(v) => (debug[k] = v)" />
       </label>
     </div>
+
+    <button
+      class="pointer-events-auto absolute z-10 flex items-center gap-2 rounded-lg border border-border bg-card/90 px-2.5 py-1.5 font-mono text-xs shadow-sm backdrop-blur transition-colors hover:bg-accent"
+      :class="inspect ? 'bottom-4 right-[19.5rem]' : 'bottom-4 right-4'"
+      :title="`Copy ${viewText} to the clipboard`"
+      @click="copyView"
+    >
+      <span class="tabular-nums text-muted-foreground">z</span>
+      <span class="tabular-nums font-medium">{{ view.zoom.toFixed(2) }}</span>
+      <span class="h-3.5 w-px bg-border" />
+      <span class="tabular-nums">{{ view.lat.toFixed(5) }}, {{ view.lon.toFixed(5) }}</span>
+      <template v-if="view.bearing || view.pitch">
+        <span class="h-3.5 w-px bg-border" />
+        <span class="tabular-nums text-muted-foreground">{{ view.bearing.toFixed(0) }}° / {{ view.pitch.toFixed(0) }}°</span>
+      </template>
+      <Check v-if="viewCopied" class="size-3.5 text-[var(--success)]" />
+      <Copy v-else class="size-3.5 text-muted-foreground" />
+    </button>
 
     <div
       v-if="inspect"
