@@ -262,7 +262,17 @@ func (s *Server) postChart(w http.ResponseWriter, r *http.Request) {
 	s.jobs[j.id] = j
 	s.mu.Unlock()
 
-	opts.Progress = func(stage string, pct int) { j.publish(event{Stage: stage, Pct: pct}) }
+	opts.Progress = func(stage string, pct int) {
+		// The pipeline's own final step is also called "done", and this
+		// job emits a terminal frame of that name below — one carrying
+		// the error, which a progress tick cannot. Forwarding both put
+		// two indistinguishable "done" stages on the stream. The
+		// terminal frame is the one that means it.
+		if stage == "done" {
+			return
+		}
+		j.publish(event{Stage: stage, Pct: pct})
+	}
 	logf := func(f string, a ...any) { j.publish(event{Log: fmt.Sprintf(f, a...)}) }
 
 	go func() {

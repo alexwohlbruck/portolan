@@ -198,15 +198,14 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			stPts = append(stPts, frame.ToXY(m.LL))
 		}
 	}
-	clearOfStations := func(p geo.Pt) bool {
-		for _, q := range stPts {
-			dx, dy := p.X-q.X, p.Y-q.Y
-			if dx*dx+dy*dy < catStationClearM*catStationClearM {
-				return false
-			}
-		}
-		return true
-	}
+	// Markers are asked about twice per bundle — "is this anchor clear of
+	// a stop" for every candidate arc, and "where does every marker fall
+	// on this corridor" once — and both used to scan EVERY marker in the
+	// city. That is O(bundles × markers), which is invisible on a small
+	// network and 4.9 s on a 774-station one. Indexed, both become local
+	// queries.
+	mg := newMarkerGrid(stPts)
+	clearOfStations := func(p geo.Pt) bool { return !mg.any(p, catStationClearM) }
 
 	// sibling ribbons share EXACT geometry (terminal cuts synchronize
 	// them) — group by direction-independent signature per band
@@ -434,11 +433,20 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		// Riding mid-gap keeps chains as far from stop labels as the
 		// corridor allows.
 		bounds := []float64{0, refLen}
-		for _, q := range stPts {
-			if arc, d, ok := ref.ProjectArcCapped(q, 40); ok && d <= 40 {
+		// only markers inside this corridor's own bounding box can be
+		// within 40 m of it, so the projection — the expensive part —
+		// runs on those alone. bounds is sorted below, so which order
+		// they arrive in cannot change the result.
+		// ProjectArc, not ProjectArcCapped: the capped form consults a
+		// lazily-built segment index, and building that index for the
+		// handful of markers the box filter leaves was costing more than
+		// the scan it saves. Both pick the globally nearest segment, so
+		// the arcs are the same.
+		mg.inBoxOf(ref.Pts, 40, func(q geo.Pt) {
+			if arc, d := ref.ProjectArc(q); d <= 40 {
 				bounds = append(bounds, arc)
 			}
-		}
+		})
 		sort.Float64s(bounds)
 
 		straightAt := func(arc float64) bool {
@@ -667,3 +675,76 @@ type catProposal struct {
 }
 
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
+
+// markerGrid is a uniform bucket grid over the station markers. Both
+// caterpillar queries are "which markers are near this bit of corridor",
+// and answering that by scanning every marker in the city is what made
+// chain placement the slowest stage of a build on a large network.
+//
+// The cell is the LARGER of the two reaches it serves, so a query never
+// has to look past its immediate neighbours.
+type markerGrid struct {
+	cell  float64
+	cells map[[2]int][]geo.Pt
+}
+
+func newMarkerGrid(pts []geo.Pt) *markerGrid {
+	g := &markerGrid{cell: catStationClearM, cells: map[[2]int][]geo.Pt{}}
+	for _, p := range pts {
+		k := g.key(p)
+		g.cells[k] = append(g.cells[k], p)
+	}
+	return g
+}
+
+func (g *markerGrid) key(p geo.Pt) [2]int {
+	return [2]int{int(math.Floor(p.X / g.cell)), int(math.Floor(p.Y / g.cell))}
+}
+
+// any reports whether a marker sits within reach of p. reach must not
+// exceed the cell size, which is why the cell is catStationClearM.
+func (g *markerGrid) any(p geo.Pt, reach float64) bool {
+	k := g.key(p)
+	r2 := reach * reach
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			for _, q := range g.cells[[2]int{k[0] + dx, k[1] + dy}] {
+				ex, ey := p.X-q.X, p.Y-q.Y
+				if ex*ex+ey*ey < r2 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// inBoxOf visits every marker inside the bounding box of pts, grown by
+// pad. A marker within pad of the polyline is necessarily inside that
+// box, so this is a safe prefilter for an exact projection — it narrows
+// the candidates without deciding anything.
+func (g *markerGrid) inBoxOf(pts []geo.Pt, pad float64, fn func(geo.Pt)) {
+	if len(pts) == 0 {
+		return
+	}
+	x0, y0 := pts[0].X, pts[0].Y
+	x1, y1 := x0, y0
+	for _, p := range pts[1:] {
+		x0, x1 = math.Min(x0, p.X), math.Max(x1, p.X)
+		y0, y1 = math.Min(y0, p.Y), math.Max(y1, p.Y)
+	}
+	x0, y0, x1, y1 = x0-pad, y0-pad, x1+pad, y1+pad
+	cx0 := int(math.Floor(x0 / g.cell))
+	cy0 := int(math.Floor(y0 / g.cell))
+	cx1 := int(math.Floor(x1 / g.cell))
+	cy1 := int(math.Floor(y1 / g.cell))
+	for cx := cx0; cx <= cx1; cx++ {
+		for cy := cy0; cy <= cy1; cy++ {
+			for _, q := range g.cells[[2]int{cx, cy}] {
+				if q.X >= x0 && q.X <= x1 && q.Y >= y0 && q.Y <= y1 {
+					fn(q)
+				}
+			}
+		}
+	}
+}

@@ -557,3 +557,55 @@ func TestInlineFeedWithoutRoutesIsRejectedBeforeAnyWork(t *testing.T) {
 		t.Errorf("the error should name what is missing, got: %s", strings.TrimSpace(msg))
 	}
 }
+
+// The stream must end with exactly one terminal frame. The pipeline's
+// own last step is also called "done", and forwarding both put two
+// stages of that name on the wire — indistinguishable to a client
+// deciding which one means the build is over.
+func TestExactlyOneTerminalFrame(t *testing.T) {
+	srv, feed := newTestServer(t)
+	id, code := postChart(t, srv, map[string]any{
+		"gtfs": feed, "corridors_inline": inlineGraph(),
+	})
+	if code != http.StatusAccepted {
+		t.Fatalf("POST /chart: %d %s", code, id)
+	}
+	waitDone(t, srv, id)
+
+	resp, err := http.Get(srv.URL + "/chart/" + id + "/progress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var stages []string
+	terminal := 0
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var e event
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &e); err != nil {
+			t.Fatal(err)
+		}
+		if e.Stage != "" {
+			stages = append(stages, e.Stage)
+		}
+		if e.Done {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Errorf("%d terminal frames, want exactly 1", terminal)
+	}
+	n := 0
+	for _, s := range stages {
+		if s == "done" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf(`%d stages named "done", want exactly 1; saw %v`, n, stages)
+	}
+}
