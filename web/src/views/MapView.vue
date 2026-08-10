@@ -531,7 +531,7 @@ const DOT_D = 7 // dot diameter; also the pill height and its corner radius ×2
 //   circle    NYC, WMATA, Boston, Moscow, Seoul, Tokyo Metro — the default
 //   square    the German-speaking U-Bahnen: Berlin, Vienna, Munich, Hamburg
 //   rounded   Barcelona TMB, Singapore MRT, Shanghai, Delhi
-//   notch     one corner squared off — Mexico City's house style
+//   notch     square with the top-right corner rounded — Mexico City
 //   diamond   NYC EXPRESS variants (6◇, 7◇), Madrid's rhombus
 //   hexagon   several Japanese private railways, Lyon
 //   octagon   a few Chinese systems
@@ -561,8 +561,10 @@ function shapePath(ctx: CanvasRenderingContext2D, shape: string, w: number, h: n
       ctx.roundRect(0, 0, w, h, Math.min(4, h / 3))
       return
     case 'notch':
-      // three square corners and one rounded, the Mexico City look
-      ctx.roundRect(0, 0, w, h, [0, 0, Math.min(6, h / 2), 0])
+      // three square corners and the TOP-RIGHT rounded — Mexico City's
+      // house style. Radii run [top-left, top-right, bottom-right,
+      // bottom-left].
+      ctx.roundRect(0, 0, w, h, [0, Math.min(6, h / 2), 0, 0])
       return
     case 'diamond':
       poly([[cx, 0], [w, cy], [cx, h], [0, cy]])
