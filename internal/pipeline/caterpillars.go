@@ -8,7 +8,9 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 	"github.com/alexwohlbruck/portolan/internal/stages"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // Caterpillars: inline route bullets riding the drawn ribbons (Apple's
@@ -31,23 +33,127 @@ type CatBullet struct {
 	Route string
 	Label string
 	Hex   string
-	Acts  string  // hex Mask168 for this route on this segment ("" unknown)
-	Mode  string  // class name, for class toggles
-	Vec   [2]float64 // map-aligned px: +x east, +y south
-	Band  int     // BandMin of the bundle (client zoom gate)
-	Group int     // chain id — bullets of one anchor share it
+	Acts  string     // hex Mask168 for this route on this segment ("" unknown)
+	Mode  string     // class name, for class toggles
+	Vec   [2]float64 // map-aligned px at z14+: +x east, +y south
+	// VecLo is the same vector with the LATERAL half scaled to 0.5, which
+	// is where zoomScaledOffset puts the ribbons at z11. The viewer
+	// interpolates vec between the two across z11–z14 so a bullet tracks
+	// its ribbon as the bundle narrows; the along-track stagger is
+	// identical in both, because bullet spacing is bullet-sized and must
+	// not shrink.
+	VecLo [2]float64
+	Band  int // BandMin of the bundle (client zoom gate)
+	Group int // chain id — bullets of one anchor share it
+	// Text marks a WORD label rather than a bullet: rendered as text
+	// running along the ribbon, the way a road map labels a highway,
+	// because "Orange Line" in a circle is not a bullet, it is a blob.
+	Text bool
+	// Ang is the label's screen rotation in degrees for Text mode, kept
+	// upright (never upside down).
+	Ang float64
+	// Shape is the bullet outline (circle unless curated otherwise).
+	Shape string
+}
+
+// bulletLike decides how a route's label is drawn. Systems split cleanly
+// into two families and the split is legible in the labels themselves:
+// the MTA, WMATA and CDMX put ONE OR TWO characters in a 1:1 bullet,
+// while the CTA, Amtrak and most commuter operators use words that only
+// read as text along the line.
+//
+// Length decides, with the system breaking ties. One or two characters is
+// always a bullet — that is what "1:1 aspect" means. Four or more is
+// always a word. THREE is genuinely ambiguous ("SIR", "L12", "L9N", "Red")
+// and is settled by the median label length of the routes around it: in
+// CDMX, where the median is 1, "L12" is a bullet; in Chicago, where the
+// median is 5, "Red" is a word. No city-specific code, and it answers the
+// mixed systems correctly too — Boston's Green Line branches stay bullets
+// (B, C, D, E) while "Red Line" beside them becomes text.
+func bulletLike(label string, median int) bool {
+	n := len([]rune(label))
+	switch {
+	case n <= 2:
+		return true
+	case n >= 4:
+		return false
+	default:
+		return median <= 2
+	}
+}
+
+// medianLabelLen is the middle display-label length of the routes that
+// can carry a caterpillar — the system's own answer to "are we a bullet
+// system?".
+func medianLabelLen(segs []stages.Segment, routes map[string]gtfs.Route) int {
+	seen := map[string]bool{}
+	var lens []int
+	for i := range segs {
+		s := &segs[i]
+		switch s.Mode {
+		case "bus", "regional", "ferry":
+			continue
+		}
+		for _, rid := range s.Routes {
+			rt, ok := routes[rid]
+			if !ok || seen[rid] {
+				continue
+			}
+			seen[rid] = true
+			if l := displayLabel(rt); l != "" {
+				lens = append(lens, len([]rune(l)))
+			}
+		}
+	}
+	if len(lens) == 0 {
+		return 1
+	}
+	sort.Ints(lens)
+	return lens[len(lens)/2]
 }
 
 const (
-	catPitchAlongPx = 17.0 // bullet diameter 14 + 3 gap
-	catStraightDeg  = 7.0  // max heading change across the chain window
-	catEndClearM    = 180.0
+	catPitchAlongPx  = 17.0 // circular bullet: diameter 14 + 3 gap
+	catBulletH       = 14.0
+	catBulletGapPx   = 3.0
+	catStraightDeg   = 7.0 // max heading change across the chain window
+	catEndClearM     = 180.0
 	catStationClearM = 160.0
 )
+
+// bulletWidthPx mirrors the viewer's bulletCanvas: a circle for 1–2
+// character labels, a rounded word pill otherwise. The chain staggers by
+// the WIDEST bullet in its roster, because a fixed 17 px pitch sized for
+// circles overlaps word pills badly — Chicago's "Purple" beside "Red" is
+// two 40 px pills 17 px apart. Systems whose labels are all one or two
+// characters get exactly the old pitch, so nothing moves in NYC.
+func bulletWidthPx(label string) float64 {
+	n := len([]rune(label))
+	if n <= 2 {
+		return catBulletH
+	}
+	// 9.5px semibold system-ui averages ~5.6px of advance per character;
+	// the viewer adds 9px of horizontal padding to the measured text.
+	return 5.6*float64(n) + 9
+}
+
+// catPitchFor is the along-track stagger for one roster: wide enough that
+// the widest bullet clears its neighbour.
+func catPitchFor(labels []string) float64 {
+	p := catPitchAlongPx
+	for _, l := range labels {
+		if w := bulletWidthPx(l) + catBulletGapPx; w > p {
+			p = w
+		}
+	}
+	return p
+}
 
 // BuildCaterpillars picks anchors and emits bullet points. segs are the
 // final drawn segments (post terminal cuts); sts the snapped stations.
 func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]gtfs.Route, frame geo.Frame) []CatBullet {
+	median := medianLabelLen(segs, routes)
+	sty := style.Active()
 	// station markers in frame coords — chains keep clear of them
 	var stPts []geo.Pt
 	for i := range sts {
@@ -99,7 +205,9 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		if s.Kind != "steady" || s.Line == nil || len(s.Line.Pts) < 2 {
 			continue
 		}
-		if s.BandMin != 14 && s.BandMin != 15 {
+		switch s.BandMin {
+		case 0, 13, 14, 15:
+		default:
 			continue
 		}
 		switch s.Mode {
@@ -132,8 +240,9 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		// roster: one bullet per route, lateral = its ribbon's offset in
 		// the REFERENCE line's travel frame (reversed siblings flip sign)
 		type bullet struct {
-			route, label, hex, acts, mode string
-			lat                           float64
+			route, label, hex, acts, mode, shape string
+			lat                                  float64
+			text                                 bool
 		}
 		var roster []bullet
 		labelSet := map[string]bool{}
@@ -150,8 +259,22 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 					continue
 				}
 				label := displayLabel(rt)
-				if label == "" || len(label) > 8 {
+				if label == "" {
 					continue
+				}
+				asText := !bulletLike(label, median)
+				// a bullet has to fit its glyph; a word label has no such
+				// limit because it is set as running text
+				if !asText && len([]rune(label)) > 8 {
+					continue
+				}
+				if asText && len([]rune(label)) > 24 {
+					continue
+				}
+				shp := ""
+				if sh, ok := sty.RouteShape([]string{rt.ID, rt.ShortName, rt.LongName},
+					[]string{rt.Agency, mode.AgencyName(rt.Agency)}); ok {
+					shp = sh
 				}
 				acts := ""
 				if ri < len(s.Acts) {
@@ -164,16 +287,25 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				if m, ok := gtfs.ParseMask168(acts); ok && m.Empty() {
 					continue
 				}
-				roster = append(roster, bullet{route: rid, label: label, hex: routeHex(rt), acts: acts, mode: s.Mode, lat: lat})
+				roster = append(roster, bullet{route: rid, label: label, hex: routeHex(rt),
+					acts: acts, mode: s.Mode, lat: lat, text: asText, shape: shp})
 				labelSet[label] = true
 			}
 		}
-		// fold express variants the set already shows (FX beside F)
+		// fold express variants the set already shows (FX beside F), and
+		// fold repeats of one line: a feed that files a route per service
+		// variant (Wiener Linien tram 11 is a dozen route_ids) would
+		// otherwise stack a dozen identical bullets in one chain.
 		kept := roster[:0]
+		shown := map[string]bool{}
 		for _, b := range roster {
 			if strings.HasSuffix(b.label, "X") && labelSet[strings.TrimSuffix(b.label, "X")] {
 				continue
 			}
+			if shown[b.label+"|"+b.hex] {
+				continue
+			}
+			shown[b.label+"|"+b.hex] = true
 			kept = append(kept, b)
 		}
 		roster = kept
@@ -184,12 +316,29 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 
 		// chain window in meters at this band's native zoom — the whole
 		// chain must fit inside the straightness window
-		mPerPx := 156543.03 * math.Cos(frame.ToLL(ref.Pts[0]).Lat*math.Pi/180) / math.Pow(2, float64(k.band)+8)
-		chainM := float64(len(roster)) * catPitchAlongPx * mPerPx
+		// band 0 draws below z13; size its geometry at z12, the lowest
+		// zoom the chains are shown at
+		bandZoom := float64(k.band)
+		if k.band == 0 {
+			bandZoom = 12
+		}
+		mPerPx := 156543.03 * math.Cos(frame.ToLL(ref.Pts[0]).Lat*math.Pi/180) / math.Pow(2, bandZoom+8)
+		labs := make([]string, len(roster))
+		for i, b := range roster {
+			labs[i] = b.label
+		}
+		chainM := float64(len(roster)) * catPitchFor(labs) * mPerPx
 		win := math.Max(70, chainM*0.7+30)
+		// a chain must not wallpaper the line: the further out the band
+		// draws, the more ground each chain has to cover
 		spacing := 700.0
-		if k.band == 14 {
+		switch k.band {
+		case 14:
 			spacing = 1400.0
+		case 13:
+			spacing = 3000.0
+		case 0:
+			spacing = 6500.0
 		}
 
 		// anchors CENTER between the stops they sit between: boundaries
@@ -250,7 +399,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				roster: append([]catEntry(nil), func() []catEntry {
 					es := make([]catEntry, len(roster))
 					for i, b := range roster {
-						es[i] = catEntry{route: b.route, label: b.label, hex: b.hex, acts: b.acts, mode: b.mode, lat: b.lat}
+						es[i] = catEntry{route: b.route, label: b.label, hex: b.hex, acts: b.acts,
+							mode: b.mode, lat: b.lat, text: b.text, shape: b.shape}
 					}
 					return es
 				}()...),
@@ -313,8 +463,38 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 
 		rt := geo.Pt{X: -host.tm.Y, Y: host.tm.X}
 		ll := frame.ToLL(host.pt)
-		for bi, b := range host.roster {
-			along := (float64(bi) - float64(len(host.roster)-1)/2) * catPitchAlongPx
+		// pitch follows the MERGED roster — the widest bullet sets it
+		hl := make([]string, len(host.roster))
+		for i, b := range host.roster {
+			hl[i] = b.label
+		}
+		pitch := catPitchFor(hl)
+		// Text labels run ALONG the ribbon, so they need no along-track
+		// stagger — each sits at its own lateral offset and reads like a
+		// road name. Only the bullets form a chain.
+		nb := 0
+		for _, b := range host.roster {
+			if !b.text {
+				nb++
+			}
+		}
+		// screen rotation of the tangent, kept upright: text that reads
+		// bottom-up is worse than text that reads against the travel
+		// direction, and a rider only needs to know WHICH line this is
+		ang := math.Atan2(host.tm.X, -host.tm.Y)*180/math.Pi - 90
+		for ang > 90 {
+			ang -= 180
+		}
+		for ang <= -90 {
+			ang += 180
+		}
+		bi := -1
+		for _, b := range host.roster {
+			along := 0.0
+			if !b.text {
+				bi++
+				along = (float64(bi) - float64(nb-1)/2) * pitch
+			}
 			out = append(out, CatBullet{
 				LL:    ll,
 				Route: b.route,
@@ -323,8 +503,12 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				Acts:  b.acts,
 				Mode:  b.mode,
 				Vec:   [2]float64{round1(host.tm.X*along + rt.X*b.lat), round1(host.tm.Y*along + rt.Y*b.lat)},
+				VecLo: [2]float64{round1(host.tm.X*along + rt.X*b.lat*0.5), round1(host.tm.Y*along + rt.Y*b.lat*0.5)},
 				Band:  host.band,
 				Group: group,
+				Text:  b.text,
+				Ang:   round1(ang),
+				Shape: b.shape,
 			})
 		}
 		group++
@@ -333,8 +517,9 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 }
 
 type catEntry struct {
-	route, label, hex, acts, mode string
-	lat                           float64
+	route, label, hex, acts, mode, shape string
+	lat                                  float64
+	text                                 bool
 }
 
 type catProposal struct {

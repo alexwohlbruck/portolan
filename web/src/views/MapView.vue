@@ -105,6 +105,10 @@ watch(isDark, () => {
   map.getSource('osm')?.setTiles([basemapTiles()])
   map.setPaintProperty('osm', 'raster-opacity', rasterOpacity())
   const p = labelPaint()
+  if (map.getLayer('cat-text')) {
+    map.setPaintProperty('cat-text', 'text-halo-color',
+      isDark.value ? 'rgba(12,12,16,0.92)' : 'rgba(255,255,255,0.95)')
+  }
   for (const id of LABEL_LAYERS) {
     if (!map.getLayer(id)) continue
     for (const [k, v] of Object.entries(p)) map.setPaintProperty(id, k, v)
@@ -859,14 +863,15 @@ function addLayers() {
   // Each cat rides the band that DRAWS at its zoom, so the bullet's
   // lateral offset always matches the ribbon under it.
   const isCat = ['==', ['get', 'ftype'], 'cat']
-  const catBand = (b: number) => ['all', isCat, ['==', ['get', 'band'], b]]
+  const catBand = (b: number, text: boolean) =>
+    ['all', isCat, ['==', ['get', 'band'], b], ['==', ['coalesce', ['get', 'text'], false], text]]
+  const catBandStep = (text: boolean) => ['step', ['zoom'],
+    catBand(0, text), 13, catBand(13, text), 14, catBand(14, text), 15, catBand(15, text)] as any
+  const catAnchorOffset = ['interpolate', ['linear'], ['zoom'],
+    11, ['get', 'veclo'], 14, ['get', 'vec']] as any
   map.addLayer({
     id: 'cats', type: 'symbol', source: 'stations', minzoom: 12,
-    filter: ['step', ['zoom'],
-      catBand(0),
-      13, catBand(13),
-      14, catBand(14),
-      15, catBand(15)] as any,
+    filter: catBandStep(false),
     layout: {
       'icon-image': ['concat', 'blt-', ['get', 'hex'], '-', ['get', 'label']],
       // real collision, junior to everything: placement runs top layer
@@ -882,10 +887,44 @@ function addLayers() {
       // off its ribbon. veclo carries the same along-track stagger with
       // the lateral half scaled to 0.5, and interpolating between them
       // reproduces the ribbons' own curve exactly.
-      'symbol-anchor-offset': ['interpolate', ['linear'], ['zoom'],
-        11, ['get', 'veclo'], 14, ['get', 'vec']],
+      'symbol-anchor-offset': catAnchorOffset,
       'symbol-anchor-offset-alignment': 'map',
     } as any,
+  })
+
+  // WORD labels are not bullets. A system whose lines are called "Orange
+  // Line" cannot put that in a 1:1 disc — it becomes a blob — so those
+  // routes are set as TEXT RUNNING ALONG the ribbon, the way a road map
+  // labels a highway (Apple does exactly this for the CTA and Amtrak).
+  // The classification is automatic and lives in the pipeline; here we
+  // only have to draw the two kinds differently.
+  //
+  // Rotation comes baked as `ang` (kept upright at build time) and the
+  // same anchor offset puts the label on its own ribbon, so a word label
+  // sits on the trunk exactly where its bullet would have.
+  map.addLayer({
+    id: 'cat-text', type: 'symbol', source: 'stations', minzoom: 12,
+    filter: catBandStep(true),
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-font': ['Montserrat Medium'],
+      'text-size': ['interpolate', ['linear'], ['zoom'], 12, 10, 16, 13],
+      'text-rotate': ['get', 'ang'],
+      'text-rotation-alignment': 'map',
+      'text-pitch-alignment': 'viewport',
+      'text-allow-overlap': false,
+      'text-ignore-placement': true,
+      'text-padding': 3,
+      'symbol-anchor-offset': catAnchorOffset,
+      'symbol-anchor-offset-alignment': 'map',
+    } as any,
+    paint: {
+      // the line's own colour, haloed against the basemap — the label IS
+      // the line's identity, so it must not read as a place name
+      'text-color': ['concat', '#', ['get', 'hex']],
+      'text-halo-color': isDark.value ? 'rgba(12,12,16,0.92)' : 'rgba(255,255,255,0.95)',
+      'text-halo-width': 1.6,
+    },
   })
 
   const rankBump = ['case', ['>=', ['get', 'rank'], 8], 2.5, ['>=', ['get', 'rank'], 4], 1, 0]
