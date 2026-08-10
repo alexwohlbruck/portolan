@@ -57,7 +57,33 @@ job rather than parchment's matrix of macOS and Android builders.
 by default. A download without it draws every city in raw feed colours
 and looks broken.
 
-`SHA256SUMS` covers every archive: `sha256sum -c SHA256SUMS`.
+### What consumers can rely on
+
+These are contracts, not incidentals — a packaged consumer's fetch step
+breaks if they change, so change them only with a major bump.
+
+- **Asset names carry the bare version, not the tag**:
+  `portolan_0.1.0_darwin_arm64.tar.gz`, with no leading `v`. In a
+  workflow that is `${TAG#v}`.
+- **An archive unpacks to a directory**, `portolan_<version>_<os>_<arch>/`,
+  holding the binary plus `style/`, `README.md`, `LICENSE` and `docs/` —
+  not a bare binary at the root.
+- **`SHA256SUMS` hashes the ARCHIVES, not the binaries inside them**, in
+  coreutils `sha256sum` format (hash, two spaces, bare filename). So a
+  consumer verifies before extracting, which is the right order. Verify
+  with `sha256sum -c SHA256SUMS`.
+- **`portolan version` is for humans**; a program should ask a running
+  server `GET /version`, which returns the bare semver and the PLNB
+  layout version as JSON.
+
+### A naming mismatch to expect
+
+Go's `GOARCH` is `amd64` and `arm64`. Several packaging tools — Electron
+and electron-builder among them — call the same architectures `x64` and
+`arm64`. A consumer fetching `portolan_<v>_darwin_amd64.tar.gz` into a
+`darwin-x64` resource directory has to map that explicitly. Portolan
+uses Go's names because it is a Go binary and `GOOS`/`GOARCH` are what
+built it; the mapping belongs on the packaging side.
 
 ### What does not ship
 

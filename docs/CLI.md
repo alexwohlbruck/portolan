@@ -142,6 +142,24 @@ document format.
 | `--style` | One pre-merged document instead, overriding `--style-dir`. |
 | `--line-agencies` | Comma list of regional agencies whose per-line colours are real line identities rather than branch-diagram decoration, so they keep separate ribbons instead of collapsing into one agency trunk. |
 
+#### If you are packaging portolan inside another application
+
+`--style-dir` must hold **both** layers: `_default.json` (the class
+defaults — mode widths, opacities, band floors, trunk policies) and your
+`<city>.json` on top. That is a problem when the directory you got from a
+release archive is read-only, which it is inside a signed macOS app
+bundle or any packaged installation.
+
+Copy `style/` out of the archive to a writable location on first run,
+write your generated `<city>.json` beside the `_default.json` you
+copied, and point `--style-dir` there. Stamp the copy with the portolan
+version so bumping the pinned release refreshes it.
+
+`--style` is not the way out: it takes ONE pre-merged document and
+replaces `--style-dir` entirely, so using it means owning the class
+defaults yourself — which is the drift `internal/style` exists to
+prevent.
+
 ### Service
 
 | flag | meaning |
