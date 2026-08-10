@@ -2,6 +2,7 @@ package stages
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
@@ -23,6 +24,10 @@ func frameOf(ways []osm.Way) geo.Frame {
 }
 
 func TestConvergenceNYC(t *testing.T) {
+	gtfsPath := localGTFS("5")
+	if _, err := os.Stat(gtfsPath); err != nil {
+		t.Skip("NYC GTFS not available")
+	}
 	ways, err := osm.Load("../../testdata/nyc-rail.geojson")
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +41,7 @@ func TestConvergenceNYC(t *testing.T) {
 		}
 		tracks[i] = bundle.Track{ID: w.ID, Line: geo.NewLine(pts)}
 	}
-	feed, err := gtfs.Load("/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/5.zip", 0.99)
+	feed, err := gtfs.Load(gtfsPath, 0.99)
 	if err != nil {
 		t.Fatal(err)
 	}

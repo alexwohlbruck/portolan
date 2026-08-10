@@ -13,7 +13,7 @@ import (
 )
 
 func loadNYC(t *testing.T) ([]gtfs.Pattern, []bundle.Track, geo.Frame) {
-	const gtfsPath = "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/5.zip"
+	gtfsPath := localGTFS("5")
 	if _, err := os.Stat(gtfsPath); err != nil {
 		t.Skip("NYC GTFS not available")
 	}
