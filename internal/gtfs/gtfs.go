@@ -40,6 +40,11 @@ type Pattern struct {
 	// the trim margin) overrun the terminal by tail trackage; these are
 	// where service actually ends — the terminal-cut pass cuts here.
 	TermA, TermB geo.LL
+	// TermAID/TermBID: the same two stops by id. StopIDs is SORTED, so
+	// the ends of a route are not recoverable from it; the stations stage
+	// needs them to know which stops are termini (a line's last stop is a
+	// destination, and destinations get labelled).
+	TermAID, TermBID string
 }
 
 // Stop is one stops.txt record — platform or parent station. Only what
@@ -334,6 +339,7 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		}
 		if e := shapeEnds[k.shape]; e != nil && e.ok {
 			pat.TermA, pat.TermB = stopLL[e.firstStop], stopLL[e.lastStop]
+			pat.TermAID, pat.TermBID = e.firstStop, e.lastStop
 		}
 		byRoute[k.route] = append(byRoute[k.route], pat)
 	}
