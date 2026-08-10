@@ -134,7 +134,16 @@ type ChartOpts struct {
 	// Style: class defaults and color overrides, already merged
 	// global-then-city. Nil means the shipped defaults.
 	Style *style.Set
-	Out   string
+	Out string
+	// Format: "geojson" (default) or "bin" — the flat typed-array form
+	// in binary.go, for clients that rebuild interactively and cannot
+	// afford to parse 11 MB of text per rebuild.
+	Format string
+	// Band: emit only the segments visible in one zoom band instead of
+	// the union of all four. A POINTER because 0 is itself one of
+	// FAIR's bands (15/14/13/0) — an int zero value would silently cut
+	// every existing caller down to band 0. Nil is the union.
+	Band  *int
 	Dials *Dials
 	// Scenario: build the layout for one service scenario (gtfs.Scenario
 	// ID) instead of the all-service union — the patterns are restricted
@@ -492,7 +501,31 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 			return err
 		}
 	}
-	return WriteSegmentsGeoJSON(o.Out, segs, frame)
+	return writeSegments(o, segs, frame, logf)
+}
+
+// writeSegments emits the ribbons in the requested form. Band filtering
+// happens here, after every stage has seen the whole network: ORDER and
+// FAIR need all four bands to decide slots and junction drawing, and
+// dropping three of them earlier would change the map rather than just
+// the download.
+func writeSegments(o ChartOpts, segs []stages.Segment, frame geo.Frame,
+	logf func(string, ...any)) error {
+
+	band := BandUnion
+	if o.Band != nil {
+		band = *o.Band
+		before := len(segs)
+		segs = FilterBand(segs, band)
+		logf("emit: band %d — %d of %d segments", band, len(segs), before)
+	}
+	switch o.Format {
+	case "", "geojson":
+		return WriteSegmentsGeoJSON(o.Out, segs, frame)
+	case "bin":
+		return WriteSegmentsBinary(o.Out, segs, frame, band)
+	}
+	return fmt.Errorf("--format %q: want geojson or bin", o.Format)
 }
 
 type SoundOpts struct {

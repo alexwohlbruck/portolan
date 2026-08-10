@@ -91,6 +91,8 @@ func chart(args []string) {
 	bboxStr := fs.String("bbox", "", "w,s,e,n — clip pattern shapes to the window")
 	lineAg := fs.String("line-agencies", "", "comma list: regional agencies keeping per-line colors")
 	out := fs.String("out", "build.geojson", "output GeoJSON")
+	format := fs.String("format", "geojson", "geojson | bin (flat typed arrays, see docs/CORRIDORS.md)")
+	band := fs.String("band", "", "emit one zoom band only: 15 | 14 | 13 | 0 (default: the union)")
 	cover := fs.Float64("cover", 0.99, "pattern trip-coverage fraction")
 	scenario := fs.String("scenario", "", "service scenario id (see `portolan scenarios`)")
 	styleDir := fs.String("style-dir", style.DefaultDir, "curation documents: <dir>/_default.json + <dir>/<city>.json")
@@ -114,6 +116,12 @@ func chart(args []string) {
 			die(fmt.Errorf("bad --anchor %q: want lat,lon", *anchor))
 		}
 		anchorLL = &geo.LL{Lat: lat, Lon: lon}
+	}
+	var bandPtr *int
+	if *band != "" {
+		b, err := pipeline.ParseBand(*band)
+		die(err)
+		bandPtr = &b
 	}
 	var bbox []float64
 	if *bboxStr != "" {
@@ -156,7 +164,7 @@ func chart(args []string) {
 		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, Stops: *stops, BBox: bbox,
 		Corridors: *corridors, CorridorNodes: *corridorNodes, Anchor: anchorLL,
 		LineAgencies: las, Scenario: *scenario, Style: sty,
-		Out: *out, Dials: &d,
+		Out: *out, Format: *format, Band: bandPtr, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 	die(err)
 }
