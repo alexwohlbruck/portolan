@@ -415,6 +415,28 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 			logf("trunk weld (post-merge): %d strands, %d chords → %d edges",
 				w2, c2, len(net.Edges))
 		}
+		// merging can strand half a crossover movement as a dangling hook;
+		// a drawn dead-end must be a terminus, and the terminals are known
+		var termPts []geo.Pt
+		for i := range railPaths {
+			pat := railPaths[i].Pattern
+			if pat.TermA != (geo.LL{}) {
+				termPts = append(termPts, frame.ToXY(pat.TermA))
+			}
+			if pat.TermB != (geo.LL{}) {
+				termPts = append(termPts, frame.ToXY(pat.TermB))
+			}
+		}
+		stages.SetStubRoutes(feed.Routes)
+		if d := stages.DropInterlockingStubs(net, termPts); d > 0 {
+			logf("stub sweep: %d dangling interlocking stubs dropped → %d edges", d, len(net.Edges))
+		}
+		if pins := stages.PinEdgeTips(net); pins > 0 {
+			logf("tip pin: %d edge tips reconciled onto their nodes", pins)
+		}
+		if sm := stages.SmoothTrunkCorridors(net, feed.Routes); sm > 0 {
+			logf("trunk smooth: %d regional corridor edges low-passed", sm)
+		}
 	}
 	if err := writeNetwork(o.Out, net, frame); err != nil {
 		return err

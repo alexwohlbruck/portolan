@@ -71,6 +71,53 @@ func lineBox(l *geo.Line) (x0, y0, x1, y1 float64) {
 	return
 }
 
+// taperTo bends one end of a polyline onto a target point with a
+// smoothstep lateral blend over `span` metres. This is what makes every
+// merge seam a Y: the first version bare-appended the median endpoint
+// to each approach piece, a hard lateral jog of up to half the gauge
+// drawn as an elbow — Jamaica's joins read as lollipops and hooks, and
+// every trunk seam carried a jog that showed as corridor wobble.
+func taperTo(pts []geo.Pt, target geo.Pt, atStart bool, span float64) []geo.Pt {
+	out := append([]geo.Pt{}, pts...)
+	if len(out) < 2 {
+		return out
+	}
+	endIdx := len(out) - 1
+	if atStart {
+		endIdx = 0
+	}
+	delta := target.Sub(out[endIdx])
+	if delta.Norm() < 0.5 {
+		out[endIdx] = target
+		return out
+	}
+	// arc distances from the tapered end
+	arc := make([]float64, len(out))
+	if atStart {
+		for i := 1; i < len(out); i++ {
+			arc[i] = arc[i-1] + out[i].Dist(out[i-1])
+		}
+	} else {
+		for i := len(out) - 2; i >= 0; i-- {
+			arc[i] = arc[i+1] + out[i].Dist(out[i+1])
+		}
+	}
+	total := arc[0]
+	if !atStart {
+		total = arc[0]
+	}
+	_ = total
+	for i := range out {
+		if arc[i] >= span {
+			continue
+		}
+		t := 1 - arc[i]/span
+		w := t * t * (3 - 2*t) // smoothstep: tangent-continuous at both ends
+		out[i] = out[i].Add(delta.Scale(w))
+	}
+	return out
+}
+
 // overlapRun: the longest interval of `a` staying within gauge of `b`.
 // Single out-of-gauge samples don't end a run — a corridor widens around
 // a platform and closes again, and splitting there is the confetti this
@@ -291,11 +338,44 @@ func MergeParallelCorridors(net *Network, routes map[string]gtfs.Route) int {
 			case nB >= 0:
 				return nB
 			}
+			// snap before minting: a fresh node metres from an existing
+			// same-trunk junction creates a twin the graph can never fuse
+			// — at Jamaica the trunk seam drew 33 m apart and read as a
+			// floating whisker. Inherit the neighbour instead; the taper
+			// bends the median onto its position.
+			ta := soleTrunk(&net.Edges[pl.ai])
+			for ni := range net.Nodes {
+				if net.Nodes[ni].At.Dist(at) > 45 {
+					continue
+				}
+				for _, oe := range net.Nodes[ni].Adj {
+					if oe == pl.ai || oe == pl.bi {
+						continue
+					}
+					for _, rid := range net.Edges[oe].Routes {
+						if trunkOf(rid) == ta {
+							return ni
+						}
+					}
+				}
+			}
 			net.Nodes = append(net.Nodes, Node{At: at})
 			return len(net.Nodes) - 1
 		}
 		n1 := resolve(aStart, bAtTrunkStart, pl.mid[0])
 		n2 := resolve(aEnd, bAtTrunkEnd, pl.mid[len(pl.mid)-1])
+		// the trunk must END at its nodes: an inherited or welded node
+		// keeps the parent's real position, which can sit half a gauge
+		// from the median's lerp endpoint — every ribbon at that node
+		// then jogged sideways to reach it. Bend the median onto the node
+		// positions instead.
+		// the lerp median inherits every crossover jiggle of its parents;
+		// smooth it BEFORE pinning the ends onto the nodes
+		pl.mid = smoothPolyline(geo.NewLine(pl.mid)).Pts
+		t1, t2 := net.Nodes[n1].At, net.Nodes[n2].At
+		span := math.Min(150, geo.NewLine(pl.mid).Len()*0.4)
+		pl.mid = taperTo(pl.mid, t1, true, span)
+		pl.mid = taperTo(pl.mid, t2, false, span)
 		if n1 == n2 {
 			// the whole pair collapsed to a point — a lens/balloon, not a
 			// corridor. Leave it for the loop-aware rules.
@@ -305,37 +385,33 @@ func MergeParallelCorridors(net *Network, routes map[string]gtfs.Route) int {
 
 		ea, eb := net.Edges[pl.ai], net.Edges[pl.bi]
 		var add []Edge
+		// approach and departure pieces bend ONTO the trunk node with the
+		// same smoothstep taper the median uses — a Y arm, never an elbow
 		outer := func(src Edge, l *geo.Line, from, to float64,
-			fromNode, toNode int, prepend, appendPt *geo.Pt) {
+			fromNode, toNode int, nodeAtStart bool, node geo.Pt) {
 			if to-from < endSnap {
 				return
 			}
 			sub := bundle.SubLine(l, from, to)
-			pts := append([]geo.Pt{}, sub.Pts...)
-			if prepend != nil {
-				pts = append([]geo.Pt{*prepend}, pts...)
-			}
-			if appendPt != nil {
-				pts = append(pts, *appendPt)
-			}
+			sp := math.Min(150, sub.Len()*0.6)
+			pts := taperTo(sub.Pts, node, nodeAtStart, sp)
 			ne := src
 			ne.Pts = pts
 			ne.From = fromNode
 			ne.To = toNode
 			add = append(add, ne)
 		}
-		p0, p1 := pl.mid[0], pl.mid[len(pl.mid)-1]
 		// a's approach [0,lo]: From stays, To becomes n1
-		outer(ea, la, 0, pl.lo, ea.From, n1, nil, &p0)
+		outer(ea, la, 0, pl.lo, ea.From, n1, false, t1)
 		// a's departure [hi,len]: From becomes n2, To stays
-		outer(ea, la, pl.hi, la.Len(), n2, ea.To, &p1, nil)
+		outer(ea, la, pl.hi, la.Len(), n2, ea.To, true, t2)
 		// b's approach [0,bLo] runs to the trunk node its arc end maps to
 		if pl.rev {
-			outer(eb, lb, 0, pl.bLo, eb.From, n2, nil, &p1)
-			outer(eb, lb, pl.bHi, lb.Len(), n1, eb.To, &p0, nil)
+			outer(eb, lb, 0, pl.bLo, eb.From, n2, false, t2)
+			outer(eb, lb, pl.bHi, lb.Len(), n1, eb.To, true, t1)
 		} else {
-			outer(eb, lb, 0, pl.bLo, eb.From, n1, nil, &p0)
-			outer(eb, lb, pl.bHi, lb.Len(), n2, eb.To, &p1, nil)
+			outer(eb, lb, 0, pl.bLo, eb.From, n1, false, t1)
+			outer(eb, lb, pl.bHi, lb.Len(), n2, eb.To, true, t2)
 		}
 		add = append(add, Edge{
 			From: n1, To: n2, Pts: pl.mid,
@@ -362,4 +438,285 @@ func MergeParallelCorridors(net *Network, routes map[string]gtfs.Route) int {
 		rebuildAdj(net)
 	}
 	return merges
+}
+
+// DropInterlockingStubs removes short dangling same-trunk strands that
+// terminate nowhere. A drawn dead-end must be a TERMINUS — a place some
+// pattern actually ends — and every pattern terminal is known, so a
+// dangling tip near none of them, whose trunk continues through its base
+// node without it, is interlocking litter: half a crossover movement
+// left over from merging (the Van Wyck hook at Jamaica curved into the
+// yard and just stopped). Real branch tails (the Lower Montauk to Long
+// Island City) end at terminals and keep drawing.
+func DropInterlockingStubs(net *Network, terms []geo.Pt) int {
+	dropped := 0
+	for {
+		rebuildAdj(net)
+		victim := -1
+		for ei := range net.Edges {
+			e := &net.Edges[ei]
+			if e.Gap || len(e.Pts) < 2 || e.From == e.To {
+				continue
+			}
+			l := geo.NewLine(e.Pts)
+			if l.Len() > 600 {
+				continue
+			}
+			t := ""
+			for _, rid := range e.Routes {
+				// reuse the weld's trunk notion: mixed or untrunked edges
+				// are never litter
+				k := func() string {
+					r, ok := stubRoutes[rid]
+					if !ok || !mode.Of(r.Type).Trunked() {
+						return ""
+					}
+					return mode.TrunkKey(r)
+				}()
+				if k == "" || (t != "" && k != t) {
+					t = ""
+					break
+				}
+				t = k
+			}
+			if t == "" {
+				continue
+			}
+			degF := len(net.Nodes[e.From].Adj)
+			degT := len(net.Nodes[e.To].Adj)
+			// an ISOLATED fragment — dangling at both ends — is litter
+			// whenever it shadows the trunk that replaced it; there is no
+			// connectivity to lose in dropping it
+			if degF == 1 && degT == 1 {
+				shadowed := false
+				for oi := range net.Edges {
+					if oi == ei {
+						continue
+					}
+					o := &net.Edges[oi]
+					if o.Gap || len(o.Pts) < 2 {
+						continue
+					}
+					same := false
+					for _, rid := range o.Routes {
+						if r, ok := stubRoutes[rid]; ok && mode.TrunkKey(r) == t {
+							same = true
+							break
+						}
+					}
+					if !same {
+						continue
+					}
+					ol := geo.NewLine(o.Pts)
+					all := true
+					for _, q := range l.Resample(20) {
+						if ol.DistTo(q) > 120 {
+							all = false
+							break
+						}
+					}
+					if all {
+						shadowed = true
+						break
+					}
+				}
+				if shadowed {
+					victim = ei
+					break
+				}
+				continue
+			}
+			tipNode, baseNode := -1, -1
+			var tip geo.Pt
+			if degF == 1 {
+				tipNode, baseNode, tip = e.From, e.To, e.Pts[0]
+			} else if degT == 1 {
+				tipNode, baseNode, tip = e.To, e.From, e.Pts[len(e.Pts)-1]
+			}
+			if tipNode < 0 {
+				continue
+			}
+			// the trunk must continue through the base without this stub
+			cont := 0
+			for _, oi := range net.Nodes[baseNode].Adj {
+				if oi == ei {
+					continue
+				}
+				for _, rid := range net.Edges[oi].Routes {
+					if r, ok := stubRoutes[rid]; ok && mode.TrunkKey(r) == t {
+						cont++
+						break
+					}
+				}
+			}
+			if cont < 2 {
+				continue
+			}
+			// terminal protection with a shadow exception: a terminating
+			// tail that runs beside the through trunk for its whole length
+			// is platform detail (Jamaica's whiskers), not a route — the
+			// unshadowed terminus tail (the Lower Montauk into LIC) is the
+			// one the protection exists for.
+			near := false
+			for _, tm := range terms {
+				if tm.Dist(tip) < 150 {
+					near = true
+					break
+				}
+			}
+			if near {
+				shadowed := false
+				for oi := range net.Edges {
+					if oi == ei {
+						continue
+					}
+					o := &net.Edges[oi]
+					if o.Gap || len(o.Pts) < 2 {
+						continue
+					}
+					sameTrunk := false
+					for _, rid := range o.Routes {
+						if r, ok := stubRoutes[rid]; ok && mode.TrunkKey(r) == t {
+							sameTrunk = true
+							break
+						}
+					}
+					if !sameTrunk {
+						continue
+					}
+					ol := geo.NewLine(o.Pts)
+					ok2 := true
+					for _, q := range l.Resample(20) {
+						if ol.DistTo(q) > 90 {
+							ok2 = false
+							break
+						}
+					}
+					if ok2 {
+						shadowed = true
+						break
+					}
+				}
+				if !shadowed {
+					continue
+				}
+			}
+			victim = ei
+			break
+		}
+		if victim < 0 {
+			break
+		}
+		net.Edges = append(net.Edges[:victim], net.Edges[victim+1:]...)
+		dropped++
+	}
+	if dropped > 0 {
+		compactNodes(net)
+		rebuildAdj(net)
+	}
+	return dropped
+}
+
+// stubRoutes: the route table for DropInterlockingStubs, set by the
+// pipeline alongside the call (plumbing a param through the closure
+// tangle above was noisier than a package registry).
+var stubRoutes map[string]gtfs.Route
+
+func SetStubRoutes(m map[string]gtfs.Route) { stubRoutes = m }
+
+// SmoothTrunkCorridors low-passes sole-trunk REGIONAL edges. Mainline
+// rail has minimum curve radii; 30 m-wavelength wiggle on a trunk is a
+// construction artifact (a station-throat median snaking between the
+// platform tracks it averaged), never track. Trams and metros keep
+// their geometry — street corners and tight subway curves are identity.
+// Node ends stay pinned exactly so seams cannot open.
+func SmoothTrunkCorridors(net *Network, routes map[string]gtfs.Route) int {
+	n := 0
+	for ei := range net.Edges {
+		e := &net.Edges[ei]
+		if e.Gap || len(e.Pts) < 3 {
+			continue
+		}
+		regional, sole := true, ""
+		for _, rid := range e.Routes {
+			r, ok := routes[rid]
+			if !ok || mode.Of(r.Type) != mode.Regional {
+				regional = false
+				break
+			}
+			k := mode.TrunkKey(r)
+			if sole != "" && k != sole {
+				regional = false
+				break
+			}
+			sole = k
+		}
+		if !regional || sole == "" {
+			continue
+		}
+		l := geo.NewLine(e.Pts)
+		if l.Len() < 300 {
+			continue
+		}
+		p0, p1 := e.Pts[0], e.Pts[len(e.Pts)-1]
+		// Chaikin rounds corners but cannot flatten a 30 m snake; a real
+		// low-pass can. Two passes of a small Gaussian over 25 m samples
+		// kills sub-150 m wavelength artifact wiggle. The stray guard is
+		// the safety: a genuine tight curve (junction wye) would be
+		// dragged more than the bar allows and keeps its geometry.
+		pts := l.Resample(25)
+		for pass := 0; pass < 2; pass++ {
+			nx := append([]geo.Pt{}, pts...)
+			for i := 2; i < len(pts)-2; i++ {
+				nx[i] = geo.Pt{
+					X: (pts[i-2].X + 2*pts[i-1].X + 3*pts[i].X + 2*pts[i+1].X + pts[i+2].X) / 9,
+					Y: (pts[i-2].Y + 2*pts[i-1].Y + 3*pts[i].Y + 2*pts[i+1].Y + pts[i+2].Y) / 9,
+				}
+			}
+			pts = nx
+		}
+		pts[0], pts[len(pts)-1] = p0, p1
+		worst := 0.0
+		for _, q := range pts {
+			if d := l.DistTo(q); d > worst {
+				worst = d
+			}
+		}
+		if worst > 35 {
+			continue // a real curve, not artifact wiggle — keep it
+		}
+		e.Pts = pts
+		n++
+	}
+	return n
+}
+
+// PinEdgeTips reconciles geometry with topology after node surgery: a
+// weld rewires an edge's node ID but nobody moved its polyline, so the
+// drawn line could end tens of metres from the junction it belongs to —
+// at Jamaica the trunk seam drew a 33 m break that read as a floating
+// whisker. Every tip further than 8 m from its node bends onto it with
+// the standard taper.
+func PinEdgeTips(net *Network) int {
+	n := 0
+	for ei := range net.Edges {
+		e := &net.Edges[ei]
+		if len(e.Pts) < 2 {
+			continue
+		}
+		l := geo.NewLine(e.Pts)
+		// short span: the tip must REACH its node, not sweep toward it —
+		// a 120 m taper fanned the Van Wyck wye's movements into a braid
+		// of crossing arcs; 45 m reads as a switch, which is what it is
+		span := math.Min(45, l.Len()*0.5)
+		if from := net.Nodes[e.From].At; e.Pts[0].Dist(from) > 8 {
+			e.Pts = taperTo(e.Pts, from, true, span)
+			n++
+		}
+		if to := net.Nodes[e.To].At; e.Pts[len(e.Pts)-1].Dist(to) > 8 {
+			e.Pts = taperTo(e.Pts, to, false, span)
+			n++
+		}
+	}
+	return n
 }
