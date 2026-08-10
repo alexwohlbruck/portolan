@@ -395,7 +395,9 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       const { bulletIdsOf } = await import('../src/lib/dynamic.ts')
       const atl = sts.find((f) => f.properties.name === 'Atlantic Av-Barclays Ctr')
       const ids = atl ? bulletIdsOf(atl.properties) : []
-      const shown = ids.map((id) => id.split('-').slice(2).join('-'))
+      // blt-<hex>-<shape>-<label>; shape may be empty, and a label can
+      // itself contain hyphens, so drop exactly two leading fields
+      const shown = ids.map((id) => id.split('-').slice(3).join('-'))
       check('Atlantic Av-Barclays merged bullets keep all 10 incl. 4 and 5',
         ids.length === 10 && shown.includes('4') && shown.includes('5'),
         `got ${shown.join(',')}`)
