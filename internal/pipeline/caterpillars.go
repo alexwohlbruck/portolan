@@ -121,8 +121,7 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		return keys[i].sig < keys[j].sig
 	})
 
-	var out []CatBullet
-	group := 0
+	var props []catProposal
 	for _, k := range keys {
 		members := groups[k]
 		ref := segs[members[0]].Line
@@ -193,48 +192,156 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			spacing = 1400.0
 		}
 
-		lastAt := math.Inf(-1)
-		for arc := catEndClearM; arc <= refLen-catEndClearM; arc += 40 {
-			if arc-lastAt < spacing {
-				continue
+		// anchors CENTER between the stops they sit between: boundaries
+		// are the segment ends plus every station marker projected onto
+		// this bundle; each long-enough gap contributes its midpoint.
+		// Riding mid-gap keeps chains as far from stop labels as the
+		// corridor allows.
+		bounds := []float64{0, refLen}
+		for _, q := range stPts {
+			if arc, d, ok := ref.ProjectArcCapped(q, 40); ok && d <= 40 {
+				bounds = append(bounds, arc)
 			}
+		}
+		sort.Float64s(bounds)
+
+		straightAt := func(arc float64) bool {
 			p := ref.AtArc(arc)
 			t1 := ref.AtArc(arc - win).Sub(p).Unit()
 			t2 := ref.AtArc(arc + win).Sub(p).Unit()
-			// straight: the two half-window directions nearly opposite
-			if t1.Dot(t2) > -math.Cos(catStraightDeg*math.Pi/180) {
+			return t1.Dot(t2) < -math.Cos(catStraightDeg*math.Pi/180)
+		}
+
+		lastAt := math.Inf(-1)
+		for gi := 1; gi < len(bounds); gi++ {
+			lo, hi := bounds[gi-1], bounds[gi]
+			// the gap must hold the chain plus clearances on both sides
+			lo = math.Max(lo+catStationClearM, catEndClearM)
+			hi = math.Min(hi-catStationClearM, refLen-catEndClearM)
+			if hi-lo < chainM+40 {
 				continue
 			}
-			if !clearOfStations(p) {
+			mid := (lo + hi) / 2
+			if mid-lastAt < spacing {
+				continue
+			}
+			// midpoint first; if the corridor bends there, walk outward
+			// for the nearest straight spot still inside the gap
+			arc := math.NaN()
+			for d := 0.0; d <= (hi-lo)/2; d += 40 {
+				if mid+d <= hi && straightAt(mid+d) && clearOfStations(ref.AtArc(mid+d)) {
+					arc = mid + d
+					break
+				}
+				if d > 0 && mid-d >= lo && straightAt(mid-d) && clearOfStations(ref.AtArc(mid-d)) {
+					arc = mid - d
+					break
+				}
+			}
+			if math.IsNaN(arc) {
 				continue
 			}
 			// tangent in map-aligned px frame (+x east, +y south); frame
 			// XY is +x east, +y NORTH, so y flips
 			tf := ref.AtArc(arc + 6).Sub(ref.AtArc(arc - 6)).Unit()
 			tm := geo.Pt{X: tf.X, Y: -tf.Y}
-			// right-of-travel in the y-down frame — the renderer offsets
-			// positive to the right of the coordinate direction
-			rt := geo.Pt{X: -tm.Y, Y: tm.X}
-			ll := frame.ToLL(p)
-			for bi, b := range roster {
-				along := (float64(bi) - float64(len(roster)-1)/2) * catPitchAlongPx
-				out = append(out, CatBullet{
-					LL:    ll,
-					Route: b.route,
-					Label: b.label,
-					Hex:   b.hex,
-					Acts:  b.acts,
-					Mode:  b.mode,
-					Vec:   [2]float64{round1(tm.X*along + rt.X*b.lat), round1(tm.Y*along + rt.Y*b.lat)},
-					Band:  k.band,
-					Group: group,
-				})
-			}
-			group++
+			props = append(props, catProposal{
+				band: k.band, pt: ref.AtArc(arc), tm: tm,
+				roster: append([]catEntry(nil), func() []catEntry {
+					es := make([]catEntry, len(roster))
+					for i, b := range roster {
+						es[i] = catEntry{route: b.route, label: b.label, hex: b.hex, acts: b.acts, mode: b.mode, lat: b.lat}
+					}
+					return es
+				}()...),
+			})
 			lastAt = arc
 		}
 	}
+
+	// MERGE co-located proposals: sibling ribbons whose segment extents
+	// differ (the corridor-extent mismatch — the M's cuts land elsewhere
+	// than the J/Z's) form separate groups, and their independently
+	// centered chains land on top of each other as a clump. Proposals of
+	// one band within a chain-length of each other fuse into ONE chain:
+	// laterals transplant into the host's travel frame (opposite-heading
+	// donors flip sign), the roster re-sorts, and the stagger re-centers.
+	sort.SliceStable(props, func(i, j int) bool {
+		if props[i].band != props[j].band {
+			return props[i].band < props[j].band
+		}
+		if props[i].pt.X != props[j].pt.X {
+			return props[i].pt.X < props[j].pt.X
+		}
+		return props[i].pt.Y < props[j].pt.Y
+	})
+	used := make([]bool, len(props))
+	var out []CatBullet
+	group := 0
+	for i := range props {
+		if used[i] {
+			continue
+		}
+		host := props[i]
+		mergeR := 60.0 + float64(len(host.roster))*20
+		for j := i + 1; j < len(props); j++ {
+			if used[j] || props[j].band != host.band {
+				continue
+			}
+			if props[j].pt.Dist(host.pt) > mergeR {
+				continue
+			}
+			flip := host.tm.Dot(props[j].tm) < 0
+			for _, e := range props[j].roster {
+				if flip {
+					e.lat = -e.lat
+				}
+				dup := false
+				for _, h := range host.roster {
+					if h.route == e.route {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					host.roster = append(host.roster, e)
+				}
+			}
+			used[j] = true
+		}
+		sort.SliceStable(host.roster, func(a, b int) bool { return host.roster[a].lat < host.roster[b].lat })
+
+		rt := geo.Pt{X: -host.tm.Y, Y: host.tm.X}
+		ll := frame.ToLL(host.pt)
+		for bi, b := range host.roster {
+			along := (float64(bi) - float64(len(host.roster)-1)/2) * catPitchAlongPx
+			out = append(out, CatBullet{
+				LL:    ll,
+				Route: b.route,
+				Label: b.label,
+				Hex:   b.hex,
+				Acts:  b.acts,
+				Mode:  b.mode,
+				Vec:   [2]float64{round1(host.tm.X*along + rt.X*b.lat), round1(host.tm.Y*along + rt.Y*b.lat)},
+				Band:  host.band,
+				Group: group,
+			})
+		}
+		group++
+	}
 	return out
+}
+
+type catEntry struct {
+	route, label, hex, acts, mode string
+	lat                           float64
+}
+
+type catProposal struct {
+	band   int
+	pt     geo.Pt
+	tm     geo.Pt
+	roster []catEntry
 }
 
 func round1(v float64) float64 { return math.Round(v*10) / 10 }

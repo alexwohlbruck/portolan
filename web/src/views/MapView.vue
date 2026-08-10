@@ -719,7 +719,13 @@ function addLayers() {
       15, ['all', ['==', ['get', 'ftype'], 'cat'], ['==', ['get', 'band'], 15]]] as any,
     layout: {
       'icon-image': ['concat', 'blt-', ['get', 'hex'], '-', ['get', 'label']],
-      'icon-allow-overlap': true,
+      // real collision, junior to everything: placement runs top layer
+      // first, and the station layers sit above this one, so stop
+      // labels always win — a bullet under a label yields. ignore-
+      // placement keeps bullets from ever suppressing anything else.
+      // (The fork shifts collision boxes by the anchor offset, so the
+      // test happens where the bullet actually draws.)
+      'icon-allow-overlap': false,
       'icon-ignore-placement': true,
       'symbol-anchor-offset': ['get', 'vec'],
       'symbol-anchor-offset-alignment': 'map',
