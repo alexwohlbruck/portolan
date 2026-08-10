@@ -137,28 +137,31 @@ document format.
 
 | flag | meaning |
 |---|---|
-| `--style-dir` | Curation directory (default `style`). Reads `<dir>/_default.json` then `<dir>/<city>.json`, later winning field by field. |
+| `--style-dir` | Curation directory (default `style`). Reads `<dir>/_default.json` then `<dir>/<city>.json`, later winning field by field. **Both layers are optional** — the class defaults are compiled in, so a directory holding only your `<city>.json` is complete, and a missing directory resolves to the shipped defaults. |
 | `--city` | City id, selecting the second of those files. |
 | `--style` | One pre-merged document instead, overriding `--style-dir`. |
 | `--line-agencies` | Comma list of regional agencies whose per-line colours are real line identities rather than branch-diagram decoration, so they keep separate ribbons instead of collapsing into one agency trunk. |
 
 #### If you are packaging portolan inside another application
 
-`--style-dir` must hold **both** layers: `_default.json` (the class
-defaults — mode widths, opacities, band floors, trunk policies) and your
-`<city>.json` on top. That is a problem when the directory you got from a
-release archive is read-only, which it is inside a signed macOS app
-bundle or any packaged installation.
+**You almost certainly do not need to copy anything.** The class
+defaults — mode widths, opacities, band floors, trunk policies — are
+compiled into the binary, not read from a file. There is no
+`_default.json` in the repo or in a release archive; `style/` holds the
+nine shipped *city* curations and nothing else.
 
-Copy `style/` out of the archive to a writable location on first run,
-write your generated `<city>.json` beside the `_default.json` you
-copied, and point `--style-dir` there. Stamp the copy with the portolan
-version so bumping the pinned release refreshes it.
+So a consumer that generates its own curation points `--style-dir` at a
+directory containing only its own `<city>.json`, in any writable
+location it likes. A missing directory is not an error either: a tree
+with no `style/` at all resolves to exactly the shipped defaults.
 
-`--style` is not the way out: it takes ONE pre-merged document and
-replaces `--style-dir` entirely, so using it means owning the class
-defaults yourself — which is the drift `internal/style` exists to
-prevent.
+Copy `style/` out of the archive only if you want one of the shipped
+city curations — and then copy it somewhere writable and version-stamp
+it, because a release archive inside a signed application bundle is
+read-only.
+
+`--style` is a different thing and rarely what you want here: it takes
+ONE pre-merged document and replaces `--style-dir` entirely.
 
 ### Service
 

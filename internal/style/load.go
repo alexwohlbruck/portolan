@@ -36,6 +36,7 @@ package style
 // drifted: CLI builds silently dropped bullet_order for weeks.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -183,9 +184,25 @@ func ReadDoc(path string) (Doc, bool, error) {
 		}
 		return Doc{}, false, err
 	}
+	// STRICT: an unrecognised key is an error, not something to skip.
+	//
+	// Curation has no output of its own — it only changes how something
+	// else draws — so a misspelt or wrongly-shaped document produces a
+	// map that builds cleanly, applies nothing, and reports no reason.
+	// That is the worst failure mode a config format can have, and it is
+	// easy to hit here: `internal/style`.Config holds flat tables keyed
+	// "route:<id>" and a reader who meets that struct first will
+	// reasonably write `{"shapes": {"route:L": "diamond"}}` into a file
+	// that wants `{"routes": {"L": {"shape": "diamond"}}}`. Both parse.
+	// Only one does anything.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	var d Doc
-	if err := json.Unmarshal(raw, &d); err != nil {
-		return Doc{}, false, fmt.Errorf("%s: %w", path, err)
+	if err := dec.Decode(&d); err != nil {
+		return Doc{}, false, fmt.Errorf("%s: %w\n"+
+			"  a curation document is subject-keyed: "+
+			`{"routes": {"L": {"color": "EE352E", "shape": "diamond"}}}`+"\n"+
+			"  see docs/CORRIDORS.md — the flat route:/agency: tables are internal", path, err)
 	}
 	return d, true, nil
 }

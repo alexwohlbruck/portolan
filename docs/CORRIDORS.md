@@ -217,9 +217,14 @@ The escape hatch is per route, in the curation document:
 `trunk: "route"` keeps that route out of a colour trunk without changing
 the class policy for everything around it.
 
+Note the nesting: `trunk` sits on the SUBJECT, inside `routes`. The
+`trunks` table in `style.Config` is the flattened internal form, not a
+key a file may use — see the box under "Bullet curation".
+
 ## Bullet curation
 
-Also the curation document, keyed like colours and names:
+Also the curation document. It is **subject-keyed**: name a route or an
+agency once, and hang everything known about it off that name.
 
 ```json
 {
@@ -227,6 +232,15 @@ Also the curation document, keyed like colours and names:
   "routes":   { "L": { "shape": "diamond", "font": "italic" } }
 }
 ```
+
+> **Not the flat form.** `internal/style`.Config holds parallel tables
+> keyed `"route:<id>"` / `"agency:<id>"` — `shapes`, `fonts`, `bordered`,
+> `trunks`. That is the *internal* shape `Doc.Config()` flattens a
+> document into, and it is **not** what a file may contain. Writing
+> `{"shapes": {"route:L": "diamond"}}` into a curation file used to parse
+> cleanly and apply nothing; it is now a hard error naming the right
+> shape, because a curation format that silently does nothing is the
+> worst kind.
 
 | key | values |
 |---|---|

@@ -1,6 +1,11 @@
 package style
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // The curation document addresses a subject once and every knob follows
 // the same key, so a curator learns one scheme. These check that fonts,
@@ -79,5 +84,76 @@ func TestEmptySetHasNoOverrides(t *testing.T) {
 	}
 	if _, ok := s.RouteBordered([]string{"L"}, []string{"MTA"}); ok {
 		t.Error("a bare set claims a border override")
+	}
+}
+
+// A curation document that applies nothing must SAY so. It has no
+// output of its own, so a wrongly-shaped one otherwise produces a map
+// that builds cleanly, changes nothing, and reports no reason.
+func TestWronglyShapedDocumentIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	// the flat internal Config shape, which is what a reader who met
+	// style.Config before the document format would reasonably write
+	bad := `{"shapes": {"route:L": "diamond"}, "fonts": {"route:L": "italic"}}`
+	path := DocPath(dir, "city")
+	if err := os.WriteFile(path, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := ReadDoc(path)
+	if err == nil {
+		t.Fatal("a document using the internal flat tables must be rejected, not silently ignored")
+	}
+	if !strings.Contains(err.Error(), "subject-keyed") {
+		t.Errorf("the error should show the right shape, got: %v", err)
+	}
+	// and LoadDir must surface it rather than falling back to defaults
+	if _, _, err := LoadDir(dir, "city"); err == nil {
+		t.Error("LoadDir swallowed the bad document")
+	}
+}
+
+func TestCorrectlyShapedDocumentStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"$schema":"x","routes":{"L":{"color":"EE352E","shape":"diamond",` +
+		`"font":"italic","bordered":true,"trunk":"route"}},` +
+		`"agencies":{"MTA":{"line_colors":true}},` +
+		`"modes":{"tram":{"width":0.8}},"options":{"caterpillars":false}}`
+	if err := os.WriteFile(DocPath(dir, "city"), []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, las, err := LoadDir(dir, "city")
+	if err != nil {
+		t.Fatalf("a valid document was rejected: %v", err)
+	}
+	if v, ok := set.RouteBordered([]string{"L"}, nil); !ok || !v {
+		t.Error("bordered did not survive the document")
+	}
+	if v, ok := set.RouteTrunk([]string{"L"}, nil); !ok || v != TrunkRoute {
+		t.Error("trunk did not survive the document")
+	}
+	if len(las) != 1 || las[0] != "MTA" {
+		t.Errorf("line agencies %v, want [MTA]", las)
+	}
+	if set.Caterpillars {
+		t.Error("options.caterpillars did not apply")
+	}
+}
+
+// A missing style directory is NOT an error: the class defaults are
+// compiled in, so a consumer that generates only its own city document
+// needs nothing copied from the repo.
+func TestNoStyleDirectoryResolvesToShippedDefaults(t *testing.T) {
+	set, las, err := LoadDir(filepath.Join(t.TempDir(), "nope"), "city")
+	if err != nil {
+		t.Fatalf("a missing style dir must resolve to defaults, got: %v", err)
+	}
+	if len(las) != 0 {
+		t.Errorf("line agencies %v, want none", las)
+	}
+	if got := set.Class("metro"); got.Width != 1.0 || got.Trunk != TrunkColor {
+		t.Errorf("metro defaults lost: %+v", got)
+	}
+	if got := set.Class("ferry"); got.BandFloor != 13 {
+		t.Errorf("ferry band floor %d, want the shipped 13", got.BandFloor)
 	}
 }

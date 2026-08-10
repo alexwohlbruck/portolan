@@ -22,9 +22,20 @@ import (
 //
 // Placement law: straight-ish sections, clear of junction cut-backs and
 // station markers, spaced so a corridor reads its roster without the
-// chain wallpapering the line. Bands 14/15 only — below z14 the drawn
-// slot offsets shrink (zoomScaledOffset) and constant-px bullets would
-// detach from their ribbons.
+// chain wallpapering the line.
+//
+// EVERY band carries chains — 15, 14, 13 and 0 (see the band switch
+// below). This comment used to say "bands 14/15 only", which was true
+// when chains were first placed and stopped being true when per-band
+// spacing arrived: the spacing widens as the map shrinks (320 m at z15
+// out to 3200 m for the z0-13 band, which is metred at z12) so that a
+// constant-pixel bullet keeps clear of its neighbours instead of
+// detaching from the ribbon.
+//
+// The stale version was load-bearing for a downstream consumer, who
+// read it, concluded chains below z14 would be invisible, and moved a
+// zoom threshold on that basis. A comment describing a constraint the
+// code has outgrown is worse than none: it is believed.
 
 // CatBullet is one bullet of one caterpillar chain.
 type CatBullet struct {
