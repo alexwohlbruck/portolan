@@ -135,7 +135,8 @@ export function activeRouteIdx(
 /** bullet image id for one route; the image itself is generated on
  *  demand by the styleimagemissing handler, so any city's bullets exist
  *  the moment a label asks for them. */
-export const bulletId = (label: string, hex: string) => `blt-${hex || '888888'}-${label}`
+export const bulletId = (label: string, hex: string, shape = '') =>
+  `blt-${hex || '888888'}-${shape}-${label}`
 
 // "FX"/"6X"/"7X" are express variants of a line the set already shows —
 // Apple never bullets them separately, and neither do we
@@ -152,13 +153,16 @@ export function bulletIdsOf(p: any): string[] {
   const labels = String(p.labels ?? '').split(',')
   const colors = String(p.route_colors ?? '').split(',')
   const modes = String(p.modes ?? '').split(',')
+  // shapes are aligned with routes like every other array here; absent
+  // means the default circle
+  const shapes = String(p.shapes ?? '').split(',')
   const seen = new Set<string>()
   const out: string[] = []
   labels.forEach((l, i) => {
     if (!l || l.length > 8) return
     if (modes[i] === 'regional' || modes[i] === 'bus') return
     if (isVariantLabel(l, labels)) return
-    const id = bulletId(l, colors[i])
+    const id = bulletId(l, colors[i], shapes[i] ?? '')
     if (seen.has(id)) return
     seen.add(id)
     out.push(id)

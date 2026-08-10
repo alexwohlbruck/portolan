@@ -5,6 +5,7 @@
       "name": "NYC",
       "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/5.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/37.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/38.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/917.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/3364.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/1070.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/6.zip,/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/34.zip",
       "rail": "testdata/nyc-rail.geojson",
+      "stops": "build/nyc-stops.geojson",
       "out": "build/nyc.geojson",
       "network": "sketches/network-5.json",
       "bbox": [
@@ -19,6 +20,7 @@
       "name": "Chicago",
       "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/29.zip,data/gtfs/metra.zip,data/gtfs/amtrak.zip",
       "rail": "build/chi-rail.geojson",
+      "stops": "build/chi-stops.geojson",
       "streets": "build/chi-streets.geojson",
       "out": "build/chi.geojson",
       "network": "sketches/network-29.json",
@@ -33,6 +35,7 @@
       "name": "Atlanta",
       "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/17.zip",
       "rail": "build/atlanta-rail.geojson",
+      "stops": "build/atlanta-stops.geojson",
       "out": "build/atlanta.geojson",
       "network": "sketches/network-atlanta.json",
       "bbox": [
@@ -47,6 +50,7 @@
       "name": "Charlotte",
       "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/886.zip",
       "rail": "build/charlotte-rail.geojson",
+      "stops": "build/charlotte-stops.geojson",
       "out": "build/charlotte.geojson",
       "network": "sketches/network-charlotte.json",
       "bbox": [
@@ -61,6 +65,7 @@
       "name": "Los Angeles",
       "gtfs": "data/gtfs/la.zip,data/gtfs/la-bus.zip",
       "rail": "build/la-rail.geojson",
+      "stops": "build/la-stops.geojson",
       "out": "build/la.geojson",
       "network": "sketches/network-la.json",
       "bbox": [
@@ -75,6 +80,7 @@
       "name": "London",
       "gtfs": "data/gtfs/london.zip",
       "rail": "build/london-rail.geojson",
+      "stops": "build/london-stops.geojson",
       "out": "build/london.geojson",
       "network": "sketches/network-london.json",
       "bbox": [
@@ -88,6 +94,7 @@
       "name": "Paris",
       "gtfs": "data/gtfs/paris.zip",
       "rail": "build/paris-rail.geojson",
+      "stops": "build/paris-stops.geojson",
       "out": "build/paris.geojson",
       "network": "sketches/network-paris.json",
       "bbox": [
@@ -96,16 +103,13 @@
         2.55,
         48.98
       ],
-      "streets": "build/paris-streets.geojson",
-      "line_agencies": [
-        "IDFM:71",
-        "IDFM:1046"
-      ]
+      "streets": "build/paris-streets.geojson"
     },
     "berlin": {
       "name": "Berlin",
       "gtfs": "data/gtfs/berlin.zip",
       "rail": "build/berlin-rail.geojson",
+      "stops": "build/berlin-stops.geojson",
       "out": "build/berlin.geojson",
       "network": "sketches/network-berlin.json",
       "bbox": [
@@ -120,6 +124,7 @@
       "name": "Tokyo",
       "gtfs": "data/gtfs/tokyo.zip,data/gtfs/tokyo-toei.zip",
       "rail": "build/tokyo-rail.geojson",
+      "stops": "build/tokyo-stops.geojson",
       "out": "build/tokyo.geojson",
       "network": "sketches/network-tokyo.json",
       "bbox": [
@@ -127,6 +132,118 @@
         35.6,
         139.85,
         35.78
+      ]
+    },
+    "dc": {
+      "name": "Washington DC",
+      "gtfs": "data/gtfs/dc.zip,data/gtfs/dc-streetcar.zip",
+      "rail": "build/dc-rail.geojson",
+      "stops": "build/dc-stops.geojson",
+      "out": "build/dc.geojson",
+      "network": "sketches/network-dc.json",
+      "bbox": [
+        -77.56,
+        38.72,
+        -76.82,
+        39.16
+      ]
+    },
+    "mexico": {
+      "name": "Mexico City",
+      "gtfs": "data/gtfs/mexico.zip",
+      "rail": "build/mexico-rail.geojson",
+      "stops": "build/mexico-stops.geojson",
+      "out": "build/mexico.geojson",
+      "network": "sketches/network-mexico.json",
+      "bbox": [
+        -99.36,
+        19.23,
+        -98.93,
+        19.72
+      ]
+    },
+    "amsterdam": {
+      "name": "Amsterdam",
+      "gtfs": "data/gtfs/amsterdam.zip",
+      "rail": "build/amsterdam-rail.geojson",
+      "stops": "build/amsterdam-stops.geojson",
+      "out": "build/amsterdam.geojson",
+      "network": "sketches/network-amsterdam.json",
+      "bbox": [
+        4.7,
+        52.26,
+        5.05,
+        52.45
+      ]
+    },
+    "barcelona": {
+      "name": "Barcelona",
+      "gtfs": "data/gtfs/barcelona.zip,data/gtfs/barcelona-fgc.zip,data/gtfs/barcelona-tbs.zip,data/gtfs/barcelona-tbx.zip",
+      "rail": "build/barcelona-rail.geojson",
+      "stops": "build/barcelona-stops.geojson",
+      "out": "build/barcelona.geojson",
+      "network": "sketches/network-barcelona.json",
+      "bbox": [
+        1.96,
+        41.29,
+        2.32,
+        41.51
+      ]
+    },
+    "boston": {
+      "name": "Boston",
+      "gtfs": "data/gtfs/boston.zip",
+      "rail": "build/boston-rail.geojson",
+      "stops": "build/boston-stops.geojson",
+      "out": "build/boston.geojson",
+      "network": "sketches/network-boston.json",
+      "bbox": [
+        -71.3,
+        42.17,
+        -70.92,
+        42.48
+      ]
+    },
+    "toronto": {
+      "name": "Toronto",
+      "gtfs": "data/gtfs/toronto.zip",
+      "rail": "build/toronto-rail.geojson",
+      "stops": "build/toronto-stops.geojson",
+      "out": "build/toronto.geojson",
+      "network": "sketches/network-toronto.json",
+      "bbox": [
+        -79.68,
+        43.56,
+        -79.1,
+        43.88
+      ]
+    },
+    "vienna": {
+      "name": "Vienna",
+      "gtfs": "data/gtfs/vienna.zip",
+      "rail": "build/vienna-rail.geojson",
+      "stops": "build/vienna-stops.geojson",
+      "out": "build/vienna.geojson",
+      "network": "sketches/network-vienna.json",
+      "bbox": [
+        16.15,
+        48.09,
+        16.55,
+        48.33
+      ]
+    },
+    "santiago": {
+      "name": "Santiago",
+      "gtfs": "data/gtfs/santiago.zip",
+      "rail": "build/santiago-rail.geojson",
+      "stops": "build/santiago-stops.geojson",
+      "out": "build/santiago.geojson",
+      "network": "sketches/network-santiago.json",
+      "bbox": [
+        -70.82,
+        -33.65,
+        -70.49,
+        -33.33
       ]
     }
   }

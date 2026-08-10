@@ -6,7 +6,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -81,12 +80,15 @@ func chart(args []string) {
 	gtfsPath := fs.String("gtfs", "", "GTFS zip (comma list: primary,overlay,…)")
 	railPath := fs.String("rail", "", "OSM rail extract (GeoJSON)")
 	streets := fs.String("streets", "", "OSM street extract (GeoJSON) — enables bus routes")
+	stops := fs.String("stops", "", "OSM transit-stop extract (GeoJSON) — station name/id matching")
 	bboxStr := fs.String("bbox", "", "w,s,e,n — clip pattern shapes to the window")
 	lineAg := fs.String("line-agencies", "", "comma list: regional agencies keeping per-line colors")
 	out := fs.String("out", "build.geojson", "output GeoJSON")
 	cover := fs.Float64("cover", 0.99, "pattern trip-coverage fraction")
 	scenario := fs.String("scenario", "", "service scenario id (see `portolan scenarios`)")
-	stylePath := fs.String("style", "", `style JSON: {"modes":{…},"colors":{…}} (already merged)`)
+	styleDir := fs.String("style-dir", style.DefaultDir, "curation documents: <dir>/_default.json + <dir>/<city>.json")
+	city := fs.String("city", "", "city id — selects <style-dir>/<city>.json")
+	stylePath := fs.String("style", "", "single pre-merged style document (overrides --style-dir)")
 	fs.Parse(args)
 	if *railPath == "" {
 		fs.Usage()
@@ -109,18 +111,28 @@ func chart(args []string) {
 	if *lineAg != "" {
 		las = strings.Split(*lineAg, ",")
 	}
+	// Curation resolves through the SAME loader the atlas uses, so a CLI
+	// build and a dashboard build of one city cannot disagree.
 	var sty *style.Set
 	if *stylePath != "" {
-		raw, err := os.ReadFile(*stylePath)
+		d, _, err := style.ReadDoc(*stylePath)
 		die(err)
-		var c style.Config
-		die(json.Unmarshal(raw, &c))
-		sty = style.New(c)
+		sty = style.New(d.Config())
+		if len(d.LineAgencies()) > 0 && len(las) == 0 {
+			las = d.LineAgencies()
+		}
+	} else {
+		set, dirLas, err := style.LoadDir(*styleDir, *city)
+		die(err)
+		sty = set
+		if len(las) == 0 {
+			las = dirLas
+		}
 	}
 	d := pipeline.DefaultDials()
 	d.Cover = *cover
 	err := pipeline.Chart(pipeline.ChartOpts{
-		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, BBox: bbox,
+		GTFS: *gtfsPath, Rail: *railPath, Streets: *streets, Stops: *stops, BBox: bbox,
 		LineAgencies: las, Scenario: *scenario, Style: sty,
 		Out: *out, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })

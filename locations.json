@@ -1,28 +1,28 @@
 [
  [
   "franklin",
-  "Franklin Av 2\u00b73\u00b74\u00b75 / S",
+  "Franklin Av 2·3·4·5 / S",
   40.67078,
   -73.95852,
   "5"
  ],
  [
   "schermerhorn",
-  "Hoyt\u2013Schermerhorn (kink)",
+  "Hoyt–Schermerhorn (kink)",
   40.6897,
   -73.98801,
   "5"
  ],
  [
   "times_sq",
-  "Times Sq \u2014 1\u00b72\u00b73 spur to S shuttle",
+  "Times Sq — 1·2·3 spur to S shuttle",
   40.75544,
   -73.98686,
   "5"
  ],
  [
   "borough_hall",
-  "Borough Hall (2\u00b73 \u00d7 4\u00b75 \u00d7 R + A/C S-kink)",
+  "Borough Hall (2·3 × 4·5 × R + A/C S-kink)",
   40.6921,
   -73.9888,
   "5"
@@ -36,7 +36,7 @@
  ],
  [
   "canal_ace",
-  "Canal St A\u00b7C\u00b7E (tight bend, keep it)",
+  "Canal St A·C·E (tight bend, keep it)",
   40.72272,
   -74.00529,
   "5"
@@ -1034,6 +1034,248 @@
    40.74965532590505,
    -73.90887109929614,
    40.75164742195088
+  ]
+ ],
+ [
+  "dc_lenfant",
+  "L'Enfant Plaza (B·O·S × G·Y)",
+  38.8848,
+  -77.0219,
+  "dc"
+ ],
+ [
+  "dc_rosslyn",
+  "Rosslyn (B·O·S split under the Potomac)",
+  38.8963,
+  -77.0715,
+  "dc"
+ ],
+ [
+  "mex_pantitlan",
+  "Pantitlán (1·5·9·A, four-line interchange)",
+  19.4156,
+  -99.0722,
+  "mexico"
+ ],
+ [
+  "mex_cablebus",
+  "Indios Verdes (Cablebús L1 meets Metro 3)",
+  19.4956,
+  -99.1197,
+  "mexico"
+ ],
+ [
+  "ams_centraal",
+  "Amsterdam Centraal (tram braid + metro)",
+  52.3789,
+  4.9005,
+  "amsterdam"
+ ],
+ [
+  "ams_depijp",
+  "De Pijp (M52 under the tram grid)",
+  52.3547,
+  4.8912,
+  "amsterdam"
+ ],
+ [
+  "bcn_catalunya",
+  "Plaça Catalunya (L1 × L3 × FGC)",
+  41.387,
+  2.1701,
+  "barcelona"
+ ],
+ [
+  "bcn_diagonal",
+  "Diagonal / Provença (L3·L5 × FGC L6·L7)",
+  41.3935,
+  2.1614,
+  "barcelona"
+ ],
+ [
+  "bos_boylston",
+  "Boylston (Green Line B·C·D·E in one tunnel)",
+  42.352,
+  -71.0745,
+  "boston"
+ ],
+ [
+  "bos_kenmore",
+  "Kenmore (B·C split from D)",
+  42.3489,
+  -71.0954,
+  "boston"
+ ],
+ [
+  "tor_queen_spadina",
+  "Queen × Spadina (501 × 510 streetcars)",
+  43.6485,
+  -79.3963,
+  "toronto"
+ ],
+ [
+  "tor_bloor_yonge",
+  "Bloor–Yonge (Line 1 × Line 2)",
+  43.671,
+  -79.3857,
+  "toronto"
+ ],
+ [
+  "vie_karlsplatz",
+  "Karlsplatz (U1·U2·U4 + tram trunk)",
+  48.2005,
+  16.3696,
+  "vienna"
+ ],
+ [
+  "vie_schottentor",
+  "Schottentor (Ring tram hub, U2)",
+  48.2153,
+  16.3628,
+  "vienna"
+ ],
+ [
+  "scl_los_heroes",
+  "Los Héroes (L1 × L2)",
+  -33.4447,
+  -70.6608,
+  "santiago"
+ ],
+ [
+  "scl_baquedano",
+  "Baquedano (L1 × L5)",
+  -33.437,
+  -70.6345,
+  "santiago"
+ ],
+ [
+  "bar_commuter_nonsense",
+  "bar_commuter_nonsense",
+  41.39044562371063,
+  2.1626165954668437,
+  "barcelona",
+  [
+   2.1447780941227563,
+   41.38024417819844,
+   2.180455096810931,
+   41.40064706922283
+  ]
+ ],
+ [
+  "bar_commuter_nonsense_2",
+  "bar_commuter_nonsense_2",
+  41.35399337591542,
+  2.1149053200399806,
+  "barcelona",
+  [
+   2.101703937510706,
+   41.343548977671446,
+   2.128106702569255,
+   41.3644377741594
+  ]
+ ],
+ [
+  "bar_commuter_nonsense_3",
+  "bar_commuter_nonsense_3",
+  41.34916612413092,
+  2.0541072449329647,
+  "barcelona",
+  [
+   2.046381435839322,
+   41.34342268677403,
+   2.061833054026607,
+   41.3549095614878
+  ]
+ ],
+ [
+  "bar_t2_zig",
+  "bar_t2_zig",
+  41.3655754891023,
+  2.0628079646583757,
+  "barcelona",
+  [
+   2.0598839175374906,
+   41.3628067737705,
+   2.065732011779261,
+   41.368344204434095
+  ]
+ ],
+ [
+  "par_long_ass_horizontal_beam",
+  "par_long_ass_horizontal_beam",
+  48.82752881821982,
+  2.402846929511824,
+  "paris",
+  [
+   2.225428345963678,
+   48.822612508605175,
+   2.5802655130599703,
+   48.83244512783446
+  ]
+ ],
+ [
+  "mex_1_zig_zag",
+  "mex_1_zig_zag",
+  19.484014582994817,
+  -99.16890222286304,
+  "mexico",
+  [
+   -99.2069382052231,
+   19.456115438740454,
+   -99.13086624050298,
+   19.51191372724918
+  ]
+ ],
+ [
+  "chi_sw_loop_corner_disconnecte",
+  "chi_sw_loop_corner_disconnected_ribbon_lines",
+  41.87721334889375,
+  -87.63341578244213,
+  "29",
+  [
+   -87.63418508771848,
+   41.87653547069172,
+   -87.63264647716578,
+   41.87789122709577
+  ]
+ ],
+ [
+  "mex_1_split",
+  "mex_1_split",
+  19.46461320115867,
+  -99.15783230167929,
+  "mexico",
+  [
+   -99.16527271673341,
+   19.45585649480482,
+   -99.15039188662516,
+   19.47336990751252
+  ]
+ ],
+ [
+  "lirr_fork",
+  "lirr_fork",
+  40.696369562213135,
+  -73.82110972563262,
+  "5",
+  [
+   -73.82326993405118,
+   40.695321840769225,
+   -73.81894951721407,
+   40.697417283657046
+  ]
+ ],
+ [
+  "lirr_jamaica_terminal",
+  "lirr_jamaica_terminal",
+  40.69978957374147,
+  -73.8072272097651,
+  "5",
+  [
+   -73.81453379706358,
+   40.69703191979613,
+   -73.79992062246664,
+   40.70254722768681
   ]
  ]
 ]

@@ -37,18 +37,14 @@ var navJS []byte
 
 // FeedCfg is one city in portolan.json.
 type FeedCfg struct {
-	Name         string    `json:"name"`
-	GTFS         string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
-	Rail         string    `json:"rail"`
-	Streets      string    `json:"streets"`       // optional street extract — enables bus routes
-	LineAgencies []string  `json:"line_agencies"` // regional agencies keeping per-line colors (RER)
-	Out          string    `json:"out"`
-	Network      string    `json:"network"` // drawn ground truth for scoring
-	BBox         []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
-	// embedded so "modes" and "colors" sit directly on the feed row: this
-	// city's class overrides and color fixes, layered over the config-wide
-	// style block.
-	style.Config
+	Name    string    `json:"name"`
+	GTFS    string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
+	Rail    string    `json:"rail"`
+	Streets string    `json:"streets"` // optional street extract — enables bus routes
+	Stops   string    `json:"stops"`   // optional OSM stop extract — station name/id matching
+	Out     string    `json:"out"`
+	Network string    `json:"network"` // drawn ground truth for scoring
+	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
 }
 
 // primaryGTFS: the first feed of the comma list — scenarios and mtime
@@ -63,15 +59,25 @@ func (f FeedCfg) primaryGTFS() string {
 type Config struct {
 	Feeds    map[string]FeedCfg `json:"feeds"`
 	Sketches string             `json:"sketches"`
-	// Style: config-wide class defaults and color overrides. A city's own
-	// block layers on top, field by field.
-	Style style.Config `json:"style"`
+	// StyleDir: where the curation documents live (default "style").
+	// Colours and names are NOT in this file — they are source code, one
+	// document per city, so they diff and revert on their own.
+	StyleDir string `json:"style_dir,omitempty"`
 }
 
-// styleFor resolves the effective style for one city: shipped defaults,
-// then the config-wide block, then the city's own.
-func (c Config) styleFor(f FeedCfg) *style.Set {
-	return style.New(c.Style, f.Config)
+// styleFor resolves the effective style for one city through the SAME
+// loader the CLI uses — style/_default.json then style/<city>.json. One
+// merge implementation, so a dashboard build and a `tools/city.sh build`
+// cannot disagree (they used to: the shell merged with jq and silently
+// dropped every knob it had not been taught).
+func (s *Server) styleFor(feed string) (*style.Set, []string) {
+	set, las, err := style.LoadDir(s.config().StyleDir, feed)
+	if err != nil {
+		// a broken document must not take the dashboard down; the build
+		// log is where the operator will look for it
+		return style.New(), nil
+	}
+	return set, las
 }
 
 type Server struct {
@@ -313,12 +319,13 @@ func (s *Server) Handler() http.Handler {
 	// rather than keeping its own copy of the table.
 	mux.HandleFunc("/api/style", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fc, _, ok := s.feedCfg(r)
+		_, feed, ok := s.feedCfg(r)
 		if !ok {
 			http.Error(w, "unknown feed", 404)
 			return
 		}
-		json.NewEncoder(w).Encode(s.config().styleFor(fc))
+		set, _ := s.styleFor(feed)
+		json.NewEncoder(w).Encode(set)
 	})
 	mux.HandleFunc("/api/cities", s.citiesAPI)
 	mux.HandleFunc("/api/cities/", s.cityAPI)
@@ -685,11 +692,12 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		var err error
 		switch cmd {
 		case "chart":
+			sty, las := s.styleFor(feed)
 			err = pipeline.Chart(pipeline.ChartOpts{
-				GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
-				LineAgencies: fc.LineAgencies,
+				GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets, Stops: fc.Stops,
+				LineAgencies: las,
 				BBox:         fc.BBox, Out: out, Dials: dials,
-				Style:    s.config().styleFor(fc),
+				Style:    sty,
 				Scenario: scen,
 			}, logf)
 		case "sound":

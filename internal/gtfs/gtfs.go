@@ -40,6 +40,11 @@ type Pattern struct {
 	// the trim margin) overrun the terminal by tail trackage; these are
 	// where service actually ends — the terminal-cut pass cuts here.
 	TermA, TermB geo.LL
+	// TermAID/TermBID: the same two stops by id. StopIDs is SORTED, so
+	// the ends of a route are not recoverable from it; the stations stage
+	// needs them to know which stops are termini (a line's last stop is a
+	// destination, and destinations get labelled).
+	TermAID, TermBID string
 }
 
 // Stop is one stops.txt record — platform or parent station. Only what
@@ -99,7 +104,21 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		Stops: map[string]Stop{}}
 	if af, ok := files["agency.txt"]; ok {
 		if err := eachRowCols(af, []string{"agency_id", "agency_name"},
-			func(v []string) { feed.Agencies[v[0]] = v[1] }); err != nil {
+			func(v []string) {
+				// agency_id is optional and small operators omit the whole
+				// column — Barcelona's FGC ships agency.txt with only a
+				// name. Keying on "" then made the sole-agency backfill
+				// below a no-op, every route kept an empty agency, and
+				// agency trunking silently fell back to COLOUR: seven FGC
+				// commuter lines drew as seven parallel ribbons down one
+				// corridor instead of one trunk. The name is the natural
+				// key, and it is what the config matches on anyway.
+				id := v[0]
+				if id == "" {
+					id = v[1]
+				}
+				feed.Agencies[id] = v[1]
+			}); err != nil {
 			return nil, err
 		}
 	}
@@ -334,6 +353,7 @@ func LoadFiltered(path string, coverFrac float64, keep func(Route) bool) (*Feed,
 		}
 		if e := shapeEnds[k.shape]; e != nil && e.ok {
 			pat.TermA, pat.TermB = stopLL[e.firstStop], stopLL[e.lastStop]
+			pat.TermAID, pat.TermBID = e.firstStop, e.lastStop
 		}
 		byRoute[k.route] = append(byRoute[k.route], pat)
 	}

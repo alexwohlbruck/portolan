@@ -104,6 +104,10 @@ type ChartOpts struct {
 	// drawn only when set; the streets join the MATCH graph but never the
 	// strand pool.
 	Streets string
+	// Stops: optional OSM transit-stop extract (tools/city.sh stops).
+	// When present, drawn stations are matched against it for their OSM
+	// id and — unless style osm_stop_names is off — their name.
+	Stops string
 	// LineAgencies: regional agencies whose routes keep per-line identity
 	// instead of collapsing into one agency trunk (Paris RER A–E). Config
 	// curation — see mode.SetLineAgencies.
@@ -385,7 +389,39 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 		nm += len(sts[i].Markers)
 	}
 	logf("stations: %d (%d markers) from %d patterns", len(sts), nm, len(rail))
-	if err := writeStations(o.Out+".stations.geojson", sts); err != nil {
+	// OSM stop matching: give each station its OSM object id, and adopt
+	// the name on the sign over the feed's bookkeeping. Entirely opt-in —
+	// a city with no stops extract loads nothing and matches nothing.
+	if o.Stops != "" {
+		ostops, err := LoadOSMStops(o.Stops)
+		if err != nil {
+			return err
+		}
+		if len(ostops) > 0 {
+			ms := MatchOSMStops(sts, ostops, frame)
+			renamed := ApplyOSMStopMatches(sts, ms, style.Active().OSMStopNames)
+			logf("osm stops: %d/%d stations matched of %d osm stops, %d renamed",
+				len(ms), len(sts), len(ostops), renamed)
+		}
+	}
+	// caterpillars: inline route bullets riding the ribbons, anchored on
+	// straight mid-station stretches (fork symbol-anchor-offset does the
+	// pixel-space group placement client-side). Style knob, global or
+	// per-city: style caterpillars=false builds a map without them.
+	var cats []CatBullet
+	if style.Active().Caterpillars {
+		cats = BuildCaterpillars(segs, sts, feed.Routes, frame)
+		logf("caterpillars: %d bullets in %d chains", len(cats), func() int {
+			g := map[int]bool{}
+			for _, c := range cats {
+				g[c.Group] = true
+			}
+			return len(g)
+		}())
+	} else {
+		logf("caterpillars: off (style)")
+	}
+	if err := writeStations(o.Out+".stations.geojson", sts, cats); err != nil {
 		return err
 	}
 	// the resolved style travels WITH the build: the viewer renders widths,

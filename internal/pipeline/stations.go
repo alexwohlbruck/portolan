@@ -37,6 +37,7 @@ type Station struct {
 	Routes   []string // route ids — the activity-mask join key
 	Labels   []string // short names — the future bullet text
 	RouteHex []string // display color per route (FAIR's precedence)
+	Shapes   []string // bullet outline per route ("" = the default circle)
 	Modes    []string // class per route — the class-toggle join key
 	Agencies []string // distinct agency display names
 	Lines    int      // distinct trunk keys — the marker rule (dot vs disc)
@@ -48,12 +49,101 @@ type Station struct {
 	// but loses it at Flushing Av, exactly like the ribbons.
 	Acts []string
 
+	// Term: this station is the end of at least one route. A terminus is a
+	// destination — it names where the line goes, so it earns a label
+	// before the mid-line stops around it, however few routes call.
+	Term bool
+	// Xfer: how many OTHER stations transfers.txt links this one to — the
+	// interchange signal. A one-route station that every rider changes at
+	// is a major stop and route count alone cannot see it.
+	Xfer int
+	// Imp: importance PERCENTILE within this city, 0–100. Absolute counts
+	// cannot gate label density across cities — Charlotte's busiest
+	// station has two routes, so any threshold tuned on NYC hides the
+	// whole system. A percentile says "the top n% of THIS city", which is
+	// the question the zoom gate is actually asking.
+	Imp int
+
+	// OSMID: the OSM object this station was matched to ("node/12345"),
+	// empty when nothing matched confidently. Emitted so a consumer can
+	// join a drawn station back to OpenStreetMap (docs/STOP-LABELS.md).
+	OSMID string
+
 	// Set by SnapStations: where the label anchors (the busiest marker),
 	// and one marker per ribbon bundle the station's lines snap to — a
 	// complex like Times Sq is one label but three bundles, each with its
 	// own marker.
 	LabelLL geo.LL
 	Markers []Marker
+}
+
+// shapeOf is the curated bullet outline for a route ("" = default circle).
+// Route override first, then its agency's — an operator brands the whole
+// family (every Vienna U-Bahn numeral sits in a square), and a single line
+// is the exception.
+func shapeOf(rt gtfs.Route) string {
+	sh, _ := style.Active().RouteShape(
+		[]string{rt.ID, rt.ShortName, rt.LongName},
+		[]string{rt.Agency, mode.AgencyName(rt.Agency)})
+	return sh
+}
+
+// rankStations scores importance and converts it to a within-city
+// percentile. Three signals, all already known: how many routes call, how
+// many distinct LINES they amount to (four branches of one trunk is one
+// line to a rider), and how many other stations transfers.txt links this
+// one to. The transfer term is what lets a one-route station read as
+// major — an interchange is important because you change there, which is
+// exactly what transfers.txt records.
+//
+// The output is a PERCENTILE, not a score, because the zoom gate's real
+// question is "is this in the top n% of this city?". Absolute thresholds
+// tuned on NYC hide Charlotte entirely: its busiest station has two
+// routes, below every cut-off, so the map drew one label at z13 and none
+// at z11.
+func rankStations(sts []Station) {
+	if len(sts) == 0 {
+		return
+	}
+	score := make([]float64, len(sts))
+	for i := range sts {
+		s := &sts[i]
+		score[i] = float64(len(s.Routes)) + 1.5*float64(s.Lines) +
+			2*float64(s.Xfer) + 0.5*float64(len(s.Markers))
+		if s.Term {
+			// a terminus names where the line GOES. Worth roughly three
+			// transfer links — enough to lift a quiet end-of-line stop
+			// clear of the mid-line stops around it, not enough to
+			// outrank a real interchange.
+			score[i] += 6
+		}
+	}
+	order := make([]int, len(sts))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		if score[order[a]] != score[order[b]] {
+			return score[order[a]] < score[order[b]]
+		}
+		return sts[order[a]].Name < sts[order[b]].Name
+	})
+	// ties share a percentile: three equal stations must gate identically
+	// or which one survives depends on sort order, which is not a
+	// cartographic decision
+	n := float64(len(sts))
+	i := 0
+	for i < len(order) {
+		j := i
+		for j+1 < len(order) && score[order[j+1]] == score[order[i]] {
+			j++
+		}
+		pct := int(math.Round(100 * float64(i) / math.Max(1, n-1)))
+		for k := i; k <= j; k++ {
+			sts[order[k]].Imp = pct
+		}
+		i = j + 1
+	}
 }
 
 // Marker is one drawn station marker, snapped onto the FAIR-adjusted
@@ -66,6 +156,7 @@ type Marker struct {
 	Routes   []string
 	Labels   []string // aligned with Routes — this corridor's own bullets
 	RouteHex []string // aligned with Routes
+	Shapes   []string // aligned with Routes — bullet outline per route
 	Modes    []string // aligned with Routes
 	Acts     []string // aligned with Routes — hours at this marker ("" unknown)
 	Lines    int      // distinct trunks at THIS marker
@@ -121,10 +212,17 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 	stopRoutes := map[string]map[string]bool{}
 	routeByID := map[string]gtfs.Route{}
 	routePats := map[string][]int{}
+	isTerm := map[string]bool{} // stop ids that end some drawn pattern
 	for pi, p := range pats {
 		c := mode.Of(p.Route.Type)
 		if c == mode.Bus || c.Hidden() {
 			continue
+		}
+		if p.TermAID != "" {
+			isTerm[p.TermAID] = true
+		}
+		if p.TermBID != "" {
+			isTerm[p.TermBID] = true
 		}
 		routeByID[p.Route.ID] = p.Route
 		routePats[p.Route.ID] = append(routePats[p.Route.ID], pi)
@@ -202,6 +300,15 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 				}
 			}
 			name = best
+		}
+		// A stop-name override replaces the station's IDENTITY, not just
+		// its drawn label: the same string then feeds normName and the
+		// same-name merge, so a renamed station cannot disagree with
+		// itself between the pill and the complex it belongs to.
+		if sty := style.Active(); sty.AnyName() {
+			if n, ok := sty.StopName(k, name); ok {
+				name = n
+			}
 		}
 		var cx, cy float64
 		for _, ll := range g.lls {
@@ -283,6 +390,25 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 		merged[r] = append(merged[r], i)
 	}
 
+	// transfer degree per group: distinct other groups reachable by a
+	// transfers.txt edge. Computed before merging collapses the groups,
+	// then summed onto the station each group lands in.
+	xferOf := map[string]map[string]bool{}
+	for _, tr := range feed.Transfers {
+		a, b := groupKeyOf(tr[0]), groupKeyOf(tr[1])
+		if a == b {
+			continue
+		}
+		if xferOf[a] == nil {
+			xferOf[a] = map[string]bool{}
+		}
+		if xferOf[b] == nil {
+			xferOf[b] = map[string]bool{}
+		}
+		xferOf[a][b] = true
+		xferOf[b][a] = true
+	}
+
 	roots := make([]int, 0, len(merged))
 	for r := range merged {
 		roots = append(roots, r)
@@ -327,6 +453,28 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 		sortBullets(rids, routeByID)
 
 		st := Station{Name: name, LL: geo.LL{Lon: cx / float64(np), Lat: cy / float64(np)}}
+		{
+			out := map[string]bool{}
+			inside := map[string]bool{}
+			for _, ni := range members {
+				inside[nodes[ni].g.key] = true
+			}
+			for _, ni := range members {
+				for other := range xferOf[nodes[ni].g.key] {
+					if !inside[other] {
+						out[other] = true
+					}
+				}
+			}
+			st.Xfer = len(out)
+			for _, ni := range members {
+				for _, sid := range nodes[ni].g.stops {
+					if isTerm[sid] {
+						st.Term = true
+					}
+				}
+			}
+		}
 		trunkHexes := map[string]map[string]int{} // trunk key → hex votes
 		agencies := map[string]bool{}
 		for _, rid := range rids {
@@ -337,6 +485,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 			st.Labels = append(st.Labels, displayLabel(rt))
 			hx := routeHex(rt)
 			st.RouteHex = append(st.RouteHex, hx)
+			st.Shapes = append(st.Shapes, shapeOf(rt))
 			st.Modes = append(st.Modes, mode.Of(rt.Type).String())
 			tk := mode.TrunkKey(rt)
 			if trunkHexes[tk] == nil {
@@ -409,6 +558,7 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 		}
 		out = append(out, st)
 	}
+	rankStations(out)
 	return out
 }
 
@@ -560,6 +710,7 @@ func SnapStations(sts []Station, segs []stages.Segment, frame geo.Frame,
 				m.Modes = append(m.Modes, modeOf[r])
 				m.Labels = append(m.Labels, displayLabel(routes[r]))
 				m.RouteHex = append(m.RouteHex, routeHex(routes[r]))
+				m.Shapes = append(m.Shapes, shapeOf(routes[r]))
 				m.Acts = append(m.Acts, actOf(r))
 			}
 			trunks := map[string]bool{}
@@ -768,6 +919,11 @@ func routeHex(r gtfs.Route) string {
 // arrays are comma-joined in the geojson — a comma inside a long name
 // would shift every array after it.
 func displayLabel(rt gtfs.Route) string {
+	if sty := style.Active(); sty.AnyName() {
+		if n, ok := sty.RouteName(rt.ID, rt.ShortName, rt.LongName); ok {
+			return strings.ReplaceAll(n, ",", " ")
+		}
+	}
 	l := rt.ShortName
 	if l == "" {
 		l = rt.LongName
@@ -919,7 +1075,7 @@ func naturalCmp(a, b string) int {
 // `ftype: "marker"` feature per snapped bundle — a complex is one label
 // and as many markers as corridors. Aligned per-route arrays are
 // comma-joined like ribbon `routes`.
-func writeStations(path string, sts []Station) error {
+func writeStations(path string, sts []Station, cats []CatBullet) error {
 	fc := collection{Type: "FeatureCollection"}
 	pt := func(ll geo.LL) json.RawMessage {
 		raw, _ := json.Marshal([2]float64{ll.Lon, ll.Lat})
@@ -930,23 +1086,32 @@ func writeStations(path string, sts []Station) error {
 		if label == (geo.LL{}) {
 			label = s.LL
 		}
+		stProps := map[string]any{
+			"ftype":        "station",
+			"name":         s.Name,
+			"routes":       strings.Join(s.Routes, ","),
+			"labels":       strings.Join(s.Labels, ","),
+			"route_colors": strings.Join(s.RouteHex, ","),
+			"shapes":       strings.Join(s.Shapes, ","),
+			"modes":        strings.Join(s.Modes, ","),
+			"agencies":     strings.Join(s.Agencies, ","),
+			"nroutes":      len(s.Routes),
+			"nlines":       s.Lines,
+			"line_colors":  strings.Join(s.LineHex, ","),
+			"rank":         len(s.Routes),
+			"imp":          s.Imp,
+			"xfer":         s.Xfer,
+			"term":         s.Term,
+			"nmarkers":     len(s.Markers),
+			"acts":         strings.Join(s.Acts, ";"),
+		}
+		// the OSM join key, only where a match was confident enough to
+		// stand behind — an absent key is an honest "not matched"
+		if s.OSMID != "" {
+			stProps["osm"] = s.OSMID
+		}
 		fc.Features = append(fc.Features, feature{
-			Type: "Feature",
-			Props: map[string]any{
-				"ftype":        "station",
-				"name":         s.Name,
-				"routes":       strings.Join(s.Routes, ","),
-				"labels":       strings.Join(s.Labels, ","),
-				"route_colors": strings.Join(s.RouteHex, ","),
-				"modes":        strings.Join(s.Modes, ","),
-				"agencies":     strings.Join(s.Agencies, ","),
-				"nroutes":      len(s.Routes),
-				"nlines":       s.Lines,
-				"line_colors":  strings.Join(s.LineHex, ","),
-				"rank":         len(s.Routes),
-				"nmarkers":     len(s.Markers),
-				"acts":         strings.Join(s.Acts, ";"),
-			},
+			Type: "Feature", Props: stProps,
 			Geom: geomJSON{Type: "Point", Coords: pt(label)},
 		})
 		for _, m := range s.Markers {
@@ -956,11 +1121,13 @@ func writeStations(path string, sts []Station) error {
 				"routes":       strings.Join(m.Routes, ","),
 				"labels":       strings.Join(m.Labels, ","),
 				"route_colors": strings.Join(m.RouteHex, ","),
+				"shapes":       strings.Join(m.Shapes, ","),
 				"modes":        strings.Join(m.Modes, ","),
 				"acts":         strings.Join(m.Acts, ";"),
 				"nlines":       m.Lines,
 				"bearing":      math.Round(m.Bearing*10) / 10,
 				"rank":         len(s.Routes),
+				"imp":          s.Imp,
 				"nmarkers":     len(s.Markers),
 			}
 			if m.Pill {
@@ -980,6 +1147,30 @@ func writeStations(path string, sts []Station) error {
 				Geom:  geomJSON{Type: "Point", Coords: pt(m.LL)},
 			})
 		}
+	}
+	// caterpillar bullets ride in the same artifact: one point per bullet,
+	// the map-aligned px vector as an [x, y] array for the fork's
+	// data-driven symbol-anchor-offset
+	for _, c := range cats {
+		fc.Features = append(fc.Features, feature{
+			Type: "Feature",
+			Props: map[string]any{
+				"ftype": "cat",
+				"route": c.Route,
+				"label": c.Label,
+				"hex":   c.Hex,
+				"acts":  c.Acts,
+				"mode":  c.Mode,
+				"veclo": c.VecLo,
+				"text":  c.Text,
+				"ang":   c.Ang,
+				"shape": c.Shape,
+				"vec":   c.Vec,
+				"band":  c.Band,
+				"grp":   c.Group,
+			},
+			Geom: geomJSON{Type: "Point", Coords: pt(c.LL)},
+		})
 	}
 	return writeFC(path, fc)
 }

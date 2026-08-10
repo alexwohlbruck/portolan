@@ -395,7 +395,9 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
       const { bulletIdsOf } = await import('../src/lib/dynamic.ts')
       const atl = sts.find((f) => f.properties.name === 'Atlantic Av-Barclays Ctr')
       const ids = atl ? bulletIdsOf(atl.properties) : []
-      const shown = ids.map((id) => id.split('-').slice(2).join('-'))
+      // blt-<hex>-<shape>-<label>; shape may be empty, and a label can
+      // itself contain hyphens, so drop exactly two leading fields
+      const shown = ids.map((id) => id.split('-').slice(3).join('-'))
       check('Atlantic Av-Barclays merged bullets keep all 10 incl. 4 and 5',
         ids.length === 10 && shown.includes('4') && shown.includes('5'),
         `got ${shown.join(',')}`)
@@ -493,6 +495,23 @@ if (!fs.existsSync(unionPath) || !fs.existsSync(scenPath)) {
     }
     check('the H relay tail west of Rockaway Blvd is never lit', tailLit === 0, `${tailLit} lit`)
     check('the H extension IS lit east of Rockaway Blvd on Sat 14:00', east321)
+
+    // caterpillar bullets never advertise phantoms: a route kept on the
+    // union with zero hours (the E past its WTC terminal) must not get a
+    // bullet on that stretch
+    const stP = path.join(repo, 'build/nyc.geojson.stations.geojson')
+    if (fs.existsSync(stP)) {
+      const cats = JSON.parse(fs.readFileSync(stP, 'utf8')).features.filter(
+        (f) => f.properties.ftype === 'cat')
+      const zero = cats.filter((f) => f.properties.acts === '0'.repeat(42))
+      check('no caterpillar bullet carries a zero-hours mask', zero.length === 0,
+        `${zero.length} phantom bullets`)
+      const eEast = cats.filter((f) => f.properties.label === 'E' &&
+        f.geometry.coordinates[0] > -74.008 && f.geometry.coordinates[0] < -73.95 &&
+        f.geometry.coordinates[1] < 40.712 && f.geometry.coordinates[1] > 40.7)
+      check('no E bullet east of its World Trade Center terminal', eEast.length === 0,
+        `${eEast.length} E bullets on the Cranberry stretch`)
+    }
 
     // flatbush_willoughby: no tunnel→bridge phantom. At the fork where
     // the Montague legs leave the bridge trunk, the legs separate slower

@@ -57,25 +57,22 @@ type cityStatus struct {
 }
 
 type cityJSON struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name"`
-	GTFS         string                 `json:"gtfs"`
-	Rail         string                 `json:"rail"`
-	Streets      string                 `json:"streets,omitempty"`
-	Out          string                 `json:"out"`
-	Network      string                 `json:"network,omitempty"`
-	BBox         []float64              `json:"bbox,omitempty"`
-	LineAgencies []string               `json:"line_agencies,omitempty"`
-	Modes        map[string]style.Class `json:"modes,omitempty"`
-	Colors       map[string]string      `json:"colors,omitempty"`
-	Status       *cityStatus            `json:"status,omitempty"`
+	ID      string      `json:"id"`
+	Name    string      `json:"name"`
+	GTFS    string      `json:"gtfs"`
+	Rail    string      `json:"rail"`
+	Streets string      `json:"streets,omitempty"`
+	Stops   string      `json:"stops,omitempty"`
+	Out     string      `json:"out"`
+	Network string      `json:"network,omitempty"`
+	BBox    []float64   `json:"bbox,omitempty"`
+	Status  *cityStatus `json:"status,omitempty"`
 }
 
 func (s *Server) cityJSONOf(id string, fc FeedCfg) cityJSON {
 	c := cityJSON{
 		ID: id, Name: fc.Name, GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
-		Out: fc.Out, Network: fc.Network, BBox: fc.BBox,
-		LineAgencies: fc.LineAgencies, Modes: fc.Config.Modes, Colors: fc.Config.Colors,
+		Stops: fc.Stops, Out: fc.Out, Network: fc.Network, BBox: fc.BBox,
 	}
 	st := &cityStatus{Rail: statOf(fc.Rail)}
 	for _, p := range strings.Split(fc.GTFS, ",") {
@@ -160,11 +157,7 @@ func (s *Server) cityAPI(w http.ResponseWriter, r *http.Request) {
 			} else {
 				delete(row, "bbox")
 			}
-			if len(in.LineAgencies) > 0 {
-				row["line_agencies"] = in.LineAgencies
-			} else {
-				delete(row, "line_agencies")
-			}
+			setStr(row, "stops", in.Stops)
 			feeds[id] = row
 			return nil
 		})
@@ -209,63 +202,50 @@ func setStr(row map[string]any, key, val string) {
 // bake today's defaults into every city and freeze them there.
 func (s *Server) styleConfigAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fc, feed, ok := s.feedCfg(r)
+	_, feed, ok := s.feedCfg(r)
 	if !ok {
 		http.Error(w, "unknown feed", 404)
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		json.NewEncoder(w).Encode(map[string]any{
-			"global": s.config().Style,
-			"city":   fc.Config,
-		})
+		dir := s.config().StyleDir
+		def, _, err := style.ReadDoc(style.DocPath(dir, "_default"))
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		city, _, err := style.ReadDoc(style.DocPath(dir, feed))
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"global": def, "city": city})
 	case http.MethodPost:
+		// Only what a human typed is persisted. Names discovered by the
+		// OSM stop matcher are derived at build time and never written
+		// back — a config that recorded them would freeze one day's OSM
+		// against every later build and quietly stop tracking upstream.
 		var in struct {
-			Global *style.Config `json:"global"`
-			City   *style.Config `json:"city"`
+			Global *style.Doc `json:"global"`
+			City   *style.Doc `json:"city"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		err := s.editConfig(func(raw map[string]any) error {
-			if in.Global != nil {
-				if len(in.Global.Modes) == 0 && len(in.Global.Colors) == 0 &&
-					in.Global.BulletOrder == "" {
-					delete(raw, "style")
-				} else {
-					raw["style"] = in.Global
-				}
+		dir := s.config().StyleDir
+		var err error
+		if in.Global != nil {
+			err = style.WriteDoc(dir, "_default", *in.Global)
+		}
+		if err == nil && in.City != nil {
+			if _, ok := s.config().Feeds[feed]; !ok {
+				http.Error(w, fmt.Sprintf("unknown city %q", feed), 400)
+				return
 			}
-			if in.City != nil {
-				feeds, _ := raw["feeds"].(map[string]any)
-				if feeds == nil {
-					return fmt.Errorf("no feeds in config")
-				}
-				row, _ := feeds[feed].(map[string]any)
-				if row == nil {
-					return fmt.Errorf("unknown city %q", feed)
-				}
-				if len(in.City.Modes) == 0 {
-					delete(row, "modes")
-				} else {
-					row["modes"] = in.City.Modes
-				}
-				if len(in.City.Colors) == 0 {
-					delete(row, "colors")
-				} else {
-					row["colors"] = in.City.Colors
-				}
-				if in.City.BulletOrder == "" {
-					delete(row, "bullet_order")
-				} else {
-					row["bullet_order"] = in.City.BulletOrder
-				}
-				feeds[feed] = row
-			}
-			return nil
-		})
+			err = style.WriteDoc(dir, feed, *in.City)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
