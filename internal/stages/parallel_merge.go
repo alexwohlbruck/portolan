@@ -153,6 +153,23 @@ func overlapRun(a, b *geo.Line, gauge, step, minRun float64) (lo, hi float64, ok
 	if bestHi-bestLo < minRun {
 		return 0, 0, false
 	}
+	// trim the ends back to genuinely PARALLEL separation. The gauge asks
+	// "could these merge here"; the ends of a run answer a different
+	// question — a junction's divergence fan stays under the gauge for
+	// its first 150-200 m while separating monotonically, and merging
+	// that stretch drags the trunk past the real junction (the 149 St
+	// green loop pinched into a buttonhook: the 4·5 trunk grew 140 m
+	// into the fan and the 5's transition had to hairpin back). A
+	// corridor hovers well inside the gauge; a fan only ever brushes it.
+	for bestHi-bestLo > 0 && b.DistTo(a.AtArc(bestHi)) > gauge*0.6 {
+		bestHi -= step
+	}
+	for bestHi-bestLo > 0 && b.DistTo(a.AtArc(bestLo)) > gauge*0.6 {
+		bestLo += step
+	}
+	if bestHi-bestLo < minRun {
+		return 0, 0, false
+	}
 	return bestLo, bestHi, true
 }
 
@@ -236,6 +253,17 @@ func MergeParallelCorridors(net *Network, routes map[string]gtfs.Route) int {
 			for bi := ai + 1; bi < len(net.Edges); bi++ {
 				lb := lines[bi]
 				if lb == nil || lb.Len() < minRun || soleTrunk(&net.Edges[bi]) != ta {
+					continue
+				}
+				// a LENS — two edges between one node pair — is structure,
+				// not a corridor: a balloon loop's legs are exactly this
+				// shape and merging them pinched the 149 St green loop
+				// into a buttonhook. Same-route lenses belong to
+				// mergeDirectionLenses with its significance bar; the
+				// rest are real (opposing one-way sides, terminal loops).
+				ef, et := net.Edges[ai].From, net.Edges[ai].To
+				bf, bt := net.Edges[bi].From, net.Edges[bi].To
+				if (ef == bf && et == bt) || (ef == bt && et == bf) {
 					continue
 				}
 				if !bboxNear(la, lb, gauge) {
@@ -338,27 +366,15 @@ func MergeParallelCorridors(net *Network, routes map[string]gtfs.Route) int {
 			case nB >= 0:
 				return nB
 			}
-			// snap before minting: a fresh node metres from an existing
-			// same-trunk junction creates a twin the graph can never fuse
-			// — at Jamaica the trunk seam drew 33 m apart and read as a
-			// floating whisker. Inherit the neighbour instead; the taper
-			// bends the median onto its position.
-			ta := soleTrunk(&net.Edges[pl.ai])
-			for ni := range net.Nodes {
-				if net.Nodes[ni].At.Dist(at) > 45 {
-					continue
-				}
-				for _, oe := range net.Nodes[ni].Adj {
-					if oe == pl.ai || oe == pl.bi {
-						continue
-					}
-					for _, rid := range net.Edges[oe].Routes {
-						if trunkOf(rid) == ta {
-							return ni
-						}
-					}
-				}
-			}
+			// NO node-snap here. It was tried (inherit any same-trunk node
+			// within 45 m instead of minting) to close the Jamaica whisker
+			// gap — but PinEdgeTips is what actually closed it, and the
+			// snap PINCHED things that are genuinely two nodes ~40 m
+			// apart: the 149 St green loop's mouth folded into a
+			// buttonhook and the Mott Haven wye funnelled three strands
+			// into one point, drawing a braid. Distinct nearby nodes are
+			// often real (a balloon mouth IS two nodes); fusing belongs
+			// to the weld rules that check geometry, never to proximity.
 			net.Nodes = append(net.Nodes, Node{At: at})
 			return len(net.Nodes) - 1
 		}
