@@ -4,11 +4,22 @@ Every city portolan builds is one row in `portolan.json` — a GTFS zip, an
 OSM rail extract, an output path, a drawn network to score against, and the
 Overpass window the extract came from. There is **no city-specific code**:
 that's the claim the extra cities exist to keep honest. NYC and Chicago are
-the two the algorithm was tuned on; the seven below widen the shapes it has
+the two the algorithm was tuned on; the rest widen the shapes it has
 to survive (LA's street-running light rail, London's flat junctions, Tokyo's
 JR bundles under private-railway viaducts, Paris and Berlin's mixed
 metro/S-Bahn/RER stacks, and two small US systems where a single wrong
 bundle is the whole map).
+
+The 2026-08-09 batch adds eight more, chosen for the shapes they add
+rather than for size: Boston's Green Line (four branches down one tunnel —
+the hardest trunk-and-branch case on the continent), Toronto's streetcar
+mesh laid over a subway, Vienna's 28 tram lines through a compact core,
+Amsterdam's canal-ring tram braid, Barcelona's metro + FGC + two separate
+tram operators in four feeds, Mexico City's five infrastructure classes
+(metro, light rail, suburban rail, trolleybus, three **Cablebús** gondola
+lines), Washington's colour-named Metro, and **Santiago — the first
+southern-hemisphere city**, which is the only test that no latitude sign
+is baked into the geometry stack.
 
 | feed key | city | GTFS source | builds | notes |
 |---|---|---|---|---|
@@ -21,6 +32,14 @@ bundle is the whole map).
 | `paris` | Paris (RATP) | Transitland `762` | ⚠️ 4690 seg | Metro/tram correct; RER + Transilien + TER stray outside the window (below) |
 | `berlin` | Berlin (BVG) | Transitland `1268`, subset + pfaedle | ✅ 1358 seg | U1–U9 + 89 tram labels; no S-Bahn (below) |
 | `tokyo` | Tokyo Metro | Transitland `8923` + pfaedle | ✅ 132 seg | all 9 lines, official colours |
+| `dc` | Washington (WMATA) | Transitland `1243` + `931` | ✅ 256 seg | 6 Metro lines + DC Streetcar; single-letter bullets are the feed's own `route_short_name` |
+| `mexico` | Mexico City (SEMOVI) | Transitland `42` | ✅ 217 seg | Metro 1–9/A/B/L12 + Tren Ligero + Suburbano + 3 Cablebús gondolas (`aerial`); Metrobús/Trolebús need a `streets` extract |
+| `amsterdam` | Amsterdam (GVB) | Transitland `713`, subset | ✅ 1116 seg | 5 metro + 18 tram + 10 ferry; `--agency GVB` out of the 240 MB NL national feed |
+| `barcelona` | Barcelona | Transitland `823`+`4849`+`4307`+`4308` | ⚠️ 3139 seg | TMB metro + FGC + Trambaix + Trambesòs; FGC regional strays (below) |
+| `boston` | Boston (MBTA) | Transitland `24` | ⚠️ 3182 seg | Green Line trunk resolves exactly right (`B·C·D·E` → `B·C·D` → `C·D`); ferries dominate the segment count (below) |
+| `toronto` | Toronto (TTC) | Transitland `67` | ✅ 1489 seg | 3 subway + 20 streetcar; downtown streetcar trunks read `504·506·510` |
+| `vienna` | Vienna (Wiener Linien) | Transitland `936` | ✅ 2501 seg | 5 U-Bahn + 28 tram; the feed files ~10 `route_id`s per line — see "One line, many route ids" |
+| `santiago` | Santiago (Metro) | Transitland `768` | ✅ 113 seg | L1–L6 + Metrotrén; **southern hemisphere** — builds with no sign fixes anywhere |
 
 ## Feeds without shapes
 
@@ -112,6 +131,70 @@ TER in with the Metro and trams. Those run hundreds of km past any
 track-following ribbons. The Metro/tram core — the part that matters for
 PAR-12 — is clean. Widening the bbox to cover TER is not practical (see
 Tokyo below); a Metro-only feed would be the fix.
+
+**One line, many route ids.** Wiener Linien files a separate `route_id`
+per service variant: tram 11 arrives as a dozen routes that all display
+"11", and the U-Bahn likewise. The trunk label is built from the routes on
+an edge, so Vienna's first build read `11·11·11·11 +37` and every chain
+stacked a dozen identical bullets (1607 of them citywide). Both label
+paths now fold repeated display names before counting — `stages.fair`'s
+`label()` and the caterpillar roster — which is the right rule everywhere:
+a label names LINES, and route ids are feed bookkeeping. Vienna reads
+`11·6·71·D` and `25·26·27·30 +2` after the fix, at 557 bullets; Toronto
+and Boston rebuilt byte-identical, which is the regression proof that the
+fold only fires on real repeats. Expect this shape from any operator that
+models variants as routes — it is not specific to Austria.
+
+**Colour trunking assumes feeds carry line colours. Much of the world's
+don't.** `metro`/`tram`/`monorail` trunk by `route_color` (law 5), so a
+feed that gives every tram the same colour — or none — collapses every
+tram sharing track into ONE ribbon. Three of the cities here hit it:
+
+| feed | drawable routes | blank `route_color` | effect |
+|---|---|---|---|
+| Berlin | 30 | **30** | 64% of tram length draws as one ribbon labelled `Berliner Verkehrsbetriebe` |
+| Amsterdam | 23 | **18** | 49% of tram length draws as one ribbon labelled `GVB` |
+| Vienna | 267 | 0, but **212 share `C00808`** | all trams one red ribbon; label lists the lines (`10·2·43`) |
+
+The two behaviours differ because a blank colour ends up agency-keyed, and
+a multi-route agency trunk is labelled with the agency name — so Berlin and
+Amsterdam read as an operator blob, which looks like a bug on the map,
+while Vienna at least names its lines. Neither is a regression: Berlin
+rebuilt identically with and without the 2026-08-09 label fold, and the
+same collapse is visible in the 2026-08-08 build (`12·M1`, `18·M10·M13·12
++4` — already one trunk, just labelled differently).
+
+Vienna's case is arguably correct (Wiener Linien trams really are all
+red). Berlin's and Amsterdam's are not: those are numbered lines that
+belong on their own ribbons. The candidate fix is to trunk by **route**
+rather than agency when the colour key is blank — one ribbon per line,
+which is what the `ferry`/`aerial` classes already do — and it cannot
+disturb NYC or Chicago, whose feeds carry real colours. **Not applied:
+that is a change to law 5 and wants an owner call.** Any global expansion
+should treat "does this feed carry per-line colours?" as an onboarding
+check, not an assumption.
+
+**Boston is a ferry city, structurally.** 2537 of its 3182 segments are
+ferry, 2525 km of them, with 1309 offset transitions. Nine harbour routes
+converge on Long Wharf and cross each other repeatedly on open water,
+and every near-touch is a junction, so SPLIT/ORDER/FAIR chop the ribbons
+into thousands of pieces. NYC shows the same thing at a quarter the scale
+(671 ferry segments), so this is amplification of existing behaviour, not
+a Boston bug — but it is the strongest argument yet for giving ferries the
+bus treatment (path-match-only, bypassing the bundling machinery), which
+would leave Boston with ~650 segments of actual rail. The rail itself is
+excellent: the Green Line trunk resolves `B·C·D·E` in the Boylston tunnel
+down through `B·C·D`, `C·D` and `D·E` as the branches peel off, which is
+exactly the case the city was added to test.
+
+**Barcelona's FGC strays like Paris.** Feed `4849` carries FGC's S1/S2/S3/
+S4 and R5/R6/R50/R53/R60/R63, which run to Manresa and Igualada — far past
+any Barcelona window — so 2718 of 3139 segments are `regional` and the
+out-of-window tails draw as chords. The metro/tram core (L1–L11, T1–T6)
+is clean, and the trunking is right: shared FGC track reads `R5·R53` and
+`R6·R63`. The FGC feed is also what makes Barcelona the slowest build in
+the set — 112 s in match, 219 s in fair, against 3 s for cities of similar
+size — because clipped long-haul patterns are expensive for Viterbi.
 
 **Overpass windows have a ceiling.** Tokyo's original
 `139.55,35.5,139.92,35.83` window 504'd on every endpoint and every retry —

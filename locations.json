@@ -1,28 +1,28 @@
 [
  [
   "franklin",
-  "Franklin Av 2\u00b73\u00b74\u00b75 / S",
+  "Franklin Av 2·3·4·5 / S",
   40.67078,
   -73.95852,
   "5"
  ],
  [
   "schermerhorn",
-  "Hoyt\u2013Schermerhorn (kink)",
+  "Hoyt–Schermerhorn (kink)",
   40.6897,
   -73.98801,
   "5"
  ],
  [
   "times_sq",
-  "Times Sq \u2014 1\u00b72\u00b73 spur to S shuttle",
+  "Times Sq — 1·2·3 spur to S shuttle",
   40.75544,
   -73.98686,
   "5"
  ],
  [
   "borough_hall",
-  "Borough Hall (2\u00b73 \u00d7 4\u00b75 \u00d7 R + A/C S-kink)",
+  "Borough Hall (2·3 × 4·5 × R + A/C S-kink)",
   40.6921,
   -73.9888,
   "5"
@@ -36,7 +36,7 @@
  ],
  [
   "canal_ace",
-  "Canal St A\u00b7C\u00b7E (tight bend, keep it)",
+  "Canal St A·C·E (tight bend, keep it)",
   40.72272,
   -74.00529,
   "5"
@@ -505,7 +505,7 @@
  ],
  [
   "ldn_baker_st",
-  "Baker St (Met/Circle/H\u0026C × Bakerloo/Jubilee)",
+  "Baker St (Met/Circle/H&C × Bakerloo/Jubilee)",
   51.5226,
   -0.1571,
   "london",
@@ -1035,5 +1035,117 @@
    -73.90887109929614,
    40.75164742195088
   ]
+ ],
+ [
+  "dc_lenfant",
+  "L'Enfant Plaza (B·O·S × G·Y)",
+  38.8848,
+  -77.0219,
+  "dc"
+ ],
+ [
+  "dc_rosslyn",
+  "Rosslyn (B·O·S split under the Potomac)",
+  38.8963,
+  -77.0715,
+  "dc"
+ ],
+ [
+  "mex_pantitlan",
+  "Pantitlán (1·5·9·A, four-line interchange)",
+  19.4156,
+  -99.0722,
+  "mexico"
+ ],
+ [
+  "mex_cablebus",
+  "Indios Verdes (Cablebús L1 meets Metro 3)",
+  19.4956,
+  -99.1197,
+  "mexico"
+ ],
+ [
+  "ams_centraal",
+  "Amsterdam Centraal (tram braid + metro)",
+  52.3789,
+  4.9005,
+  "amsterdam"
+ ],
+ [
+  "ams_depijp",
+  "De Pijp (M52 under the tram grid)",
+  52.3547,
+  4.8912,
+  "amsterdam"
+ ],
+ [
+  "bcn_catalunya",
+  "Plaça Catalunya (L1 × L3 × FGC)",
+  41.387,
+  2.1701,
+  "barcelona"
+ ],
+ [
+  "bcn_diagonal",
+  "Diagonal / Provença (L3·L5 × FGC L6·L7)",
+  41.3935,
+  2.1614,
+  "barcelona"
+ ],
+ [
+  "bos_boylston",
+  "Boylston (Green Line B·C·D·E in one tunnel)",
+  42.352,
+  -71.0745,
+  "boston"
+ ],
+ [
+  "bos_kenmore",
+  "Kenmore (B·C split from D)",
+  42.3489,
+  -71.0954,
+  "boston"
+ ],
+ [
+  "tor_queen_spadina",
+  "Queen × Spadina (501 × 510 streetcars)",
+  43.6485,
+  -79.3963,
+  "toronto"
+ ],
+ [
+  "tor_bloor_yonge",
+  "Bloor–Yonge (Line 1 × Line 2)",
+  43.671,
+  -79.3857,
+  "toronto"
+ ],
+ [
+  "vie_karlsplatz",
+  "Karlsplatz (U1·U2·U4 + tram trunk)",
+  48.2005,
+  16.3696,
+  "vienna"
+ ],
+ [
+  "vie_schottentor",
+  "Schottentor (Ring tram hub, U2)",
+  48.2153,
+  16.3628,
+  "vienna"
+ ],
+ [
+  "scl_los_heroes",
+  "Los Héroes (L1 × L2)",
+  -33.4447,
+  -70.6608,
+  "santiago"
+ ],
+ [
+  "scl_baquedano",
+  "Baquedano (L1 × L5)",
+  -33.437,
+  -70.6345,
+  "santiago"
  ]
 ]
