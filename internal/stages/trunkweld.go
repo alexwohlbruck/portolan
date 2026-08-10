@@ -329,6 +329,20 @@ func WeldTrunkThroats(net *Network, routes map[string]gtfs.Route) (welds, chords
 			el := geo.NewLine(e.Pts)
 
 			if e.Gap {
+				// REDUNDANT chord: the real track already connects these
+				// two nodes, right here, for this trunk. Then the bridge
+				// stands in for nothing — it just draws a second strand
+				// beside the steel and the pair reads as a split that no
+				// train makes (Mexico's Line 1 drew a 1.8 km lens: the
+				// straight chord bowing away from the 1.9 km real curve).
+				// No grain test is needed or wanted; a redundant chord
+				// parallel to its own corridor is the common case.
+				if via := altPath(ei, e.From, e.To, t, -1, el.Len()*1.6+200, 30); via != nil {
+					net.Edges = append(net.Edges[:ei], net.Edges[ei+1:]...)
+					chords++
+					changed = true
+					break
+				}
 				// gap chord: fabricated ink sideways out of a served
 				// corridor, with the trunk connected fine without it.
 				// "Sideways" shows either at the ends (exit against the
