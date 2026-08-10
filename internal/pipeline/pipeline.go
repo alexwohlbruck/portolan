@@ -344,6 +344,14 @@ func Chart(o ChartOpts, logf func(string, ...any)) error {
 	}
 	logf("split: %d nodes, %d edges (%.1fs)",
 		len(net.Nodes), len(net.Edges), time.Since(t0).Seconds())
+	// trunk throat weld: collapse same-trunk parallel strands (terminal
+	// interlockings hand every service its own platform track) and drop
+	// same-trunk gap chords — one spine per trunk wherever the strands
+	// stay within welding gauge (internal/stages/trunkweld.go)
+	if welds, chords := stages.WeldTrunkThroats(net, feed.Routes); welds+chords > 0 {
+		logf("trunk weld: %d strands welded, %d gap chords dropped → %d edges",
+			welds, chords, len(net.Edges))
+	}
 	if err := writeNetwork(o.Out, net, frame); err != nil {
 		return err
 	}
