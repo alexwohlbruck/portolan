@@ -342,11 +342,39 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		// the gap" test was really "is the gap wider than 40 m", and the
 		// straightness window collapsed to its 70 m floor.
 		mPerPx := 156543.03 * math.Cos(frame.ToLL(ref.Pts[0]).Lat*math.Pi/180) / math.Pow(2, bandZoom)
-		labs := make([]string, len(roster))
-		for i, b := range roster {
-			labs[i] = b.label
+		// ALONG-TRACK extent of what is actually drawn at one anchor.
+		// Bullets chain, so they span the whole roster; word labels CYCLE
+		// one per anchor, so they span exactly one label however many
+		// lines share the bundle. Counting the full roster for text made
+		// a 4-line trunk demand a 690 m gap and 485 m of straightness to
+		// place a 162 m label, which is why tightening the spacing could
+		// not make them any more frequent — the gates, not the spacing,
+		// were binding.
+		var bulletLabs, textLabs []string
+		for _, b := range roster {
+			if b.text {
+				textLabs = append(textLabs, b.label)
+			} else {
+				bulletLabs = append(bulletLabs, b.label)
+			}
 		}
-		chainM := float64(len(roster)) * catPitchFor(labs) * mPerPx
+		extentPx := float64(len(bulletLabs)) * catPitchFor(bulletLabs)
+		if len(textLabs) > 0 {
+			extentPx = math.Max(extentPx, catPitchFor(textLabs))
+		}
+		chainM := extentPx * mPerPx
+		// STRAIGHTNESS is a bullet constraint, not a label one. A chain of
+		// discs strung along a bend reads as a broken necklace — the discs
+		// stay upright while the line turns under them — but a word label
+		// set at the local tangent sits on a gentle curve perfectly well,
+		// which is what every road map does. Requiring it of text cost
+		// placements for nothing.
+		// ...and it is only a constraint for a MULTI-bullet chain. The
+		// along-track stagger is a straight line in map space, so on a
+		// bend the far bullets walk off the ribbon; a lone bullet has no
+		// stagger (along = 0) and sits on its lateral offset at the local
+		// tangent, which is well defined on a curve.
+		needStraight := len(bulletLabs) > 1
 		win := math.Max(70, chainM*0.7+30)
 		// a chain must not wallpaper the line: the further out the band
 		// draws, the more ground each chain has to cover
@@ -407,43 +435,64 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			if hi-lo < chainM+40 {
 				continue
 			}
-			mid := (lo + hi) / 2
-			if mid-lastAt < spacing {
-				continue
-			}
-			// midpoint first; if the corridor bends there, walk outward
-			// for the nearest straight spot still inside the gap
-			arc := math.NaN()
-			for d := 0.0; d <= (hi-lo)/2; d += 40 {
-				if mid+d <= hi && straightAt(mid+d) && clearOfStations(ref.AtArc(mid+d)) {
-					arc = mid + d
-					break
+			// How many anchors this gap carries. A BULLET chain takes one,
+			// centred — a necklace of discs repeated down a single block
+			// reads as clutter, and centring keeps it as far from the stop
+			// labels at either end as the corridor allows. WORD labels are
+			// different: they are how a rider identifies the line they are
+			// looking at, so a long gap should name it more than once, the
+			// way a road map repeats a highway shield. One chain per gap
+			// was the real ceiling on their frequency — the count tracked
+			// the number of station gaps and no amount of spacing moved it.
+			slots := 1
+			if !needStraight {
+				if n := int((hi - lo) / spacing); n > slots {
+					slots = n
 				}
-				if d > 0 && mid-d >= lo && straightAt(mid-d) && clearOfStations(ref.AtArc(mid-d)) {
-					arc = mid - d
-					break
+				if slots > 3 {
+					slots = 3
 				}
 			}
-			if math.IsNaN(arc) {
-				continue
-			}
-			// tangent in map-aligned px frame (+x east, +y south); frame
-			// XY is +x east, +y NORTH, so y flips
-			tf := ref.AtArc(arc + 6).Sub(ref.AtArc(arc - 6)).Unit()
-			tm := geo.Pt{X: tf.X, Y: -tf.Y}
-			props = append(props, catProposal{
-				band: k.band, pt: ref.AtArc(arc), tm: tm, seq: seq,
-				roster: append([]catEntry(nil), func() []catEntry {
-					es := make([]catEntry, len(roster))
-					for i, b := range roster {
-						es[i] = catEntry{route: b.route, label: b.label, hex: b.hex, acts: b.acts,
-							mode: b.mode, lat: b.lat, text: b.text, shape: b.shape}
+			for si := 0; si < slots; si++ {
+				// evenly spaced inside the gap, symmetric about its centre
+				mid := lo + (hi-lo)*(float64(si)+0.5)/float64(slots)
+				if mid-lastAt < spacing {
+					continue
+				}
+				// midpoint first; if the corridor bends there, walk outward
+				// for the nearest straight spot still inside the gap
+				arc := math.NaN()
+				for d := 0.0; d <= (hi-lo)/float64(2*slots); d += 40 {
+					if mid+d <= hi && (!needStraight || straightAt(mid+d)) && clearOfStations(ref.AtArc(mid+d)) {
+						arc = mid + d
+						break
 					}
-					return es
-				}()...),
-			})
-			lastAt = arc
-			seq++
+					if d > 0 && mid-d >= lo && (!needStraight || straightAt(mid-d)) && clearOfStations(ref.AtArc(mid-d)) {
+						arc = mid - d
+						break
+					}
+				}
+				if math.IsNaN(arc) {
+					continue
+				}
+				// tangent in map-aligned px frame (+x east, +y south); frame
+				// XY is +x east, +y NORTH, so y flips
+				tf := ref.AtArc(arc + 6).Sub(ref.AtArc(arc - 6)).Unit()
+				tm := geo.Pt{X: tf.X, Y: -tf.Y}
+				props = append(props, catProposal{
+					band: k.band, pt: ref.AtArc(arc), tm: tm, seq: seq,
+					roster: append([]catEntry(nil), func() []catEntry {
+						es := make([]catEntry, len(roster))
+						for i, b := range roster {
+							es[i] = catEntry{route: b.route, label: b.label, hex: b.hex, acts: b.acts,
+								mode: b.mode, lat: b.lat, text: b.text, shape: b.shape}
+						}
+						return es
+					}()...),
+				})
+				lastAt = arc
+				seq++
+			}
 		}
 	}
 
