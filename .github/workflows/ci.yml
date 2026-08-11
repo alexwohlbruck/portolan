@@ -37,6 +37,27 @@ jobs:
       - name: Test
         run: go test ./...
 
+  npm:
+    name: npm client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: clients/npm
+        run: npm install --no-audit --no-fund
+      - name: Typecheck and test
+        working-directory: clients/npm
+        # the tests build the real engine and drive it — a mock would
+        # only confirm this package's own assumptions about the contract
+        run: npm test
+
   format:
     name: gofmt
     runs-on: ubuntu-latest

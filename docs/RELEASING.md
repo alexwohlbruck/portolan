@@ -138,3 +138,40 @@ rather than claiming a release it is not.
 `VERSION` starts at `0.1.0` and `main` has not been used as a release
 branch before — it still points at the pre-rewrite tree. Bring `main`
 up to date with `dev` once, and that merge cuts `v0.1.0`.
+
+## The npm client
+
+`clients/npm` publishes [`@alexwohlbruck/portolan`](https://www.npmjs.com/package/@alexwohlbruck/portolan):
+a typed wrapper that spawns the engine, speaks the build API and decodes
+PLNB. **The engine ships inside it**, one binary per platform as an
+`optionalDependency`, so a consumer gets a new engine by bumping one
+dependency.
+
+Its version is the engine's version — they are published together, and
+the wrapper pins its six platform packages to the exact same number. A
+wrapper free to resolve a different engine could pair a decoder with a
+PLNB layout it does not understand, which is the one failure the version
+handshake exists to prevent.
+
+```bash
+make dist                                    # the six archives
+cd clients/npm
+node scripts/build-platform-packages.mjs     # binaries -> platforms/
+npm test                                     # builds a real engine and drives it
+
+for d in platforms/*/; do (cd "$d" && npm publish --access public); done
+npm publish --access public                  # the wrapper LAST
+```
+
+Publish the platform packages **before** the wrapper. npm resolves
+`optionalDependencies` at install time, so a wrapper published first is
+briefly installable with no engine behind it.
+
+`node scripts/build-platform-packages.mjs` reads the release archives
+rather than invoking the Go toolchain, so what npm carries is
+byte-identical to what the GitHub release carries.
+
+Publishing is deliberately **not** wired into `release.yml`. It needs an
+`NPM_TOKEN`, and an npm publish cannot be undone the way a GitHub
+release can — unpublishing is restricted and republishing a version is
+forbidden outright.
