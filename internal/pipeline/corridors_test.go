@@ -360,3 +360,87 @@ func mkdir(t *testing.T, parent, name string) string {
 }
 
 func quietf(string, ...any) {}
+
+// A band-filtered build must contain exactly ONE distinct
+// (band_min, band_max) pair. That is the invariant a client depends on:
+// FAIR emits a full copy of the network per band at a different slot
+// pitch, so two bands in one payload draw every ribbon twice at two
+// lateral offsets — and it reads as a renderer bug, not a server one.
+//
+// The unit test on FilterBand covers the comparison; this covers the
+// wiring, on real FAIR output rather than a fixture.
+func TestBandFilteredBuildHoldsExactlyOneBand(t *testing.T) {
+	dir := t.TempDir()
+	feed := authoredFeed(t, dir)
+	graph := authoredGraph(0)
+
+	all := chartAuthored(t, mkdir(t, dir, "all"), graph, feed, quietf)
+	allBands := bandPairs(t, all)
+	if len(allBands) < 2 {
+		t.Fatalf("the unfiltered build has %d bands, so this test proves nothing: %v",
+			len(allBands), allBands)
+	}
+
+	total := 0
+	for _, band := range []int{15, 14, 13, 0} {
+		out := chartAuthoredBand(t, mkdir(t, dir, fmt.Sprintf("b%d", band)), graph, feed, band)
+		pairs := bandPairs(t, out)
+		if len(pairs) != 1 {
+			t.Errorf("band %d build holds %d distinct bands, want 1: %v", band, len(pairs), pairs)
+			continue
+		}
+		if pairs[0][0] > band || band >= pairs[0][1] {
+			t.Errorf("band %d build holds (%d,%d), which does not contain %d",
+				band, pairs[0][0], pairs[0][1], band)
+		}
+		total += countFeatures(t, out)
+	}
+	// the four bands must PARTITION the union: no feature in two bands,
+	// none dropped
+	if got := countFeatures(t, all); total != got {
+		t.Errorf("the four bands hold %d features but the union holds %d — "+
+			"they must partition it exactly", total, got)
+	}
+}
+
+func chartAuthoredBand(t *testing.T, dir, graph, feed string, band int) string {
+	t.Helper()
+	gpath := filepath.Join(dir, "corridors.geojson")
+	if err := os.WriteFile(gpath, []byte(graph), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "build.geojson")
+	anchor := geo.LL{Lon: -73.75, Lat: 40.75}
+	b := band
+	if err := Chart(ChartOpts{
+		GTFS: feed, Corridors: gpath, Out: out, Band: &b,
+		Anchor: &anchor, Style: style.New(),
+	}, quietf); err != nil {
+		t.Fatalf("chart --band %d: %v", band, err)
+	}
+	return out
+}
+
+func bandPairs(t *testing.T, out string) [][2]int {
+	t.Helper()
+	seen := map[[2]int]bool{}
+	var pairs [][2]int
+	for _, f := range readFC(t, out) {
+		lo, okLo := f.Props["band_min"].(float64)
+		hi, okHi := f.Props["band_max"].(float64)
+		if !okLo || !okHi {
+			continue
+		}
+		k := [2]int{int(lo), int(hi)}
+		if !seen[k] {
+			seen[k] = true
+			pairs = append(pairs, k)
+		}
+	}
+	return pairs
+}
+
+func countFeatures(t *testing.T, out string) int {
+	t.Helper()
+	return len(readFC(t, out))
+}

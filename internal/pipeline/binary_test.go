@@ -22,14 +22,14 @@ func binFixture() []stages.Segment {
 	return []stages.Segment{
 		{Kind: "steady", Color: "EE352E", Routes: []string{"1", "2"}, Label: "1",
 			RouteType: 1, Mode: "metro", Slot: -1, NSlots: 3, OffsetPx: -5,
-			BandMin: 15, BandMax: 15, Acts: []string{"ff", "0f"},
+			BandMin: 15, BandMax: 24, Acts: []string{"ff", "0f"},
 			Line: line(geo.Pt{X: 0, Y: 0}, geo.Pt{X: 100, Y: 0}, geo.Pt{X: 200, Y: 50})},
 		{Kind: "transition", Color: "0039A6", Routes: []string{"B"}, Label: "B",
 			RouteType: 1, Mode: "metro", Slot: 2, NSlots: 3,
-			OffFromPx: -5, OffToPx: 5, BandMin: 14, BandMax: 14,
+			OffFromPx: -5, OffToPx: 5, BandMin: 14, BandMax: 15,
 			Line: line(geo.Pt{X: 200, Y: 50}, geo.Pt{X: 300, Y: 90})},
 		{Kind: "bridge", Color: "", Routes: []string{"F"}, Label: "F",
-			RouteType: 2, Mode: "regional", BandMin: 0, BandMax: 13,
+			RouteType: 2, Mode: "regional", BandMin: 13, BandMax: 14,
 			Line: line(geo.Pt{X: 300, Y: 90}, geo.Pt{X: 400, Y: 90})},
 	}
 }
@@ -159,26 +159,55 @@ func TestBinaryLayoutReadsBackByOffset(t *testing.T) {
 
 func align4(n uint32) uint32 { return (n + 3) &^ 3 }
 
-func TestFilterBandKeepsOnlyTheVisibleCopies(t *testing.T) {
+// The bands are HALF-OPEN and ADJACENT — {15,24} {14,15} {13,14} — so
+// each band's max is the next band's min. That adjacency is the whole
+// test: a fixture whose ranges cannot touch (the old {15,15} {14,14})
+// makes an off-by-one on the upper bound invisible, which is exactly
+// how a closed comparison shipped and returned two bands per request.
+func TestFilterBandKeepsExactlyOneBand(t *testing.T) {
 	segs := binFixture()
 	if got := len(FilterBand(segs, BandUnion)); got != 3 {
 		t.Errorf("union kept %d, want all 3", got)
 	}
-	if got := len(FilterBand(segs, 15)); got != 1 {
-		t.Errorf("band 15 kept %d, want 1", got)
+	for _, tc := range []struct {
+		band    int
+		wantMin int
+		wantMax int
+	}{
+		{15, 15, 24},
+		{14, 14, 15},
+		{13, 13, 14},
+	} {
+		got := FilterBand(segs, tc.band)
+		if len(got) != 1 {
+			t.Errorf("band %d kept %d segments, want exactly 1: %v",
+				tc.band, len(got), bandsOf(got))
+			continue
+		}
+		if got[0].BandMin != tc.wantMin || got[0].BandMax != tc.wantMax {
+			t.Errorf("band %d kept (%d,%d), want (%d,%d)",
+				tc.band, got[0].BandMin, got[0].BandMax, tc.wantMin, tc.wantMax)
+		}
 	}
-	if got := len(FilterBand(segs, 13)); got != 1 {
-		t.Errorf("band 13 kept %d, want 1 (the 0..13 bridge)", got)
+	// a band no segment covers keeps nothing rather than the nearest
+	if got := len(FilterBand(segs, 0)); got != 0 {
+		t.Errorf("band 0 kept %d, want 0 — this fixture has no z0 copy", got)
 	}
-	// band 0 is a real band, and the reason ChartOpts.Band is a pointer:
-	// an int zero value here would mean "band 0" to every caller that
-	// never set it
-	if got := len(FilterBand(segs, 0)); got != 1 {
-		t.Errorf("band 0 kept %d, want 1", got)
+}
+
+// bandsOf names the (min,max) pairs a filter let through, so a failure
+// says WHICH bands leaked rather than only how many.
+func bandsOf(segs []stages.Segment) [][2]int {
+	var out [][2]int
+	seen := map[[2]int]bool{}
+	for _, s := range segs {
+		k := [2]int{s.BandMin, s.BandMax}
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
 	}
-	if len(FilterBand(segs, 15)) == len(segs) {
-		t.Error("filtering did nothing")
-	}
+	return out
 }
 
 func TestParseBandRejectsNonsense(t *testing.T) {

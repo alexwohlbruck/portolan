@@ -256,13 +256,21 @@ func hexToRGB(hex string) uint32 {
 // exactly one of them is ever visible, so a client that knows its zoom
 // is downloading three copies it will not draw. BandUnion keeps
 // everything, which is what every existing caller gets.
+//
+// THE RANGE IS HALF-OPEN: [BandMin, BandMax). FAIR's bands are
+// {15,24} {14,15} {13,14} {0,13} — each band's max IS the next band's
+// min — and the viewer feeds them to MapLibre as minzoom/maxzoom, where
+// maxzoom is exclusive. Closing the upper end made every request return
+// TWO bands, because band 14's BandMax is exactly 15: a caller asking
+// for band 15 got band 14 as well, drawn at a different slot pitch, and
+// the doubled ribbons read as a renderer bug rather than a filter one.
 func FilterBand(segs []stages.Segment, band int) []stages.Segment {
 	if band == BandUnion {
 		return segs
 	}
 	out := segs[:0:0]
 	for _, s := range segs {
-		if s.BandMin <= band && band <= s.BandMax {
+		if s.BandMin <= band && band < s.BandMax {
 			out = append(out, s)
 		}
 	}

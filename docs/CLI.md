@@ -111,7 +111,10 @@ A build writes several files, all derived from `--out`:
 | `<out>.strands.geojson`, `<out>.paths.geojson` | intermediate geometry for the workbench's debug layers — **`--rail` only**, since `--corridors` never bundles or map-matches and so has neither to show |
 
 **`--band`.** The pipeline emits a full copy of the network per zoom
-band, and exactly one is ever visible. A client that knows its zoom is
+band, and exactly one is ever visible. The ranges are **half-open** —
+`[band_min, band_max)`, and each band's max is the next band's min — so
+a filtered build holds exactly one `(band_min, band_max)` pair. Two
+would draw every ribbon twice at two different slot pitches. A client that knows its zoom is
 otherwise downloading three copies it will not draw. Filtering happens
 at the emit, after every stage has seen the whole network — the layout
 stages need all four bands to decide slot order and junction drawing, so
@@ -132,9 +135,14 @@ contiguous array per property. A decoder that assumes the latter reads
 plausible-but-wrong values rather than failing, because every lane is a
 valid number of the right width.
 
-NYC band 15 is 3.08 MB of GeoJSON or 614 KB of PLNB — 5.0× smaller on
-identical content, and 10.3× against the 6.3 MB all-bands GeoJSON a
+NYC band 15 is 1.44 MB of GeoJSON or 299 KB of PLNB — 4.9× smaller on
+identical content, and 20.7× against the 6.05 MB all-bands GeoJSON a
 client reads today.
+
+(These figures were nearly double until v0.3.0, because `--band` used a
+closed upper bound and returned two bands per request. A single band is
+half what it used to be, so the saving against the union is twice what
+was previously claimed.)
 
 ### Curation
 

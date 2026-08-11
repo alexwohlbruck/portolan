@@ -310,9 +310,11 @@ full at the top of `internal/pipeline/binary.go` — read it before
 writing a decoder, because the blocks are grouped by width and
 interleaved within a block, not one contiguous array per property.
 
-NYC band 15: **3.08 MB of GeoJSON becomes 614 KB**, a 5.0× cut on
-identical content and 10.3× against the 6.3 MB union a client reads
-today.
+NYC band 15: **1.44 MB of GeoJSON becomes 299 KB**, a 4.9× cut on
+identical content and 20.7× against the 6.05 MB union a client reads
+today. The band ranges are half-open — `[band_min, band_max)`, each
+band's max being the next band's min — so a filtered build holds exactly
+one band. Two would draw every ribbon twice at two slot pitches.
 
 Positions are `i32` fixed point at 1e-7 degrees rather than `f32`: a
 float32 holds about seven significant digits where a longitude needs
