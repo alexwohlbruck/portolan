@@ -26,10 +26,18 @@ function toWire(req: ChartRequest): Record<string, unknown> {
   set("corridor_nodes", req.corridorNodes);
   set("stops", req.stops);
   set("streets", req.streets);
-  set("bbox", req.bbox);
-  set("anchor", req.anchor);
+  // both accept an object or a tuple; the wire is always the tuple, and
+  // the two orders differ (bbox longitude-first, anchor latitude-first)
+  // so the conversion is the one place that has to be right
+  if (req.bbox) {
+    set("bbox", Array.isArray(req.bbox) ? req.bbox : [req.bbox.w, req.bbox.s, req.bbox.e, req.bbox.n]);
+  }
+  if (req.anchor) {
+    set("anchor", Array.isArray(req.anchor) ? req.anchor : [req.anchor.lat, req.anchor.lon]);
+  }
   set("city", req.city);
   set("style_dir", req.styleDir);
+  set("style_inline", req.styleInline);
   set("line_agencies", req.lineAgencies);
   set("scenario", req.scenario);
   set("cover", req.cover);

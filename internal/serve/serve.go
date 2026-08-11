@@ -232,6 +232,7 @@ type Request struct {
 	LineAgencies  []string    `json:"line_agencies"`
 	City          string      `json:"city"`
 	StyleDir      string      `json:"style_dir"`
+	StyleInline   *style.Doc  `json:"style_inline"`
 	Scenario      string      `json:"scenario"`
 	Format        string      `json:"format"`
 	Band          string      `json:"band"`
@@ -361,14 +362,32 @@ func (s *Server) optsFor(req *Request) (pipeline.ChartOpts, string, error) {
 	if len(req.Anchor) == 2 {
 		anchor = &geo.LL{Lat: req.Anchor[0], Lon: req.Anchor[1]}
 	}
-	styleDir := req.StyleDir
-	if styleDir == "" {
-		styleDir = s.styleDir
-	}
-	sty, dirLas, err := style.LoadDir(styleDir, req.City)
-	if err != nil {
-		os.RemoveAll(dir)
-		return zero, "", err
+	// Curation is live state for the same callers whose feed tables are:
+	// a colour or a bullet shape changes whenever the user edits a line.
+	// Path-only would make every such caller write a file per rebuild —
+	// and a caller that must write a file needs somewhere writable and a
+	// way to reach it, which is a surface rather than a detail. Inline
+	// takes the document itself.
+	//
+	// It REPLACES the directory rather than layering over it. The class
+	// defaults are compiled in, so a document alone is complete, and a
+	// caller sending one has said what it wants.
+	var sty *style.Set
+	var dirLas []string
+	if req.StyleInline != nil {
+		sty = style.New(req.StyleInline.Config())
+		dirLas = req.StyleInline.LineAgencies()
+	} else {
+		styleDir := req.StyleDir
+		if styleDir == "" {
+			styleDir = s.styleDir
+		}
+		var err error
+		sty, dirLas, err = style.LoadDir(styleDir, req.City)
+		if err != nil {
+			os.RemoveAll(dir)
+			return zero, "", err
+		}
 	}
 	las := req.LineAgencies
 	if len(las) == 0 {

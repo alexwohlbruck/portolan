@@ -196,3 +196,72 @@ test("the token actually guards the port", { skip: !haveGo() }, async () => {
   const v = await fetch(`${p.server.origin}/version`);
   assert.equal(v.status, 200);
 });
+
+test("styleInline applies curation with no file anywhere", { skip: !haveGo() }, async () => {
+  // the whole point: a caller whose colours are live state should not
+  // need somewhere writable to put them
+  const job = await p.chart({
+    gtfsInline: tables,
+    corridorsInline: graph,
+    styleInline: {
+      routes: { R1: { color: "00FF00", shape: "diamond", font: "mono", bordered: true } },
+      options: { caterpillars: true },
+    },
+  });
+  const gj = await job.json();
+  const r1 = gj.features.find((f) => f.properties.routes.split(",").includes("R1"));
+  assert.equal(r1.properties.color, "00FF00", "the inline colour did not apply");
+
+  const st = await job.json("stations");
+  const cat = st.features.find((f) => f.properties.ftype === "cat" && f.properties.route === "R1");
+  if (cat) {
+    assert.equal(cat.properties.shape, "diamond");
+    assert.equal(cat.properties.font, "mono");
+    assert.equal(cat.properties.bordered, true);
+  }
+  // and the resolved manifest travels with the build, as it does for a
+  // directory-sourced style
+  const style = await job.json("style");
+  assert.equal(style.caterpillars, true);
+});
+
+test("degrees() matches the GeoJSON coordinates exactly", { skip: !haveGo() }, async () => {
+  const binJob = await p.chart({ gtfsInline: tables, corridorsInline: graph, format: "bin", band: 15 });
+  const jsonJob = await p.chart({ gtfsInline: tables, corridorsInline: graph, band: 15 });
+  const plnb = await binJob.plnb();
+  const gj = await jsonJob.json();
+
+  const deg = plnb.degrees();
+  assert.equal(deg.constructor, Float64Array, "must be f64 — f32 quantises to ~2 m");
+  assert.equal(deg.length, plnb.positionCount * 2);
+  // cached: the same object back, so a per-frame call costs nothing
+  assert.equal(plnb.degrees(), deg);
+
+  for (let i = 0; i < plnb.featureCount; i++) {
+    const [a, b] = plnb.vertexRange(i);
+    const exp = gj.features[i].geometry.coordinates;
+    assert.equal(b - a, exp.length);
+    for (let k = a; k < b; k++) {
+      assert.ok(Math.abs(deg[k * 2] - exp[k - a][0]) < 1e-6, `vertex ${k} lon`);
+      assert.ok(Math.abs(deg[k * 2 + 1] - exp[k - a][1]) < 1e-6, `vertex ${k} lat`);
+    }
+  }
+});
+
+test("bbox and anchor accept objects, and the orders do not get swapped", { skip: !haveGo() }, async () => {
+  // the tuples are in OPPOSITE orders — bbox longitude-first, anchor
+  // latitude-first — so the object forms must land on the same result
+  const asObjects = await p.chart({
+    gtfsInline: tables, corridorsInline: graph, format: "bin", band: 15,
+    anchor: { lat: 37.77, lon: -122.42 },
+    bbox: { w: -122.5, s: 37.7, e: -122.3, n: 37.85 },
+  });
+  const asTuples = await p.chart({
+    gtfsInline: tables, corridorsInline: graph, format: "bin", band: 15,
+    anchor: [37.77, -122.42],
+    bbox: [-122.5, 37.7, -122.3, 37.85],
+  });
+  const a = await asObjects.bytes();
+  const b = await asTuples.bytes();
+  assert.deepEqual(Buffer.from(a), Buffer.from(b), "object and tuple forms must produce identical builds");
+});

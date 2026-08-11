@@ -131,6 +131,35 @@ export class Plnb {
     this.strings = strs;
   }
 
+  /**
+   * Every position in DEGREES as one flat interleaved `Float64Array`
+   * — `[lon₀, lat₀, lon₁, lat₁, …]`, `positionCount * 2` long.
+   *
+   * This is what a GPU consumer actually wants. `positions` is integer
+   * 1e-7 degrees, which is right on the wire and wrong in a vertex
+   * buffer: nothing off the shelf divides by 1e7, and projection happens
+   * in the shader from lng/lat.
+   *
+   * f64 rather than f32 is not a preference. A float32 holds about seven
+   * significant digits where a longitude needs nine, so an f32 buffer
+   * quantises vertices to roughly two metres and visibly kinks a ribbon
+   * — the same reason the wire format is i32 and not f32. deck.gl's
+   * binary attribute path takes f64 and splits it into hi/lo f32 pairs
+   * for exactly this.
+   *
+   * One pass, cached, so calling it per frame is free after the first.
+   * Pair it with `starts` as deck.gl's `startIndices`.
+   */
+  degrees(): Float64Array {
+    if (!this.#degrees) {
+      const out = new Float64Array(this.positionCount * 2);
+      for (let i = 0; i < out.length; i++) out[i] = this.positions[i] / COORD_SCALE;
+      this.#degrees = out;
+    }
+    return this.#degrees;
+  }
+  #degrees: Float64Array | null = null;
+
   /** Vertex range of feature `i`: `[startVertex, endVertex)`. */
   vertexRange(i: number): [number, number] {
     return [this.starts[i], this.starts[i + 1]];

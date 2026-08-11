@@ -96,7 +96,18 @@ export class PortolanServer {
       detached: false,
     });
 
+    // The engine is NOT detached, but on POSIX that only means it shares
+    // a process group — a parent that exits leaves it reparented to init,
+    // still holding its port. `await using` covers scope exit and nothing
+    // else: not process.exit(), not an uncaught throw, not a crash. So
+    // every live engine is also killed on the way out.
+    //
+    // This is reaping, not supervision. Restart policy is deliberately
+    // the caller's: whether to retry, how many times, and when to give up
+    // and degrade are product decisions, and a contract mismatch in
+    // particular must NOT be retried — it fails identically every time.
     const port = await firstLinePort(proc, opts.startupTimeoutMs ?? 10_000, opts.onLog);
+    reapOnExit(proc);
     const server = new PortolanServer(proc, port, host, token, {
       version: "unknown",
       plnb: -1,
@@ -150,6 +161,35 @@ export class PortolanServer {
   /** `await using` support, so a server cannot outlive its scope. */
   async [Symbol.asyncDispose](): Promise<void> {
     await this.stop();
+  }
+}
+
+/**
+ * Kill any still-running engine when this process ends.
+ *
+ * Entries are removed on the child's own exit, so a long-lived process
+ * that starts and stops many engines does not accumulate them.
+ */
+const live = new Set<ChildProcess>();
+let reaperInstalled = false;
+
+function reapOnExit(proc: ChildProcess): void {
+  live.add(proc);
+  proc.once("exit", () => live.delete(proc));
+  if (reaperInstalled) return;
+  reaperInstalled = true;
+
+  // 'exit' can only do synchronous work, and kill() is synchronous
+  process.on("exit", () => {
+    for (const p of live) p.kill("SIGKILL");
+  });
+  // a signal does not fire 'exit' by itself; clean up, then re-raise so
+  // the caller's own exit code and handlers are unaffected
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      for (const p of live) p.kill("SIGKILL");
+      if (process.listenerCount(sig) <= 1) process.kill(process.pid, sig);
+    });
   }
 }
 

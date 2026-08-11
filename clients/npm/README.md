@@ -36,9 +36,14 @@ const job = await p.chart(
 const plnb = await job.plnb();
 ```
 
-`await using` stops the engine when the scope ends. Without it, call
-`p.stop()` — an orphaned engine per rebuild is the failure this most
-wants to prevent.
+`await using` stops the engine when the scope ends. It needs TypeScript
+5.2+ and `Symbol.asyncDispose` at runtime (Node 20+); on an older target
+just call **`p.stop()`**, which is always available and is the same
+thing. The syntax is sugar, not the interface.
+
+Either way the package installs a `process.on("exit")` reaper, so an
+engine cannot outlive its parent even on `process.exit()` or an uncaught
+throw — see *Lifecycle* below for what that does and does not cover.
 
 Nothing above touches the filesystem. `gtfsInline` and `corridorsInline`
 put the feed tables and the corridor graph in the request body, which is
@@ -46,17 +51,46 @@ what an editor wants: a colour change touches `routes.txt` and every
 route edit touches `stop_times.txt`, so writing a zip per keystroke is a
 round trip bought for nothing.
 
+## Two processes, one engine
+
+In Electron, **main owns the process and the renderer owns the
+traffic.** Routing artifacts through IPC structured-clones them, which
+is exactly the main-thread cost this format exists to remove.
+
+```ts
+// main: own the lifecycle, hand out the address
+const p = await portolan();
+ipcMain.handle("portolan:addr", () => ({
+  origin: p.server.origin,
+  token: p.server.token,
+}));
+app.on("before-quit", () => p.stop());
+```
+
+```ts
+// renderer (or a worker): own the traffic
+const { origin, token } = await ipcRenderer.invoke("portolan:addr");
+const client = PortolanClient.at(origin, token);
+const job = await client.chart({ ... });
+const plnb = await job.plnb();          // bytes never cross IPC
+```
+
+`PortolanClient.at()` is the piece that makes this split possible. The
+one-liner at the top is the right shape for a CLI or a server; for a UI
+process, use this one.
+
 ## Reading the output
 
-`job.plnb()` returns a decoded build whose typed arrays are **views over
-the response buffer** — no copying — so positions go straight into a GPU
-buffer and per-feature values are read by index without allocating.
+`job.plnb()` returns a decoded build whose property arrays are **views
+over the response buffer**, so per-feature values are read by index with
+no allocation.
 
 ```ts
 const plnb = await job.plnb();
 
-plnb.positions;        // Int32Array, [lon, lat] pairs at 1e-7 degrees
+plnb.degrees();        // Float64Array, flat [lon, lat, lon, lat, …] — for the GPU
 plnb.starts;           // Uint32Array, featureCount + 1 vertex offsets
+plnb.positions;        // Int32Array at 1e-7 degrees — the wire form, rarely what you want
 
 for (let i = 0; i < plnb.featureCount; i++) {
   const [a, b] = plnb.vertexRange(i);   // positions[a*2 .. b*2)
@@ -70,9 +104,47 @@ for (let i = 0; i < plnb.featureCount; i++) {
 `plnb.feature(i)` gives a plain object, and `plnb.toGeoJSON()` the whole
 thing — both allocate, so neither is the fast path.
 
-Positions are integers at 1e-7 degrees rather than `f32`: a float32 holds
-about seven significant digits where a longitude needs nine, which would
-quantise vertices to roughly two metres and visibly kink a ribbon.
+### Getting it onto the GPU
+
+Use **`degrees()`**, not `positions`. Every WebGL path — deck.gl,
+MapLibre, raw GL — wants degrees in the vertex buffer, because
+projection happens in the shader from lng/lat, and nothing off the shelf
+divides by 1e7.
+
+```ts
+new PathLayer({
+  data: { length: plnb.featureCount, startIndices: plnb.starts,
+          attributes: { getPath: { value: plnb.degrees(), size: 2 } } },
+  _pathType: "open",
+});
+```
+
+It is `Float64Array` and that is not a preference: a float32 holds about
+seven significant digits where a longitude needs nine, so an f32 buffer
+quantises vertices to roughly two metres and visibly kinks a ribbon —
+the same reason the wire format is `i32` and not `f32`. deck.gl takes
+f64 and splits it into hi/lo f32 pairs for exactly this.
+
+`degrees()` is one pass over the buffer, cached, so calling it per frame
+costs nothing after the first.
+
+## Lifecycle
+
+The package **reaps**; it does not **supervise**.
+
+Reaped for you: scope exit via `await using`, an explicit `stop()`, and
+a `process.on("exit")` / SIGINT / SIGTERM hook that kills any live engine
+on the way out. An engine cannot outlive its parent and sit on a port.
+
+**Yours:** restart policy. Whether to retry a crashed engine, how many
+times, with what backoff, and when to give up and degrade are product
+decisions, and a library guessing them is worse than a caller choosing
+them. One rule worth stating: an `IncompatibleEngineError` must **not**
+be retried — it will fail identically every time.
+
+```ts
+p.server.running;   // false once it has died
+```
 
 ## Version handshake
 
@@ -120,8 +192,26 @@ Supported: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`,
 
 ## Curation
 
-Colours, names, bullet shapes and fonts are curation, not feed data.
-Point `styleDir` at a directory holding your `<city>.json`:
+Colours, names, bullet shapes and fonts are curation, not feed data —
+and for an editor they are live state, changing whenever the user
+recolours a line. So send the document, not a path:
+
+```ts
+await p.chart({
+  ...,
+  styleInline: {
+    routes: { L: { color: "EE352E", shape: "diamond", font: "italic" } },
+    agencies: { CR: { name: "Commuter Rail", color: "80276C" } },
+  },
+});
+```
+
+`styleInline` replaces `styleDir`/`city` when set, and needs nowhere
+writable — which matters more than it sounds: a packaged app that must
+write a file first needs a writable location AND a way to reach it, and
+that path is a surface rather than a detail.
+
+`styleDir` still works when your curation genuinely lives on disk:
 
 ```ts
 await p.chart({ ..., city: "sf", styleDir: "/writable/path/style" });
@@ -129,7 +219,7 @@ await p.chart({ ..., city: "sf", styleDir: "/writable/path/style" });
 
 The class defaults are compiled into the engine, so a directory holding
 only your own document is complete — there is nothing to copy out of the
-package first. The document is **subject-keyed**:
+package first. Either way the document is **subject-keyed**:
 
 ```json
 { "routes": { "L": { "color": "EE352E", "shape": "diamond", "font": "italic" } } }
