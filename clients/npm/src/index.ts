@@ -23,7 +23,12 @@ export type { StartOptions } from "./server.js";
 export { PortolanClient, PortolanError, Job } from "./client.js";
 export type { ChartOptions } from "./client.js";
 export { Plnb, decodePlnb, PlnbError, SUPPORTED_PLNB } from "./plnb.js";
-export { resolveBinary, platformKey, BinaryNotFoundError } from "./binary.js";
+export {
+  resolveBinary,
+  platformKey,
+  BinaryNotFoundError,
+  EngineVersionMismatchError,
+} from "./binary.js";
 export type {
   ChartRequest,
   GtfsTables,

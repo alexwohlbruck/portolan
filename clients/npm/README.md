@@ -69,11 +69,25 @@ app.on("before-quit", () => p.stop());
 
 ```ts
 // renderer (or a worker): own the traffic
+import { PortolanClient } from "@alexwohlbruck/portolan/client";
+
 const { origin, token } = await ipcRenderer.invoke("portolan:addr");
 const client = PortolanClient.at(origin, token);
 const job = await client.chart({ ... });
 const plnb = await job.plnb();          // bytes never cross IPC
 ```
+
+**Import from `/client` in the renderer, not from the package root.**
+The root exports `PortolanServer`, so it pulls `node:child_process`, and
+an Electron renderer with context isolation has no Node — the bundler
+fails the build. `/client` and `/plnb` are Node-free by construction and
+there is a test that keeps them that way.
+
+| subpath | holds | needs Node |
+| --- | --- | --- |
+| `@alexwohlbruck/portolan` | everything, incl. `portolan()` and `PortolanServer` | yes |
+| `@alexwohlbruck/portolan/client` | `PortolanClient`, `Job`, `PortolanError` | no |
+| `@alexwohlbruck/portolan/plnb` | `decodePlnb`, `Plnb`, `SUPPORTED_PLNB` | no |
 
 `PortolanClient.at()` is the piece that makes this split possible. The
 one-liner at the top is the right shape for a CLI or a server; for a UI
@@ -149,7 +163,7 @@ p.server.running;   // false once it has died
 ## Version handshake
 
 ```ts
-p.version;   // { version: "0.3.0", plnb: 1, formats, bands, auth }
+p.version;   // { version: "0.3.1", plnb: 1, formats, bands, auth }
 ```
 
 **Gate on `plnb`, not `version`.** It is the binary layout number, and it
@@ -184,6 +198,13 @@ place the binary yourself, use `PORTOLAN_BIN` and install with
 
 Supported: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`,
 `win32-arm64`, `win32-x64`.
+
+The engine package is pinned to this package's exact version and
+`resolveBinary()` checks it, because npm **skips an unresolvable
+optional dependency without failing the install** — so a mismatch would
+otherwise surface as a missing binary at the first chart call rather
+than as the version problem it is. Both errors extend
+`BinaryNotFoundError`; neither is worth retrying.
 
 > Node says `x64` where Go says `amd64`, for the same architecture. The
 > package names use Node's spelling because npm resolves them against

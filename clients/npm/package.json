@@ -14,7 +14,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./plnb": {
+      "types": "./dist/plnb.d.ts",
+      "default": "./dist/plnb.js"
+    },
+    "./package.json": "./package.json"
   },
   "types": "./dist/index.d.ts",
   "files": [
@@ -27,7 +36,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.js",
-    "prepublishOnly": "npm run build"
+    "check-publish": "node scripts/check-publish.mjs",
+    "prepublishOnly": "npm run build && npm run check-publish"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

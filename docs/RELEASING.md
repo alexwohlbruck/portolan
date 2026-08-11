@@ -163,9 +163,19 @@ for d in platforms/*/; do (cd "$d" && npm publish --access public); done
 npm publish --access public                  # the wrapper LAST
 ```
 
-Publish the platform packages **before** the wrapper. npm resolves
-`optionalDependencies` at install time, so a wrapper published first is
-briefly installable with no engine behind it.
+Publish the platform packages **before** the wrapper, and do not skip
+`build-platform-packages.mjs` after a version bump. Both mistakes have
+the same shape and it is a nasty one: npm **skips an optional dependency
+it cannot resolve and still reports the install succeeded**. A consumer
+sees `added 1 package, found 0 vulnerabilities`, a lockfile that looks
+right, and a missing-binary error at their first chart call — pointing
+at their install flags rather than at this release.
+
+So `prepublishOnly` runs `scripts/check-publish.mjs`, which refuses to
+publish unless `VERSION`, the wrapper, and all six staged platform
+packages agree, **and** all six versions already exist on the registry.
+It is the runbook above, enforced. `PORTOLAN_SKIP_REGISTRY_CHECK=1`
+drops only the registry leg, for an offline dry run.
 
 `node scripts/build-platform-packages.mjs` reads the release archives
 rather than invoking the Go toolchain, so what npm carries is

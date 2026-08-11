@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Finding the engine.
@@ -35,6 +36,33 @@ export class BinaryNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "BinaryNotFoundError";
+  }
+}
+
+/**
+ * The engine package resolved, but at a different version than this
+ * wrapper. Never retry it — it will resolve identically every time.
+ *
+ * Extends BinaryNotFoundError so an existing catch still covers it.
+ */
+export class EngineVersionMismatchError extends BinaryNotFoundError {
+  constructor(
+    message: string,
+    readonly wanted: string,
+    readonly found: string,
+  ) {
+    super(message);
+    this.name = "EngineVersionMismatchError";
+  }
+}
+
+/** This package's own version, or "" if the manifest cannot be read. */
+function selfVersion(): string {
+  try {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version ?? "";
+  } catch {
+    return "";
   }
 }
 
@@ -86,13 +114,32 @@ export function resolveBinary(explicit?: string): string {
     if (!existsSync(path)) {
       throw new BinaryNotFoundError(`${pkg} is installed but has no bin/${exe}`);
     }
+    // The two are published together and pinned to an exact version, so a
+    // mismatch means something resolved an engine this wrapper was never
+    // tested against — a stale lockfile, a forced resolution, or a
+    // publish where only one half went out. Say which two versions, and
+    // say it here: the alternative is a PLNB layout error three calls
+    // later, or worse, no error at all.
+    const want = selfVersion();
+    const got = JSON.parse(readFileSync(manifest, "utf8")).version ?? "unknown";
+    if (want && got !== want) {
+      throw new EngineVersionMismatchError(
+        `@alexwohlbruck/portolan ${want} needs engine ${want}, but ${pkg}@${got} is installed. ` +
+          `Delete node_modules and the lockfile and reinstall, or set PORTOLAN_BIN to ` +
+          `a matching binary.`,
+        want,
+        got,
+      );
+    }
     return path;
   } catch (err) {
     if (err instanceof BinaryNotFoundError) throw err;
     throw new BinaryNotFoundError(
-      `${pkg} is not installed. It is an optionalDependency, so this usually means ` +
-        `the install ran with --no-optional, or on a different platform than it is ` +
-        `running on (npm resolves optional deps at install time, not run time). ` +
+      `${pkg} is not installed. It is an optionalDependency, so npm SKIPS it silently ` +
+        `when it cannot be resolved and the install still reports success. Usual causes: ` +
+        `that version was never published (check \`npm view ${pkg} versions\`), the ` +
+        `install ran with --no-optional, or it ran on a different platform than this one ` +
+        `(npm resolves optional deps at install time, not run time). ` +
         `Reinstall on this machine, or set PORTOLAN_BIN.`,
     );
   }
