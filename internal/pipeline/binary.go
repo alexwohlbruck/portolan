@@ -50,27 +50,49 @@ import (
 // starts[i] up to starts[i+1], and starts[nFeatures] == nPositions, so
 // a client never special-cases the last feature.
 //
-// PROPERTY COLUMNS are parallel arrays — column-major, not one record
-// per feature — because a renderer wants all the offsets or all the
-// colours at once, and a struct-of-arrays layout hands each column over
-// as a contiguous slice.
+// PROPERTY BLOCKS are grouped BY WIDTH, and INTERLEAVED WITHIN a block.
+// Read that sentence twice before writing a decoder — it is not one
+// contiguous array per property.
 //
-//	kind        u8    0 steady, 1 transition, 2 bridge, 255 unknown
-//	(pad to 4-byte alignment)
-//	color       u32   0x00RRGGBB
-//	offsetPx    f32
-//	offFromPx   f32
-//	offToPx     f32
-//	slot        i16
-//	nslots      i16
-//	bandMin     i16
-//	bandMax     i16
-//	routeType   i16
-//	(pad to 4-byte alignment)
-//	label       u32   string-table index
-//	mode        u32   string-table index
-//	routes      u32   string-table index — the CSV the GeoJSON emits
-//	acts        u32   string-table index — ";"-joined, "" when unknown
+// There are five blocks, in this order. Every one holds nFeatures
+// records; a block with k properties has a stride of k values, so
+// feature i's j-th property sits at index i*k+j.
+//
+//	block    stride  properties, in order
+//	-----    ------  --------------------
+//	kinds    1 × u8   kind: 0 steady, 1 transition, 2 bridge, 255 unknown
+//	                  (block padded to a 4-byte boundary)
+//	colors   1 × u32  color: 0x00RRGGBB
+//	f32s     3 × f32  offsetPx, offFromPx, offToPx
+//	i16s     5 × i16  slot, nslots, bandMin, bandMax, routeType
+//	                  (block padded to a 4-byte boundary)
+//	u32s     4 × u32  label, mode, routes, acts — string-table indices;
+//	                  routes is the CSV the GeoJSON emits, acts is
+//	                  ";"-joined and "" when unknown
+//
+// So f32s reads [off₀, from₀, to₀, off₁, from₁, to₁, …], NOT
+// [off₀, off₁, …, from₀, from₁, …]. Only kinds and colors look
+// column-major, and only because they happen to carry one value each.
+//
+// Block addresses, with align4(n) = (n+3) &^ 3:
+//
+//	posOff    = 32
+//	startsOff = posOff    + nPositions*8
+//	kindsOff  = startsOff + (nFeatures+1)*4
+//	colorsOff = kindsOff  + align4(nFeatures)
+//	f32Off    = colorsOff + nFeatures*4
+//	i16Off    = f32Off    + nFeatures*12
+//	u32Off    = i16Off    + align4(nFeatures*10)
+//	strTabOff = the header field (and u32Off + nFeatures*16)
+//
+// This comment described the opposite layout until v0.2.4 — true
+// column-major — and a consumer wrote a decoder from it that read
+// plausible-but-wrong values for every property after the first in each
+// block: nslots picked up bandMin, routes picked up label. Nothing
+// crashed, because every lane is a valid value of the right width. The
+// bytes have not changed; only this description has, so plnb stays 1.
+// TestBinaryLayoutReadsBackByOffset walks these formulas so the two
+// cannot drift again.
 //
 // STRINGS is u32 count, then each string as u32 byte length followed by
 // its UTF-8 bytes. Values are interned, so the thousands of segments

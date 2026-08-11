@@ -119,11 +119,18 @@ dropping them earlier would change the map rather than the download.
 
 **`--format bin`** writes PLNB, a flat typed-array form for clients that
 rebuild interactively and cannot afford to parse megabytes of text each
-time: positions, a start-index array, and column-major property arrays,
+time: positions, a start-index array, and per-feature property blocks,
 so a client slices the buffer, uploads positions straight to a vertex
 buffer, and reads per-feature values by index with no per-feature object
 allocation. The layout is documented in full at the top of
 `internal/pipeline/binary.go`.
+
+**Read that layout before writing a decoder.** The property blocks are
+grouped by WIDTH and interleaved within a block — `f32s` is
+`[offsetPx₀, offFromPx₀, offToPx₀, offsetPx₁, …]`, stride 3 — not one
+contiguous array per property. A decoder that assumes the latter reads
+plausible-but-wrong values rather than failing, because every lane is a
+valid number of the right width.
 
 NYC band 15 is 3.08 MB of GeoJSON or 614 KB of PLNB — 5.0× smaller on
 identical content, and 10.3× against the 6.3 MB all-bands GeoJSON a

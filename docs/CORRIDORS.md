@@ -303,10 +303,12 @@ junction drawing, so dropping them earlier would change the map rather
 than the download.
 
 `--format bin` writes **PLNB**: positions, a start-index array, and
-column-major property arrays, so a client slices the buffer, uploads
+per-feature property blocks, so a client slices the buffer, uploads
 positions straight to a vertex buffer, and reads per-feature values by
 index with no per-feature object allocation. The layout is documented in
-full at the top of `internal/pipeline/binary.go`.
+full at the top of `internal/pipeline/binary.go` — read it before
+writing a decoder, because the blocks are grouped by width and
+interleaved within a block, not one contiguous array per property.
 
 NYC band 15: **3.08 MB of GeoJSON becomes 614 KB**, a 5.0× cut on
 identical content and 10.3× against the 6.3 MB union a client reads
