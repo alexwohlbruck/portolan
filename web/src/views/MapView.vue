@@ -442,31 +442,48 @@ const stationsRaw = ref<any | null>(null)
 
 // how many lines a name wraps to: simulate the wrap instead of counting
 // characters (length/20 called "Bedford-Nostrand Avs" one line and the
-// bullets overlapped the wrapped text). Greedy-pack the words — plus
-// hyphen break points, which MapLibre also uses — against the layer's
-// 10 em text-max-width, measured with canvas at 1 em = font size.
+// bullets overlapped the wrapped text). This mirrors MapLibre's shaping
+// rather than approximating it, because BOTH directions of error show:
+// undercount and the strip lands ON a wrapped line, overcount and it
+// floats in a hole below the name.
+//
+// Two things the greedy word-packer that lived here got wrong:
+//
+//   * its break set was whitespace + hyphen, but MapLibre breaks on a
+//     solidus, ampersand, plus, parens and the dashes too — so
+//     "Washington/Wabash" shaped to two lines while this said one, and
+//     the Brown/Green/Orange/Pink strip drew across "Wabash".
+//   * greedy packing is not what MapLibre does. determineLineBreaks
+//     picks the LEAST-BAD breaks against a target width of
+//     totalWidth / ceil(totalWidth / maxWidth), so it fills lines evenly
+//     — three 0.6 em-wide tokens are two balanced lines there and three
+//     greedy ones here.
+//
+// So take MapLibre's own line count: ceil(total advance / max width),
+// bounded by how many break opportunities the name actually offers (an
+// unbreakable name overruns its max width on one line rather than
+// splitting mid-word).
+const BREAKABLE = new Set([
+  0x0a, 0x20, 0x26, 0x29, 0x2b, 0x2d, 0x2f, 0xad, 0xb7, 0x200b, 0x2010, 0x2013, 0x2027,
+])
+const BREAKABLE_BEFORE = new Set([0x28]) // a break may precede "("
+const MAX_ROWS = 4 // as far as bulletOffset's table reaches
 let measureCtx: CanvasRenderingContext2D | null = null
 function estRows(name: string): number {
   if (!measureCtx) {
     measureCtx = document.createElement('canvas').getContext('2d')!
     measureCtx.font = '500 100px Montserrat, system-ui, sans-serif'
   }
-  const maxW = 10 * 100 // 10 em
-  const tokens = name.split(/\s+/).flatMap((w) => w.split(/(?<=-)/))
-  const space = measureCtx.measureText(' ').width
-  let rows = 1
-  let line = 0
-  tokens.forEach((t, i) => {
-    const w = measureCtx!.measureText(t).width
-    const glue = i > 0 && !tokens[i - 1].endsWith('-') ? space : 0
-    if (line > 0 && line + glue + w > maxW) {
-      rows++
-      line = w
-    } else {
-      line += glue + w
-    }
-  })
-  return Math.min(3, rows)
+  const maxW = 10 * 100 // text-max-width, 10 em, measured at 1 em = 100 px
+  const text = name.trim()
+  if (!text) return 1
+  let breaks = 0
+  for (let i = 0; i < text.length - 1; i++) {
+    if (BREAKABLE.has(text.charCodeAt(i)) || BREAKABLE_BEFORE.has(text.charCodeAt(i + 1))) breaks++
+  }
+  // MapLibre sums every glyph's advance, spaces included, then divides
+  const rows = Math.ceil(measureCtx.measureText(text).width / maxW)
+  return Math.max(1, Math.min(MAX_ROWS, rows, breaks + 1))
 }
 
 async function loadStations() {
@@ -1012,13 +1029,44 @@ function addLayers() {
   // stations with one marker keep their label at every zoom (coalesce:
   // builds predating nmarkers read as solo)
   const rk = ['get', 'rank']
-  // the strip sits just under the name, so its offset tracks the same
-  // rank tiers text-size uses — a fixed offset reads as a hole under
-  // small labels while looking right under hub-sized ones
-  const off = (a: number, b: number, c: number) =>
-    ['case', ['>=', rk, 8], ['literal', [0, c]], ['>=', rk, 4], ['literal', [0, b]], ['literal', [0, a]]]
-  const bulletOffset = ['match', ['get', 'nrows'],
-    2, off(36, 39, 43), 3, off(50, 54, 60), off(21, 23, 26)] as any
+  // The strip hangs below the LAST line of the name, so its offset is
+  // the height of the shaped text block — which is measured in ems and
+  // therefore moves with text-size, i.e. with both zoom and rank tier.
+  // The old hand-tuned pixel ladder was read off z16 labels only, so it
+  // opened a hole under the smaller names every zoom below that.
+  //
+  // Text block bottom = text-offset (0.5 em) + nrows × MapLibre's
+  // default 1.2 em text-line-height, all × the text size in px. GAP is
+  // the air under that block, in ems too so it holds its proportion as
+  // the label grows — a px gap that reads right at z16 is a squeeze at
+  // z11. It sits on top of the line box's own slack, so the visible gap
+  // is a little wider than GAP alone.
+  const TEXT_TOP_EM = 0.5 // the layer's text-offset, in ems
+  const LINE_EM = 1.2 // MapLibre's default text-line-height
+  const GAP_EM = 0.3
+  // the text-size ramp both label layers draw with — the strip's offset
+  // is derived from these, so they must be read from one place
+  const [Z_LO, Z_HI, SIZE_LO, SIZE_HI] = [11, 16, 10, 13]
+  const textSize = ['interpolate', ['linear'], ['zoom'],
+    Z_LO, ['+', SIZE_LO, rankBump], Z_HI, ['+', SIZE_HI, rankBump]] as any
+  const stripY = (size: number, rows: number) =>
+    ['literal', [0, Math.round(10 * size * (TEXT_TOP_EM + LINE_EM * rows + GAP_EM)) / 10]]
+  // one table per zoom stop; ["zoom"] is only legal as the input to a
+  // top-level interpolate, so the composite goes this way around and the
+  // stops interpolate as arrays. Both size and offset are linear in
+  // zoom, so the interpolated offset tracks the text exactly, not just
+  // at the stops.
+  const bulletOffsetAt = (base: number) => {
+    const byRows = (size: number) => ['match', ['get', 'nrows'],
+      2, stripY(size, 2), 3, stripY(size, 3), 4, stripY(size, 4), stripY(size, 1)]
+    // the same rank tiers rankBump gives text-size
+    return ['case',
+      ['>=', rk, 8], byRows(base + 2.5),
+      ['>=', rk, 4], byRows(base + 1),
+      byRows(base)]
+  }
+  const bulletOffset = ['interpolate', ['linear'], ['zoom'],
+    Z_LO, bulletOffsetAt(SIZE_LO), Z_HI, bulletOffsetAt(SIZE_HI)] as any
   // Labels reach much further out too. They DO carry collision boxes, so
   // a loose gate cannot overdraw — MapLibre drops what will not fit and
   // symbol-sort-key means the ones it keeps are the important ones. The
@@ -1056,13 +1104,12 @@ function addLayers() {
       // the name. (Variable anchors are off for now — the icon does not
       // follow the text's variable anchor, so the strip would detach.)
       'text-anchor': 'top',
-      'text-offset': [0, 0.5],
+      'text-offset': [0, TEXT_TOP_EM],
       'text-padding': labelPadding,
       // rank bump INSIDE the zoom stops: ["zoom"] is only legal as input
       // to a top-level interpolate/step, so the composite goes this way
       // around (same shape as zoomScaledOffset)
-      'text-size': ['interpolate', ['linear'], ['zoom'],
-        11, ['+', 10, rankBump], 16, ['+', 13, rankBump]],
+      'text-size': textSize,
       // the bullet strip appears once there is room for it; its distance
       // below the anchor follows the name's estimated wrap count
       'icon-image': ['step', ['zoom'], '', 13.5, ['coalesce', ['get', 'brow'], '']],
@@ -1083,10 +1130,9 @@ function addLayers() {
       'text-font': ['Montserrat Medium'],
       'symbol-sort-key': ['*', -1, imp],
       'text-anchor': 'top',
-      'text-offset': [0, 0.5],
+      'text-offset': [0, TEXT_TOP_EM],
       'text-padding': labelPadding,
-      'text-size': ['interpolate', ['linear'], ['zoom'],
-        11, ['+', 10, rankBump], 16, ['+', 13, rankBump]],
+      'text-size': textSize,
       'icon-image': ['coalesce', ['get', 'brow'], ''],
       'icon-anchor': 'top',
       'icon-offset': bulletOffset,
