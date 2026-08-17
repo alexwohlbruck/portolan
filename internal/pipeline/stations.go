@@ -233,10 +233,14 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 	}
 
 	// stop → set of route ids that call there; per pattern, mask lookup
-	// key sans the bbox-clip suffix (a clip piece IS its parent pattern)
+	// key sans the window suffixes (a clip/exclusion piece IS its parent
+	// pattern)
 	maskKey := func(p gtfs.Pattern) string {
 		sid := p.ShapeID
 		if i := strings.Index(sid, "#clip"); i >= 0 {
+			sid = sid[:i]
+		}
+		if i := strings.Index(sid, "#exc"); i >= 0 {
 			sid = sid[:i]
 		}
 		return p.Route.ID + "\x1f" + sid

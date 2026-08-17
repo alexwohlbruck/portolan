@@ -6,6 +6,7 @@
 package pipeline
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,7 @@ type Dials struct {
 	Cover   float64 `json:"cover"`
 
 	MatchReach      float64 `json:"match_reach"`
+	MatchMaxSamples float64 `json:"match_max_samples"`
 	MatchCands      float64 `json:"match_cands"`
 	MatchWHead      float64 `json:"match_w_head"`
 	MatchWTurn      float64 `json:"match_w_turn"`
@@ -43,6 +45,7 @@ type Dials struct {
 	MatchGapFree    float64 `json:"match_gap_free"`
 
 	SplitMinRefine   float64 `json:"split_min_refine"`
+	SplitMaxRefine   float64 `json:"split_max_refine"`
 	SplitMateMax     float64 `json:"split_mate_max"`
 	SplitMateRun     float64 `json:"split_mate_run"`
 	SplitMergeDist   float64 `json:"split_merge_dist"`
@@ -58,10 +61,10 @@ type Dials struct {
 func DefaultDials() Dials {
 	return Dials{
 		JoinTol: 1.0, Cover: 0.99,
-		MatchReach: 90, MatchCands: 14, MatchWHead: 35, MatchWTurn: 0.8,
+		MatchReach: 90, MatchMaxSamples: 20_000, MatchCands: 14, MatchWHead: 35, MatchWTurn: 0.8,
 		MatchBonusRoute: 25, MatchBonusColor: 18, MatchBonusOther: 12,
 		MatchGapCost: 75, MatchGapFree: 45,
-		SplitMinRefine: 40, SplitMateMax: 12, SplitMateRun: 60,
+		SplitMinRefine: 40, SplitMaxRefine: 250_000, SplitMateMax: 12, SplitMateRun: 60,
 		SplitMergeDist: 12, SplitMergeRun: 60, SplitCoMergeDist: 4,
 		FairCutBase: 60, FairGapPx: 6, FairMaxTurn: 30, FairFilletR: 30,
 	}
@@ -138,6 +141,11 @@ type ChartOpts struct {
 	// feed's Amtrak shape would otherwise leave the extract and draw a
 	// gap chord across the continent.
 	BBox []float64
+	// Exclude: [w,s,e,n] windows to cut pattern shapes OUT of — the
+	// territory of GROUP builds that draw this feed themselves. The cut
+	// uses the same margin as the clip, so the two builds meet at one
+	// line and the world draws the railroad exactly once.
+	Exclude [][]float64
 	// Style: class defaults and color overrides, already merged
 	// global-then-city. Nil means the shipped defaults.
 	Style *style.Set
@@ -162,6 +170,19 @@ type ChartOpts struct {
 	// to that scenario's set and everything downstream lays out only what
 	// actually runs then.
 	Scenario string
+	// AllowUnmatched: accept rail patterns whose matched walk is mostly
+	// GAP. By default that FAILS the build: a rail route that did not
+	// path-match is drawn from its shape chords — geometry the map has no
+	// business presenting as track — and the correct response is to fix
+	// the extract, not to ship the chord. The escape hatch exists for
+	// extracts known to be incomplete mid-migration.
+	AllowUnmatched bool
+	// ExportGTFS: a directory to write ADJUSTED copies of the source
+	// feeds into — each input zip again, with shapes.txt geometry
+	// replaced by the matched track walk (export.go). Path-only like
+	// overlay feeds, and only on the Rail path: corridors builds have no
+	// MATCH stage to take geometry from.
+	ExportGTFS string
 }
 
 // Chart: CHART (load, proven) → MATCH → SPLIT → ORDER → FAIR → EMIT.
@@ -327,6 +348,11 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		rail = clipPatterns(rail, o.BBox)
 		logf("chart: bbox clip: %d patterns → %d in-window pieces", before, len(rail))
 	}
+	if len(o.Exclude) > 0 {
+		before := len(rail)
+		rail = excludePatterns(rail, o.Exclude)
+		logf("chart: %d exclude window(s): %d patterns → %d pieces outside", len(o.Exclude), before, len(rail))
+	}
 
 	if v := os.Getenv("PORTOLAN_DBG3"); v != "" {
 		var la, lo float64
@@ -373,6 +399,18 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	if err := writePaths(o.Out+".paths.geojson", paths, frame); err != nil {
 		return err
 	}
+	if o.ExportGTFS != "" && o.GTFS != "" {
+		if err := exportGTFS(o.ExportGTFS, o.GTFS, paths, frame, logf); err != nil {
+			return fmt.Errorf("EXPORT: %w", err)
+		}
+	}
+	// PORTOLAN_MATCH_ONLY=1: stop after MATCH + the paths dump. Debug
+	// family (PORTOLAN_DBG*): iterating on a match diagnosis pays SPLIT's
+	// minutes on every loop otherwise.
+	if os.Getenv("PORTOLAN_MATCH_ONLY") != "" {
+		logf("match-only: stopping before SPLIT (PORTOLAN_MATCH_ONLY)")
+		return nil
+	}
 	// classes with trunk policy "none" stop here: their matched path IS the
 	// deliverable (a street centerline walk), so they skip SPLIT/ORDER/FAIR
 	// entirely and emit directly — path matching and nothing more. Buses by
@@ -383,6 +421,38 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 			railPaths = append(railPaths, p)
 		} else {
 			busPaths = append(busPaths, p)
+		}
+	}
+	// THE MATCH GATE: every rail-class pattern must actually ride track.
+	// A mostly-GAP walk means the drawn line is the shape's chords wearing
+	// a track costume — invalid output, not a style choice. Ferries are
+	// exempt (harbor lanes are legitimately unmapped water). Threshold:
+	// a quarter of the route AND a real distance, so an OSM pothole under
+	// one station throat does not fail a city.
+	{
+		var bad []string
+		for _, p := range railPaths {
+			if mode.Of(p.Pattern.Route.Type) == mode.Ferry {
+				continue
+			}
+			gap := 0.0
+			for _, st := range p.Steps {
+				if st.Piece == -1 && st.Gap != nil {
+					gap += st.Gap.Len()
+				}
+			}
+			if tot := p.Line.Len(); tot > 0 && gap/tot > 0.25 && gap > 2000 {
+				bad = append(bad, fmt.Sprintf("%s/%s (%.0f%% gap, %.0f km)",
+					p.Pattern.Route.ID, p.Pattern.ShapeID, 100*gap/tot, gap/1000))
+			}
+		}
+		if len(bad) > 0 {
+			msg := fmt.Sprintf("MATCH: %d rail pattern(s) failed to path-match: %s",
+				len(bad), strings.Join(bad, "; "))
+			if !o.AllowUnmatched {
+				return fmt.Errorf("%s — fix the rail extract (or --allow-unmatched to ship anyway)", msg)
+			}
+			logf("WARNING %s (--allow-unmatched)", msg)
 		}
 	}
 	// SPLIT must see the SAME track slice as MATCH: path steps index into
@@ -619,6 +689,14 @@ type collection struct {
 }
 
 func lineFeature(props map[string]any, l *geo.Line, step float64, frame geo.Frame) (feature, bool) {
+	// cap any one feature at ~50k vertices by widening the step on long
+	// lines: an 8 m resample of a continental path is half a million
+	// points, and 146 of them once wrote a 35 GB paths.geojson (whose
+	// write time was misread as SPLIT slowness for two builds running).
+	// City-scale lines (< 400 km at the 8 m step) are untouched.
+	if need := l.Len() / 50_000; need > step {
+		step = need
+	}
 	var cs [][2]float64
 	for _, p := range l.Resample(step) {
 		ll := frame.ToLL(p)
@@ -630,45 +708,107 @@ func lineFeature(props map[string]any, l *geo.Line, step float64, frame geo.Fram
 }
 
 func writeFC(path string, fc collection) error {
-	raw, err := json.Marshal(fc)
+	i := 0
+	return writeFCSeq(path, func() (feature, bool) {
+		if i >= len(fc.Features) {
+			return feature{}, false
+		}
+		f := fc.Features[i]
+		i++
+		return f, true
+	})
+}
+
+// writeFCSeq streams a FeatureCollection to disk one feature at a time,
+// pulling each from next(). It exists because the whole-document
+// json.Marshal this replaced held every feature AND a doubling output
+// buffer at once — at continental scale the strands dump is most of a
+// gigabyte of text, and the profile showed Marshal + bytes.growSlice at
+// 8 GB cumulative in a 21-second windowed build. Producers that generate
+// features lazily (writeStrands, writePaths) keep exactly one in memory.
+// The byte stream matches Marshal's: same structs, same field order, and
+// "features":null when there are none.
+func writeFCSeq(path string, next func() (feature, bool)) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	w := bufio.NewWriterSize(f, 1<<20)
+	w.WriteString(`{"type":"FeatureCollection","features":`)
+	n := 0
+	for {
+		ft, ok := next()
+		if !ok {
+			break
+		}
+		if n == 0 {
+			w.WriteByte('[')
+		} else {
+			w.WriteByte(',')
+		}
+		raw, err := json.Marshal(&ft)
+		if err != nil {
+			f.Close()
+			return err
+		}
+		if _, err := w.Write(raw); err != nil {
+			f.Close()
+			return err
+		}
+		n++
+	}
+	if n == 0 {
+		w.WriteString("null}")
+	} else {
+		w.WriteString("]}")
+	}
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func writeStrands(path string, strands []bundle.Strand, frame geo.Frame) error {
-	fc := collection{Type: "FeatureCollection"}
-	for _, s := range strands {
-		if f, ok := lineFeature(map[string]any{
-			"kind": "strand", "strand": s.ID, "len_m": int(s.Line.Len()),
-		}, s.Line, 10, frame); ok {
-			fc.Features = append(fc.Features, f)
+	i := 0
+	return writeFCSeq(path, func() (feature, bool) {
+		for i < len(strands) {
+			s := strands[i]
+			i++
+			if f, ok := lineFeature(map[string]any{
+				"kind": "strand", "strand": s.ID, "len_m": int(s.Line.Len()),
+			}, s.Line, 10, frame); ok {
+				return f, true
+			}
 		}
-	}
-	return writeFC(path, fc)
+		return feature{}, false
+	})
 }
 
 func writePaths(path string, paths []stages.Path, frame geo.Frame) error {
-	fc := collection{Type: "FeatureCollection"}
-	for _, p := range paths {
-		gaps := 0
-		for _, w := range p.WayIDs {
-			if w == "gap" {
-				gaps++
+	i := 0
+	return writeFCSeq(path, func() (feature, bool) {
+		for i < len(paths) {
+			p := paths[i]
+			i++
+			gaps := 0
+			for _, w := range p.WayIDs {
+				if w == "gap" {
+					gaps++
+				}
+			}
+			if f, ok := lineFeature(map[string]any{
+				"kind": "path", "route": p.Pattern.Route.ID,
+				"label": p.Pattern.Route.ShortName,
+				"color": p.Pattern.Route.Color, "shape": p.Pattern.ShapeID,
+				"trips": p.Pattern.Trips, "gaps": gaps,
+				"len_m": int(p.Line.Len()),
+			}, p.Line, 8, frame); ok {
+				return f, true
 			}
 		}
-		if f, ok := lineFeature(map[string]any{
-			"kind": "path", "route": p.Pattern.Route.ID,
-			"label": p.Pattern.Route.ShortName,
-			"color": p.Pattern.Route.Color, "shape": p.Pattern.ShapeID,
-			"trips": p.Pattern.Trips, "gaps": gaps,
-			"len_m": int(p.Line.Len()),
-		}, p.Line, 8, frame); ok {
-			fc.Features = append(fc.Features, f)
-		}
-	}
-	return writeFC(path, fc)
+		return feature{}, false
+	})
 }
 
 // writeNetwork dumps the SPLIT graph: segment centerlines (trackcenter
@@ -835,8 +975,45 @@ func LoadServiceInfo(gtfsPaths string) (*gtfs.ServiceInfo, error) {
 func loadFeeds(o ChartOpts, paths string, cover float64,
 	keep func(gtfs.Route) bool) (*gtfs.Feed, error) {
 
+	// route_type REPAIRS (style.Entity.RouteType) apply here, at the
+	// mouth of the pipeline: the drawable predicate itself judges the
+	// repaired type, so a mistyped route is neither dropped nor classed
+	// wrong anywhere downstream.
+	repair := func(r gtfs.Route) gtfs.Route {
+		if sty := o.Style; sty != nil && sty.AnyRouteType() {
+			if t, ok := sty.RouteTypeOf(
+				[]string{r.ID, r.ShortName, r.LongName}, []string{r.Agency}); ok {
+				r.Type = t
+			}
+		}
+		return r
+	}
+	if o.Style != nil {
+		inner := keep
+		keep = func(r gtfs.Route) bool {
+			r = repair(r)
+			if o.Style.RouteHidden(
+				[]string{r.ID, r.ShortName, r.LongName}, []string{r.Agency}) {
+				return false
+			}
+			return inner(r)
+		}
+	}
+	finish := func(f *gtfs.Feed, err error) (*gtfs.Feed, error) {
+		if err != nil || o.Style == nil || !o.Style.AnyRouteType() {
+			return f, err
+		}
+		for id, r := range f.Routes {
+			f.Routes[id] = repair(r)
+		}
+		for i := range f.Patterns {
+			f.Patterns[i].Route = repair(f.Patterns[i].Route)
+		}
+		return f, nil
+	}
+
 	if len(o.GTFSInline) > 0 {
-		return gtfs.LoadTables(o.GTFSInline, cover, keep)
+		return finish(gtfs.LoadTables(o.GTFSInline, cover, keep))
 	}
 	parts := strings.Split(paths, ",")
 	base, err := gtfs.LoadFiltered(strings.TrimSpace(parts[0]), cover, keep)
@@ -884,7 +1061,7 @@ func loadFeeds(o ChartOpts, paths string, cover float64,
 			base.Transfers = append(base.Transfers, [2]string{pre + tr[0], pre + tr[1]})
 		}
 	}
-	return base, nil
+	return finish(base, nil)
 }
 
 func routeSetOf(routes map[string]gtfs.Route, c mode.Class) map[string]bool {
@@ -933,6 +1110,56 @@ func clipPatterns(pats []gtfs.Pattern, bbox []float64) []gtfs.Pattern {
 			np := pat
 			np.Shape = run
 			np.ShapeID = fmt.Sprintf("%s#clip%d", pat.ShapeID, ri)
+			out = append(out, np)
+		}
+	}
+	return out
+}
+
+// excludePatterns is clipPatterns inverted: cut every shape AGAINST the
+// windows, keeping the maximal runs outside all of them. This is how a
+// continental feed cedes territory to a GROUP build that draws it there
+// — the group clips the feed TO its window, the feed's own build clips
+// it OUT, and the two meet at the same margin line, so the world draws
+// the railroad exactly once. The cut lands wherever the group boundary
+// does, which by construction is lone-trunk territory between networks.
+func excludePatterns(pats []gtfs.Pattern, windows [][]float64) []gtfs.Pattern {
+	const margin = 0.02 // the same ~2 km line clipPatterns cuts at
+	inAny := func(ll geo.LL) bool {
+		for _, b := range windows {
+			if ll.Lon >= b[0]-margin && ll.Lon <= b[2]+margin &&
+				ll.Lat >= b[1]-margin && ll.Lat <= b[3]+margin {
+				return true
+			}
+		}
+		return false
+	}
+	var out []gtfs.Pattern
+	for _, pat := range pats {
+		runs := [][]geo.LL{}
+		var cur []geo.LL
+		for _, ll := range pat.Shape {
+			if !inAny(ll) {
+				cur = append(cur, ll)
+			} else if len(cur) > 0 {
+				runs = append(runs, cur)
+				cur = nil
+			}
+		}
+		if len(cur) > 0 {
+			runs = append(runs, cur)
+		}
+		if len(runs) == 1 && len(runs[0]) == len(pat.Shape) {
+			out = append(out, pat) // wholly outside — untouched
+			continue
+		}
+		for ri, run := range runs {
+			if len(run) < 2 || runLenKm(run) < 1.0 {
+				continue
+			}
+			np := pat
+			np.Shape = run
+			np.ShapeID = fmt.Sprintf("%s#exc%d", pat.ShapeID, ri)
 			out = append(out, np)
 		}
 	}
