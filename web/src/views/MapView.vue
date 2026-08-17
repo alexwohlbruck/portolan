@@ -7,7 +7,7 @@ import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
 import { applyDynamic, activePredicate, activeRouteIdx, bulletIdsOf, markerIconAt, maskActive, stationVisible, type BundleRow } from '@/lib/dynamic'
-import { feed, currentCity, run } from '@/lib/store'
+import { feed, currentFeed, isGlobal, run } from '@/lib/store'
 import { basemapTiles, isDark } from '@/lib/theme'
 import { toast } from '@/lib/toast'
 
@@ -60,6 +60,8 @@ const labelPaint = () => {
   const t = isDark.value ? LABEL.dark : LABEL.light
   return { 'text-color': t.color, 'text-halo-color': t.halo, 'text-halo-width': 1.4 }
 }
+// tile mode draws labels through these same layers (hydrateSymbols), so
+// this fixed set is the whole re-theme surface in both modes
 const LABEL_LAYERS = ['station-labels', 'station-labels-hi']
 
 // ── viewport readout ──────────────────────────────────────────────────
@@ -139,13 +141,17 @@ const KINDS: [string, any][] = [
   ['transition', TRANSITION_OFFSET],
   ['bridge', STEADY_OFFSET],
 ]
+// each layer's STRUCTURAL filter (band_min/kind/ftype), recorded at
+// creation: the tile-mode time filter combines with it via ['all', …]
+// and detaches by restoring exactly this, so recombination is lossless
+const structuralFilter = new Map<string, any>()
 const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
 
 // per-class visibility. Stored as the DISABLED set so the default —
 // everything on — is an empty set and new classes appearing in a build
 // are visible without migration. Hiding a class routes through the same
 // dynamic filter as time, so surviving bundles re-center instead of
-// keeping a gap where the hidden class sat. Persisted per city.
+// keeping a gap where the hidden class sat. Persisted per feed.
 const CLASS_ORDER = ['metro', 'tram', 'regional', 'monorail', 'funicular', 'cable', 'aerial', 'ferry', 'bus']
 const classesOff = ref<Set<string>>(new Set())
 const modesPresent = ref<string[]>([])
@@ -170,7 +176,9 @@ function toggleClass(m: string, on: boolean) {
 // mistake the sketch editor and scenario picker already made once. The
 // delta cache makes the map's own later fetch of the same band ~free.
 async function prefetchModes() {
-  if (!feed.value || bandRaw.has(15)) return
+  // tile mode never materializes bands, so there is nothing to prefetch —
+  // and global has no whole-band documents at all
+  if (!feed.value || isGlobal.value || tileMode.value || bandRaw.has(15)) return
   try {
     const { data } = await fetchBuild(feed.value, 15)
     if (!bandRaw.has(15)) {
@@ -188,12 +196,19 @@ function refreshModes() {
   const seen = new Set<string>()
   for (const raw of bandRaw.values())
     for (const f of raw.features) if (f.properties?.mode) seen.add(f.properties.mode)
+  // tile mode materializes no bands, so the class list comes from the
+  // hydrated symbols' aligned modes instead
+  if (tileMode.value && stationsRaw.value?.features) {
+    for (const f of stationsRaw.value.features) {
+      for (const m of String(f.properties?.modes ?? '').split(',')) if (m) seen.add(m)
+    }
+  }
   modesPresent.value = CLASS_ORDER.filter((m) => seen.has(m))
 }
 // every class gets a row, always: the panel is the taxonomy, not a
 // summary of this build. Absent classes render dimmed — their toggle
-// still works and persists, so switching a class off in one city carries
-// to a city that has it.
+// still works and persists, so switching a class off in one feed carries
+// to a feed that has it.
 const inBuild = (m: string) => modesPresent.value.includes(m)
 const classDot = (m: string) => {
   const hex = styleSet.value?.modes?.[m]?.color
@@ -251,12 +266,61 @@ const runningCount = computed(() => {
   if (Number.isNaN(d.getTime())) return null
   const day = (d.getDay() + 6) % 7
   const hour = d.getHours()
-  const ids = Object.keys(masks.value)
-  if (!ids.length) return null
-  return { on: ids.filter((r) => maskActive(masks.value[r], day, hour)).length, total: ids.length }
+  const count = (m: Record<string, string>) => {
+    const ids = Object.keys(m)
+    return { on: ids.filter((r) => maskActive(m[r], day, hour)).length, total: ids.length }
+  }
+  if (isGlobal.value) {
+    // summed PER FEED, never merged into one map — route ids collide
+    // across feeds (every metro has a "1"), and a merge would silently
+    // drop the collisions from both counts
+    let on = 0
+    let total = 0
+    for (const m of Object.values(globalMasks.value)) {
+      const c = count(m)
+      on += c.on
+      total += c.total
+    }
+    return total ? { on, total } : null
+  }
+  if (!Object.keys(masks.value).length) return null
+  return count(masks.value)
 })
 
+// Global time semantics: acts are FEED-LOCAL time, so one hour-of-week
+// applied across every region means "each network at its own local
+// 9 PM" — the intended reading for a global service view (there is no
+// shared wall clock worth rendering).
+//
+// per-feed activity masks for the global sum, keyed by feed and never
+// merged; the fetch is cached — activity is static per feed
+const globalMasks = ref<Record<string, Record<string, string>>>({})
+const activityCache = new Map<string, Record<string, string>>()
+
 async function loadMasks() {
+  if (isGlobal.value) {
+    // symbol gating must NOT see per-feed masks here: route ids collide
+    // across feeds, and stationVisible/activePredicate treat a missing
+    // route-level mask as always-active — the safe global semantics
+    // (feature-level acts still dominate wherever they exist)
+    masks.value = {}
+    await tilesProbe // the region list names the feeds worth summing
+    if (!isGlobal.value) return // switched away while the probe ran
+    const out: Record<string, Record<string, string>> = {}
+    await Promise.all(
+      tileRegions.value.map(async (r) => {
+        let m = activityCache.get(r.feed)
+        if (!m) {
+          m = await api.activity(r.feed).catch(() => ({}))
+          activityCache.set(r.feed, m)
+        }
+        out[r.feed] = m
+      }),
+    )
+    globalMasks.value = out
+    return
+  }
+  globalMasks.value = {}
   masks.value = feed.value ? await api.activity(feed.value).catch(() => ({})) : {}
 }
 
@@ -289,6 +353,15 @@ function modeExprs(st: StyleSet | null) {
   return { w, o }
 }
 
+// Hydrated transition/bridge features may carry per-feed RESOLVED
+// width/opacity (_w/_o, baked in hydrateTransitions from the owning
+// feed's styleSet): the ribbon twins are shared across every feed in
+// global, so a per-layer expression cannot split by feed there — the
+// value rides on the feature instead. GeoJSON-mode features carry
+// neither and fall through to the class match untouched.
+const perFeedW = (w: any) => ['coalesce', ['get', '_w'], w]
+const perFeedO = (o: any) => ['coalesce', ['get', '_o'], o]
+
 const ribbonIds: string[] = []
 // which ribbon layers belong to which band — needed to stretch a loaded
 // band over a zoom whose own band has not arrived yet (see holdBands).
@@ -307,7 +380,8 @@ const bandForZoom = (z: number) =>
   (BANDS.find((b) => z >= b.min && z < b.max) ?? BANDS[BANDS.length - 1]).key
 
 async function loadBand(key: number) {
-  if (!map || !feed.value || loadedBands.has(key)) return
+  // never with feed=global: there is no whole-band document for the world
+  if (!map || !feed.value || isGlobal.value || loadedBands.has(key)) return
   loadedBands.add(key)
   try {
     const { data, stats } = await fetchBuild(feed.value, key)
@@ -322,7 +396,8 @@ async function loadBand(key: number) {
 }
 
 async function ensureBand() {
-  if (!map) return
+  // the pyramid carries every band itself; global only ever draws pyramids
+  if (!map || tileMode.value || isGlobal.value) return
   const key = bandForZoom(map.getZoom())
   holdBands()
   await loadBand(key)
@@ -343,7 +418,7 @@ async function ensureBand() {
  *  lands. Only one band ever covers a given zoom, so nothing double-draws. */
 let heldAs = ''
 function holdBands() {
-  if (!map) return
+  if (!map || tileMode.value) return // no bands to stretch over each other
   const z = map.getZoom()
   const want = bandForZoom(z)
   const have = bandRaw.has(want)
@@ -486,8 +561,14 @@ function estRows(name: string): number {
   return Math.max(1, Math.min(MAX_ROWS, rows, breaks + 1))
 }
 
-async function loadStations() {
-  const fc = feed.value ? await api.stations(feed.value).catch(() => null) : null
+/** Normalize a stations FeatureCollection and make it the live symbol
+ *  data. The input is either the per-feed stations.geojson artifact or
+ *  the same features hydrated back out of tile symbols — the tiler cuts
+ *  its symbol layers from that artifact, so the properties are one
+ *  vocabulary. Everything downstream (applyStations, time gating, class
+ *  toggles, styleimagemissing icons) runs identically in both modes
+ *  from here. */
+function prepareStations(fc: any | null) {
   if (fc?.features) {
     for (const f of fc.features) {
       const p = f.properties
@@ -530,7 +611,15 @@ async function loadStations() {
   }
   stationsRaw.value = fc
   markerBundles = null // fresh stations — bundle links rebuild lazily
+  refreshModes() // tile mode derives the class list from the symbols
   applyStations()
+}
+
+async function loadStations() {
+  // stations.geojson is a per-feed artifact — feed=global must not fire
+  const fc =
+    feed.value && !isGlobal.value ? await api.stations(feed.value).catch(() => null) : null
+  prepareStations(fc)
 }
 
 // ── marker + bullet images, drawn on demand ────────────────────────────
@@ -866,10 +955,13 @@ function timeFilteredBullets(f: any, date: Date | null, off: Set<string>): any {
   return props ? { ...f, properties: props } : f
 }
 
-// time and class changes re-filter the cached data in memory — no fetch
+// time and class changes re-filter the cached data in memory — no fetch.
+// In tile mode the same trigger routes ribbons to layer filters instead
+// (applyStations covers the hydrated symbols either way).
 watch([activeAt, masks, classesOff], () => {
   applyBands()
   applyStations()
+  applyTileFilters()
 })
 
 function addLayers() {
@@ -878,18 +970,20 @@ function addLayers() {
   for (const b of BANDS) {
     for (const [kind, off] of KINDS) {
       const id = `ribbon-${b.key}-${kind}`
+      const filter = ['all', ['==', ['get', 'band_min'], b.key], ['==', ['get', 'kind'], kind]]
+      structuralFilter.set(id, filter)
       map.addLayer({
         id,
         type: 'line',
         source: `build-${b.key}`,
         minzoom: b.min === 0 ? 0 : b.min,
         maxzoom: b.max === 24 ? 24 : b.max,
-        filter: ['all', ['==', ['get', 'band_min'], b.key], ['==', ['get', 'kind'], kind]],
+        filter,
         // round caps: at a transition/steady seam the eased line arrives
         // with lateral slope while the steady leaves flat, and butt caps
         // cut at those two angles leave a wedge notch at every seam
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': COLOR, 'line-width': widthExpr(w), 'line-opacity': o, 'line-offset': off },
+        paint: { 'line-color': COLOR, 'line-width': widthExpr(perFeedW(w)), 'line-opacity': perFeedO(o), 'line-offset': off },
       })
       ribbonIds.push(id)
       ;(bandLayers.get(b.key) ?? bandLayers.set(b.key, []).get(b.key)!).push(id)
@@ -907,12 +1001,12 @@ function addLayers() {
   // each branch), and the LABEL economy is MapLibre's: symbol collision
   // never overlaps, symbol-sort-key places hubs first so locals are what
   // drop, variable anchors let a label take whichever side has room.
-  // Importance is the PERCENTILE the pipeline computes per city (routes +
+  // Importance is the PERCENTILE the pipeline computes per feed (routes +
   // distinct lines + transfers.txt degree), not a raw route count. Route
   // count cannot gate a small system: every Charlotte station has one
   // route, so a threshold of 2 showed exactly one label at z13 and a
   // threshold of 6 showed none at z11. A percentile asks the question the
-  // gate actually means — "the top n% of THIS city".
+  // gate actually means — "the top n% of THIS feed".
   //
   // The thresholds are deliberately generous: MapLibre's collision is
   // what decides whether a label FITS, and symbol-sort-key places the
@@ -1080,7 +1174,7 @@ function addLayers() {
   // stations happen to be; a stop on an empty stretch is never deleted
   // just for scoring low; and there is one dial to turn instead of a
   // ladder of per-zoom rank cut-offs that has to be retuned for every
-  // city. Importance survives as `symbol-sort-key`, which is exactly
+  // feed. Importance survives as `symbol-sort-key`, which is exactly
   // where it belongs — it decides who WINS a contested spot.
   //
   // From z15 the merged complex label yields to the per-corridor labels
@@ -1173,6 +1267,408 @@ function addLayers() {
   })
 }
 
+// ── tile mode (docs: `portolan tiles`) ─────────────────────────────────
+// Region-scale feeds ship as a z/x/y MVT pyramid instead of whole-band
+// GeoJSON, and /api/tiles/<feed>/tiles.json existing is the whole mode
+// switch: 200 → stream tiles, 404 → the band machinery above, untouched.
+// Tile mode is deliberately the STATIC all-service picture for now — the
+// time dial and class toggles need materialized features to re-filter,
+// and a pyramid never hands the client the whole document.
+// Generalized to N regions: the global context draws every feed with a
+// cut pyramid at once — one vector source and one set of cloned layers
+// per region, all ids suffixed with the region's feed. A single tiled
+// feed is simply the one-region case.
+interface TileRegion {
+  feed: string
+  tiles: string[]
+  minzoom: number
+  maxzoom: number
+  bounds?: number[] // [w,s,e,n]
+}
+const tileRegions = ref<TileRegion[]>([])
+const tileMode = computed(() => tileRegions.value.length > 0)
+// The dynamic controls work everywhere data draws: GeoJSON feeds through
+// the JS re-filter, tiled feeds AND global through ribbon layer filters
+// plus the hydrated symbol pipeline (hydrateSymbols sweeps every
+// region's tiles, so global symbols gate the same way). Only a global
+// with no cut pyramids parks them — nothing is on screen to filter.
+const parked = computed(() => isGlobal.value && !tileMode.value)
+// reload() awaits this so the mode is decided before anything draws
+let tilesProbe: Promise<void> = Promise.resolve()
+
+const tileBase = (f: string) => `${window.location.origin}/api/tiles/${encodeURIComponent(f)}/`
+
+async function probeTiles() {
+  if (isGlobal.value) {
+    // the index alone carries everything a source needs (bounds, maxzoom;
+    // the tile template is fixed), so global costs one round trip — no
+    // per-region tiles.json fetches
+    const idx = await api.tilesIndex().catch(() => [])
+    tileRegions.value = idx.map((e) => ({
+      feed: e.feed,
+      tiles: [tileBase(e.feed) + '{z}/{x}/{y}.mvt'],
+      minzoom: 0,
+      maxzoom: e.maxzoom ?? 15, // the renderer overzooms above the pyramid top
+      bounds: e.bounds,
+    }))
+  } else if (feed.value) {
+    const tj = await api.tilejson(feed.value).catch(() => null)
+    tileRegions.value = tj
+      ? [
+          {
+            feed: feed.value,
+            // tiles.json carries a relative template so one document works
+            // from any origin; resolve it against the pyramid's directory
+            tiles: tj.tiles.map((t) => (/^https?:/.test(t) ? t : tileBase(feed.value) + t)),
+            minzoom: tj.minzoom ?? 0,
+            maxzoom: tj.maxzoom ?? 15,
+            bounds: tj.bounds,
+          },
+        ]
+      : []
+  } else {
+    tileRegions.value = []
+  }
+  // the dial rides layer filters wherever tiles draw — single feeds and
+  // global alike — so a linked ?t= survives every context switch now
+}
+
+// Per-feed resolved style sets for tile mode. Global's own
+// api.style('global') is only the _default layer, so every region's doc
+// is fetched alongside and each feed's tile clones / hydrated features
+// style themselves from their OWNING feed's set. Single-feed tile mode
+// flows through the same mechanism as a map of one (where it resolves
+// to the same set styleSet already holds). Cached persistently like
+// activityCache; styleSet stays the fallback for feeds without a doc.
+const feedStyles = ref<Record<string, StyleSet>>({})
+const styleCache = new Map<string, StyleSet | null>()
+const styleForFeed = (f: string) => feedStyles.value[f] ?? styleSet.value
+
+async function loadFeedStyles() {
+  if (!tileMode.value) {
+    feedStyles.value = {}
+    return
+  }
+  const out: Record<string, StyleSet> = {}
+  await Promise.all(
+    tileRegions.value.map(async (r) => {
+      let s = styleCache.get(r.feed)
+      if (s === undefined) {
+        s = await api.style(r.feed).catch(() => null)
+        styleCache.set(r.feed, s)
+      }
+      if (s) out[r.feed] = s
+    }),
+  )
+  feedStyles.value = out
+}
+
+// everything the tile path added, in add order — the teardown lists
+const tileLayerIds: string[] = []
+const tileSourceIds: string[] = []
+// delegated listeners are keyed by layer id and survive re-adds, so each
+// id registers exactly once ever, across every rebuild and region set
+const tileHandlerIds = new Set<string>()
+
+/** Clone a live layer definition and retarget it at a vector source.
+ *  Cloning off the style rather than restating the definition is the
+ *  point: the tile layers inherit exactly the paint/layout/filter the
+ *  GeoJSON twin carries right now, so the two modes cannot drift. */
+function tileClone(srcId: string, id: string, source: string, sourceLayer: string) {
+  const def = JSON.parse(JSON.stringify(map.getStyle().layers.find((l: any) => l.id === srcId)))
+  def.id = id
+  def.source = source
+  def['source-layer'] = sourceLayer
+  // the twin's LIVE filter may carry a time clause; clones start from the
+  // recorded structural filter so applyTileFilters never doubles it up
+  if (structuralFilter.has(srcId)) def.filter = structuralFilter.get(srcId)
+  structuralFilter.set(id, def.filter)
+  return def
+}
+
+/** (Re)build the vector sources and their layers for the current region
+ *  list, or tear them down when there are none. Runs inside reload()
+ *  AFTER the GeoJSON ribbons' paints are refreshed, so the clones pick
+ *  up the new context's style. */
+function syncTileLayers() {
+  if (!map) return
+  for (const id of tileLayerIds) {
+    if (map.getLayer(id)) map.removeLayer(id)
+    structuralFilter.delete(id)
+  }
+  tileLayerIds.length = 0
+  for (const id of tileSourceIds) {
+    if (map.getSource(id)) map.removeSource(id)
+  }
+  tileSourceIds.length = 0
+  if (!tileMode.value) {
+    // leaving tile mode: the transition twins may still carry a time or
+    // class clause — detach it, the JS path owns filtering from here
+    applyTileFilters()
+    return
+  }
+  // The GeoJSON twins keep DRAWING in tile mode: hydrateTransitions
+  // materializes junction transitions into their sources. Any zoom
+  // stretch holdBands left behind (it no-ops in tile mode, so it cannot
+  // undo itself) must come off, or a stretched band's transition twin
+  // would double-draw against another band's canonical range.
+  heldAs = ''
+  for (const b of BANDS) {
+    for (const id of bandLayers.get(b.key) ?? []) {
+      if (map.getLayer(id)) {
+        map.setLayerZoomRange(id, b.min === 0 ? 0 : b.min, b.max === 24 ? 24 : b.max)
+      }
+    }
+  }
+  const add = (def: any, beforeId: string) => {
+    map.addLayer(def, beforeId)
+    tileLayerIds.push(def.id)
+  }
+  // Steady clones must sit BELOW every ribbon twin: at a junction the
+  // hydrated transition's eased ramp has to draw OVER the steady ribbons
+  // it crosses — the per-band interleaving gives GeoJSON mode this for
+  // free, and anchoring clones above the twins buried transitions under
+  // crossing lines (Clark/Lake). The first ribbon twin in the live style
+  // is the bottom of the whole ribbon stack (clones are torn down above,
+  // so /^ribbon-\d/ can only match a twin); the empty steady twins left
+  // above the clones are harmless in tile mode. Order bottom→top:
+  // steady clones < transition/bridge twins < symbols.
+  const anchor =
+    map.getStyle().layers.find((l: any) => /^ribbon-\d/.test(l.id))?.id ?? 'station-markers'
+  for (const r of tileRegions.value) {
+    const src = `tiles-${r.feed}`
+    map.addSource(src, {
+      type: 'vector',
+      tiles: r.tiles,
+      minzoom: r.minzoom,
+      maxzoom: r.maxzoom,
+      ...(r.bounds?.length === 4 ? { bounds: r.bounds } : {}),
+    })
+    tileSourceIds.push(src)
+    // the clone inherits the twin's paint, which in global is the
+    // _default layer's — restate width/opacity from the owning feed's
+    // own styleSet so per-feed mode overrides survive
+    const { w, o } = modeExprs(styleForFeed(r.feed))
+    for (const b of BANDS) {
+      for (const [kind] of KINDS) {
+        // transitions ease their offset over line-progress, which MapLibre
+        // only computes for GeoJSON sources with lineMetrics — a vector-
+        // source clone draws them un-eased (offset jumps at every fork).
+        // They render through hydrateTransitions + the GeoJSON twins
+        // instead; bridges ride along so both hydrated kinds have exactly
+        // one drawing path.
+        if (kind === 'transition' || kind === 'bridge') continue
+        const def = tileClone(
+          `ribbon-${b.key}-${kind}`,
+          `ribbon-t-${b.key}-${kind}-${r.feed}`,
+          src,
+          'ribbons',
+        )
+        // holdBands stretches the GeoJSON twins' zoom ranges while a band
+        // is in flight; the pyramid always has every band, so the clone
+        // gets the canonical range back
+        def.minzoom = b.min === 0 ? 0 : b.min
+        def.maxzoom = b.max === 24 ? 24 : b.max
+        def.paint = { ...def.paint, 'line-width': widthExpr(w), 'line-opacity': o }
+        add(def, anchor)
+      }
+    }
+    // symbols are NOT cloned: hydrateSymbols materializes them into the
+    // stations source, where the standard pipeline (prepareStations'
+    // icon/brow/nrows, applyStations' gating, styleimagemissing) draws
+    // them exactly as in GeoJSON mode — bullet strips included
+  }
+  for (const id of tileLayerIds) {
+    if (tileHandlerIds.has(id)) continue
+    tileHandlerIds.add(id)
+    map.on('click', id, (e: any) => {
+      inspect.value = e.features?.[0]?.properties ?? null
+    })
+    map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'))
+    map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''))
+  }
+  hydrateSymbols()
+  hydrateTransitions()
+  applyTileFilters() // fresh clones carry structural filters only
+}
+
+// ── tile-mode time dial + class toggles ────────────────────────────────
+// Tile mode renders a timestamp and the class toggles as LAYER FILTERS
+// on the RIBBONS (`acts` bit test, scalar `mode`) instead of the GeoJSON
+// path's re-materialization; symbols go through hydrateSymbols into the
+// ordinary applyStations pipeline, which gates them in JS exactly as in
+// GeoJSON mode — so these filters must NEVER touch a symbol layer, or
+// symbols would be gated twice. What the GPU cannot do is re-center a
+// thinned bundle, so surviving ribbons keep their union offsets — the
+// honest trade for controls that work without the whole document. (The
+// acts expression could subsume the JS path later; for now GeoJSON mode
+// is untouched.)
+
+// hex digits with bit b set — the bit test as a match label set
+const HEX_BIT = [
+  ['1', '3', '5', '7', '9', 'b', 'd', 'f'],
+  ['2', '3', '6', '7', 'a', 'b', 'e', 'f'],
+  ['4', '5', '6', '7', 'c', 'd', 'e', 'f'],
+  ['8', '9', 'a', 'b', 'c', 'd', 'e', 'f'],
+]
+// acts is per-ROUTE: a semicolon-joined list of 42-char masks aligned
+// with the routes CSV (one bare mask for single-route features and
+// cats), so the test is ANY route slot awake — slots ride at stride 43
+const ACTS_MAX_ROUTES = 16
+
+/** MapLibre filter for "any member route awake at `date`", or null when
+ *  no time is set. Bit order matches maskActive EXACTLY: 7 days ×
+ *  6 hex digits, Monday first, each day a big-endian 24-bit word with
+ *  hour 0 at the LSB — so an hour's digit sits at day*6 + (5 -
+ *  floor(hour/4)), and bit hour%4 of that digit (bit 0 = the EARLIEST
+ *  hour of its 4-hour block). Empty/missing acts renders always-active:
+ *  the JS path falls back to route-level masks there, which a filter
+ *  cannot index — always-on matches it whenever no mask exists, and
+ *  visible is the honest default (activePredicate's own rule 3). */
+function actsFilterExpr(date: Date | null): any | null {
+  if (!date || Number.isNaN(date.getTime())) return null
+  const day = (date.getDay() + 6) % 7 // JS Sunday=0 → our Monday=0
+  const hour = date.getHours()
+  const digit = day * 6 + (5 - Math.floor(hour / 4))
+  const acts = ['coalesce', ['get', 'acts'], '']
+  const routeOn = (j: number) => {
+    const at = j * 43 + digit
+    // a slot beyond the actual route count slices to '' → false, so the
+    // fixed fan-out is inert past the feature's own routes
+    return ['match', ['slice', acts, at, at + 1], HEX_BIT[hour % 4], true, false]
+  }
+  const tests = Array.from({ length: ACTS_MAX_ROUTES }, (_, j) => routeOn(j))
+  return ['case', ['==', acts, ''], true, ['any', ...tests]]
+}
+
+/** Attach (or detach) the time and class clauses on every RIBBON layer
+ *  that draws tile-fed data: the steady tile clones and the hydrated
+ *  transition/bridge GeoJSON twins — exactly what structuralFilter
+ *  holds; symbol layers are absent by design (applyStations gates
+ *  those). Each layer gets ['all', structural, …clauses]; no clauses
+ *  (or no tile mode) restores the structural filter. */
+function applyTileFilters() {
+  if (!map) return
+  const clauses: any[] = []
+  if (tileMode.value) {
+    const acts = actsFilterExpr(when.value ? new Date(when.value) : null)
+    if (acts) clauses.push(acts)
+    if (classesOff.value.size) {
+      clauses.push(['!', ['in', ['get', 'mode'], ['literal', [...classesOff.value]]]])
+    }
+  }
+  for (const [id, structural] of structuralFilter) {
+    if (!map.getLayer(id)) continue
+    map.setFilter(
+      id,
+      clauses.length ? ['all', ...(structural ? [structural] : []), ...clauses] : structural,
+    )
+  }
+}
+
+/** Junction transitions cannot render straight off the vector source
+ *  either: their line-offset eases over line-progress, and MapLibre only
+ *  computes line-progress for GeoJSON sources with lineMetrics — never
+ *  for vector tiles — so an MVT transition draws at a fixed offset and
+ *  the ribbon jumps at every fork. syncTileLayers therefore clones no
+ *  transition/bridge layers; instead the loaded tile features are
+ *  materialized into the (otherwise idle) build-<band> GeoJSON sources,
+ *  where the existing ribbon-<band>-transition/-bridge twins draw them
+ *  with full easing. The tiler ships each transition WHOLE into every
+ *  tile it touches (so line-progress spans the true segment), which
+ *  makes duplicates a fact of life — folded by segment identity. All the
+ *  properties the twins read (off_from_px/off_to_px/offset_px, nslots,
+ *  kind, band_min, colors, routes, acts) are scalars, so nothing needs
+ *  the JSON decode cats do. */
+function hydrateTransitions() {
+  if (!map || !tileMode.value) return
+  const seen = new Set<string>()
+  const byBand = new Map<number, any[]>(BANDS.map((b) => [b.key, []]))
+  for (const sid of tileSourceIds) {
+    if (!map.getSource(sid)) continue
+    const modes = styleForFeed(sid.slice('tiles-'.length))?.modes
+    for (const f of map.querySourceFeatures(sid, { sourceLayer: 'ribbons' })) {
+      const p = f.properties
+      if (p.kind !== 'transition' && p.kind !== 'bridge') continue
+      // seg names the segment but is only unique within one feed's
+      // pyramid, so the source id keys regions apart; band_min + routes
+      // guard against seg reuse inside a feed
+      const key = `${sid}|${p.seg}|${p.band_min}|${p.routes}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const props: any = { ...p }
+      // the twins are shared across feeds, so the owning feed's resolved
+      // class width/opacity rides ON the feature — the twin paint
+      // coalesces _w/_o ahead of its default class match (perFeedW/O)
+      const m = modes?.[p.mode]
+      if (m) {
+        props._w = m.width
+        props._o = m.opacity
+      }
+      byBand.get(+p.band_min)?.push({ type: 'Feature', properties: props, geometry: f.geometry })
+    }
+  }
+  // set every band, matches or none: a band whose transitions scrolled
+  // out of the loaded tiles must drop them, exactly like stations
+  for (const [band, feats] of byBand) {
+    map.getSource(`build-${band}`)?.setData({ type: 'FeatureCollection', features: feats })
+  }
+}
+
+/** ONE hydration for every tiled symbol kind. Symbols cannot render
+ *  straight off the vector source: cats carry vec/veclo anchor offsets
+ *  as ARRAYS (MVT values are scalar, so the tiler ships them as JSON
+ *  text and expressions have no parse), and stations/markers need the
+ *  client-computed properties — icon ids, bullet strips (brow), wrap
+ *  counts (nrows) — that only prepareStations makes. So the loaded
+ *  symbol tiles are materialized into the stations GeoJSON source
+ *  through the SAME prepareStations/applyStations pipeline GeoJSON mode
+ *  uses, and the standard symbol layers draw them unchanged. Re-run as
+ *  tiles come and go; the tiler writes each symbol into one owning tile
+ *  per zoom, so the only duplicates to fold are across cached zoom
+ *  levels. */
+function hydrateSymbols() {
+  if (!map || !tileMode.value) return
+  const seen = new Set<string>()
+  const feats: any[] = []
+  for (const sid of tileSourceIds) {
+    if (!map.getSource(sid)) continue
+    for (const sl of ['stations', 'markers', 'cat']) {
+      for (const f of map.querySourceFeatures(sid, { sourceLayer: sl })) {
+        const p = { ...f.properties }
+        // the owning feed rides along for anything styleSet-derived
+        // downstream. Today symbol rendering is fully baked-prop-driven
+        // (shapes/colors/fonts/bordered are resolved at BUILD time into
+        // the stations artifact), so this is identity/debug — but it is
+        // the hook per-feed render styling would key on.
+        p._feed = sid.slice('tiles-'.length)
+        // Cats: the anchor is part of the identity — a route repeats the
+        // same vec at every single-bullet chain along its line, so a
+        // props-only key would fold distinct bullets together.
+        // Stations/markers: name+routes at one coordinate IS the symbol.
+        // Coordinates keep same-named symbols from different regions
+        // apart in both keys.
+        const key =
+          sl === 'cat'
+            ? `${f.geometry?.coordinates}|${p.route}|${p.band}|${p.label}|${p.vec}`
+            : `${sl}|${f.geometry?.coordinates}|${p.name ?? ''}|${p.routes ?? ''}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        if (sl === 'cat') {
+          try {
+            if (typeof p.vec === 'string') p.vec = JSON.parse(p.vec)
+            if (typeof p.veclo === 'string') p.veclo = JSON.parse(p.veclo)
+          } catch {
+            continue // a bullet with no offset would sit on the centerline
+          }
+        }
+        feats.push({ type: 'Feature', properties: p, geometry: f.geometry })
+      }
+    }
+  }
+  prepareStations({ type: 'FeatureCollection', features: feats })
+}
+
 watch(debug, (d) => {
   if (!map) return
   for (const [k, on] of Object.entries(d)) {
@@ -1185,8 +1681,18 @@ async function reload() {
   if (!map || !feed.value) return
   loading.value = true
   try {
+    await tilesProbe // mode decides everything below
     styleSet.value = await api.style(feed.value)
-    loadStations() // a rebuild may have refreshed the stations artifact
+    await loadFeedStyles() // per-feed sets must precede the clone rebuild
+    if (tileMode.value) {
+      // symbols re-hydrate from this feed's tiles; drop the old set now
+      // so nothing from the previous feed lingers while tiles stream in
+      stationsRaw.value = null
+      markerBundles = null
+      map.getSource('stations')?.setData({ type: 'FeatureCollection', features: [] })
+    } else {
+      loadStations() // a rebuild may have refreshed the stations artifact
+    }
     loadedBands.clear()
     bandRaw.clear()
     for (const b of BANDS) {
@@ -1196,33 +1702,66 @@ async function reload() {
     const { w, o } = modeExprs(styleSet.value)
     for (const id of ribbonIds) {
       if (!map.getLayer(id)) continue
-      map.setPaintProperty(id, 'line-width', widthExpr(w))
-      map.setPaintProperty(id, 'line-opacity', o)
+      map.setPaintProperty(id, 'line-width', widthExpr(perFeedW(w)))
+      map.setPaintProperty(id, 'line-opacity', perFeedO(o))
     }
-    for (const [name, url] of [
-      ['rail', `/api/rail.geojson?feed=${feed.value}`],
-      ['paths', `/api/paths.geojson?feed=${feed.value}`],
-      ['trackcenter', `/api/trackcenter.geojson?feed=${feed.value}`],
-      ['nodes', `/api/nodes.geojson?feed=${feed.value}`],
-    ] as const) {
-      map.getSource(name)?.setData(url)
+    // after the paint refresh, so tile clones inherit the new style
+    syncTileLayers()
+    // debug overlays are per-feed artifacts. In global they empty rather
+    // than fetch — no /api/*.geojson?feed=global may ever fire.
+    if (isGlobal.value) {
+      for (const name of ['rail', 'paths', 'trackcenter', 'nodes']) {
+        map.getSource(name)?.setData({ type: 'FeatureCollection', features: [] })
+      }
+    } else {
+      for (const [name, url] of [
+        ['rail', `/api/rail.geojson?feed=${feed.value}`],
+        ['paths', `/api/paths.geojson?feed=${feed.value}`],
+        ['trackcenter', `/api/trackcenter.geojson?feed=${feed.value}`],
+        ['nodes', `/api/nodes.geojson?feed=${feed.value}`],
+      ] as const) {
+        map.getSource(name)?.setData(url)
+      }
     }
-    fitCity()
+    fitFeed()
   } finally {
     loading.value = false
   }
 }
 
-function fitCity() {
-  const b = currentCity.value?.bbox
-  if (map && b?.length === 4) {
+function fitFeed() {
+  if (!map) return
+  // tiled regions' own bounds beat any feed bbox — but a camera already
+  // parked inside one of them stays put, so a reload never yanks the view
+  // away from the corner someone is studying
+  const bs = tileRegions.value
+    .map((r) => r.bounds)
+    .filter((b): b is number[] => b?.length === 4)
+  if (tileMode.value && bs.length) {
+    const c = map.getCenter()
+    const inside = bs.some((b) => c.lng >= b[0] && c.lat >= b[1] && c.lng <= b[2] && c.lat <= b[3])
+    if (!inside) {
+      // the enclosing box of every region — global fits the world it has
+      const u = [
+        Math.min(...bs.map((b) => b[0])),
+        Math.min(...bs.map((b) => b[1])),
+        Math.max(...bs.map((b) => b[2])),
+        Math.max(...bs.map((b) => b[3])),
+      ]
+      map.fitBounds([[u[0], u[1]], [u[2], u[3]]], { padding: 40, duration: 0 })
+    }
+    return
+  }
+  const b = currentFeed.value?.bbox
+  if (b?.length === 4) {
     map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, duration: 0 })
   }
 }
 
 async function loadScenarios() {
   scenarios.value = []
-  if (!feed.value) return
+  grid.value = []
+  if (!feed.value || isGlobal.value) return // scenarios are per-feed
   try {
     const r = await api.scenarios(feed.value)
     if (r.available && r.scenarios) scenarios.value = r.scenarios
@@ -1266,7 +1805,7 @@ onMounted(async () => {
   })
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
   // marker dots, bundle pills and route bullets are canvas-drawn the
-  // first time a layer asks for them — any city's colors and labels work
+  // first time a layer asks for them — any feed's colors and labels work
   // with no sprite sheet
   map.on('styleimagemissing', (e: any) => {
     if (!e.id || map.hasImage(e.id)) return
@@ -1303,6 +1842,17 @@ onMounted(async () => {
       ensureBand()
     })
     map.on('move', syncView)
+    // tile mode: symbols and junction transitions re-materialize as
+    // tiles come and go (the handlers no-op outside it, and both
+    // hydrators dedupe)
+    map.on('moveend', hydrateSymbols)
+    map.on('moveend', hydrateTransitions)
+    map.on('sourcedata', (e: any) => {
+      if (typeof e.sourceId === 'string' && e.sourceId.startsWith('tiles-') && e.isSourceLoaded) {
+        hydrateSymbols()
+        hydrateTransitions()
+      }
+    })
     syncView()
     await reload()
   })
@@ -1311,9 +1861,16 @@ onMounted(async () => {
   // whenever WebGL was slow or unavailable
   loadClassesOff()
   loadScenarios()
-  loadMasks()
-  loadStations()
-  prefetchModes()
+  // the whole-document fetches stay parked while a pyramid serves this
+  // feed, so they wait on the probe; reload() awaits the same promise
+  tilesProbe = probeTiles()
+  loadMasks() // awaits tilesProbe in global — must follow its assignment
+  tilesProbe.then(() => {
+    if (!tileMode.value) {
+      loadStations()
+      prefetchModes()
+    }
+  })
 })
 
 onBeforeUnmount(() => {
@@ -1323,9 +1880,15 @@ onBeforeUnmount(() => {
 
 watch(feed, async () => {
   loadClassesOff()
-  loadMasks()
-  loadStations()
-  prefetchModes()
+  // re-probe first: the new feed may cross the tile/GeoJSON divide
+  tilesProbe = probeTiles()
+  loadMasks() // awaits tilesProbe in global — must follow its assignment
+  tilesProbe.then(() => {
+    if (!tileMode.value) {
+      loadStations()
+      prefetchModes()
+    }
+  })
   await loadScenarios()
   await reload()
 })
@@ -1339,27 +1902,36 @@ watch(feed, async () => {
     <div ref="el" class="h-full w-full" />
 
     <!-- one toolbar: the map is the page, so all chrome lives in a single
-         bar — city and view actions, then time, then a status word. The
+         bar — feed and view actions, then time, then a status word. The
          scenario dropdown is gone: a timestamp IS the scenario selection
          now (dynamic rendering), and the prebuilt-scenario QA controls
          live on the Service page. -->
     <div class="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center p-4">
       <div class="pointer-events-auto flex max-w-full flex-wrap items-center gap-1 rounded-xl border border-border bg-card/90 px-2 py-1.5 shadow-sm backdrop-blur">
-        <span class="px-2 text-sm font-medium">{{ currentCity?.name || 'No city' }}</span>
+        <span class="px-2 text-sm font-medium">{{ isGlobal ? 'Global' : currentFeed?.name || 'No feed' }}</span>
         <Badge v-if="loading" variant="info"><Spinner class="size-3" /></Badge>
         <Button variant="ghost" size="icon" title="Reload" @click="reload"><RefreshCw class="size-4" /></Button>
-        <Button variant="ghost" size="icon" title="Fit to city" @click="fitCity"><Crosshair class="size-4" /></Button>
+        <Button variant="ghost" size="icon" title="Fit to feed" @click="fitFeed"><Crosshair class="size-4" /></Button>
 
         <span class="mx-1 h-5 w-px bg-border" />
 
         <Clock class="ml-1 size-4 shrink-0 text-muted-foreground" />
+        <!-- the dial works everywhere tiles or bands draw — in global,
+             each network renders at its own local hour (acts are
+             feed-local time); it parks only when nothing is on screen -->
         <input
           v-model="when"
           type="datetime-local"
-          class="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+          :disabled="parked"
+          :title="parked ? 'No tiled feeds to filter' : ''"
+          class="h-8 rounded-md border border-input bg-transparent px-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           :class="isDark ? '[color-scheme:dark]' : '[color-scheme:light]'"
         />
-        <Button variant="ghost" size="sm" title="Jump to the current time" @click="when = localNow()">now</Button>
+        <Button
+          variant="ghost" size="sm" :disabled="parked"
+          :title="parked ? 'No tiled feeds to filter' : 'Jump to the current time'"
+          @click="when = localNow()"
+        >now</Button>
 
         <span class="mx-1 h-5 w-px bg-border" />
 
@@ -1386,18 +1958,21 @@ watch(feed, async () => {
       <div class="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         <Layers class="size-3.5" /> Layers
       </div>
+      <!-- class toggles work everywhere too — tile-mode ribbons gate on
+           their scalar mode via layer filters, symbols through
+           stationVisible; they park only with nothing on screen -->
       <label
         v-for="m in CLASS_ORDER"
         :key="m"
         class="flex items-center justify-between py-1 text-sm"
-        :class="inBuild(m) ? '' : 'opacity-45'"
-        :title="inBuild(m) ? '' : 'No ' + m + ' routes in this build'"
+        :class="inBuild(m) && !parked ? '' : 'opacity-45'"
+        :title="parked ? 'No tiled feeds to filter' : inBuild(m) ? '' : 'No ' + m + ' routes in this build'"
       >
         <span class="flex items-center gap-2">
           <span class="size-2.5 shrink-0 rounded-full" :style="classDot(m)" />
           <span class="capitalize">{{ m }}</span>
         </span>
-        <Switch :model-value="!classesOff.has(m)" @update:model-value="(v) => toggleClass(m, v)" />
+        <Switch :model-value="!classesOff.has(m)" :disabled="parked" @update:model-value="(v) => toggleClass(m, v)" />
       </label>
       <div class="mb-1 mt-3 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Debug</div>
       <label v-for="(_, k) in debug" :key="k" class="flex items-center justify-between py-1 text-sm">

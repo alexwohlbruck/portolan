@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ var mapHTML []byte
 //go:embed nav.js
 var navJS []byte
 
-// FeedCfg is one city in portolan.json.
+// FeedCfg is one feed (or feed group) in portolan.json.
 type FeedCfg struct {
 	Name    string    `json:"name"`
 	GTFS    string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
@@ -45,6 +46,12 @@ type FeedCfg struct {
 	Out     string    `json:"out"`
 	Network string    `json:"network"` // drawn ground truth for scoring
 	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
+	// Members marks a GROUP: the feed keys whose networks this entry
+	// builds together (so cross-feed routes bundle on shared track). The
+	// group's tileset REPLACES its members' in the global index — a
+	// member listed here is skipped there, or the world would draw the
+	// same railroad twice.
+	Members []string `json:"members,omitempty"`
 }
 
 // primaryGTFS: the first feed of the comma list — scenarios and mtime
@@ -71,7 +78,13 @@ type Config struct {
 // cannot disagree (they used to: the shell merged with jq and silently
 // dropped every knob it had not been taught).
 func (s *Server) styleFor(feed string) (*style.Set, []string) {
-	set, las, err := style.LoadDir(s.config().StyleDir, feed)
+	// a group layers its members' documents under its own, exactly as
+	// the CLI build does
+	names := []string{feed}
+	if fc, ok := s.config().Feeds[feed]; ok && len(fc.Members) > 0 {
+		names = append(append([]string{}, fc.Members...), feed)
+	}
+	set, las, err := style.LoadDir(s.config().StyleDir, names...)
 	if err != nil {
 		// a broken document must not take the dashboard down; the build
 		// log is where the operator will look for it
@@ -297,6 +310,85 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/"+stage+".geojson",
 			s.fileFor(func(f FeedCfg) string { return f.Out + "." + stage + ".geojson" }))
 	}
+	// tile pyramids cut by `portolan tiles` live beside the build in
+	// build/tiles/<feed>/. The viewer streams these for region-scale maps
+	// instead of holding whole-document GeoJSON; a 404 on tiles.json is
+	// the probe that tells it to fall back to the GeoJSON band protocol.
+	mux.HandleFunc("/api/tiles/", func(w http.ResponseWriter, r *http.Request) {
+		// index.json is the world: every feed with a cut pyramid, with its
+		// bounds — the global view draws exactly this list and nothing else
+		if r.URL.Path == "/api/tiles/index.json" {
+			type entry struct {
+				Feed    string    `json:"feed"`
+				Name    string    `json:"name"`
+				Bounds  []float64 `json:"bounds,omitempty"`
+				MaxZoom int       `json:"maxzoom"`
+			}
+			cfg := s.config()
+			// a feed that rides inside a group is drawn BY the group —
+			// listing both would double-draw its railroad
+			grouped := map[string]bool{}
+			for _, fc := range cfg.Feeds {
+				for _, m := range fc.Members {
+					grouped[m] = true
+				}
+			}
+			keys := make([]string, 0, len(cfg.Feeds))
+			for k := range cfg.Feeds {
+				if !grouped[k] {
+					keys = append(keys, k)
+				}
+			}
+			sort.Strings(keys)
+			out := []entry{}
+			for _, k := range keys {
+				fc := cfg.Feeds[k]
+				raw, err := os.ReadFile(filepath.Join(filepath.Dir(fc.Out), "tiles", k, "tiles.json"))
+				if err != nil {
+					continue
+				}
+				var tj struct {
+					Bounds  []float64 `json:"bounds"`
+					MaxZoom int       `json:"maxzoom"`
+				}
+				if json.Unmarshal(raw, &tj) != nil {
+					continue
+				}
+				out = append(out, entry{Feed: k, Name: fc.Name, Bounds: tj.Bounds, MaxZoom: tj.MaxZoom})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			json.NewEncoder(w).Encode(out)
+			return
+		}
+		feed, sub, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/api/tiles/"), "/")
+		fc, exists := s.config().Feeds[feed]
+		if !ok || !exists {
+			http.Error(w, "unknown feed", 404)
+			return
+		}
+		dir := filepath.Join(filepath.Dir(fc.Out), "tiles", feed)
+		clean := filepath.Clean("/" + sub) // no escaping the pyramid dir
+		p := filepath.Join(dir, clean)
+		if sub == "tiles.json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			http.ServeFile(w, r, p)
+			return
+		}
+		if !strings.HasSuffix(sub, ".mvt") {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := os.Stat(p); err != nil {
+			// an empty tile is a valid answer inside the pyramid: the
+			// cutter only writes tiles a feature touches
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
+		http.ServeFile(w, r, p)
+	})
 	mux.HandleFunc("/api/locations", s.locationsAPI)
 	mux.HandleFunc("/api/refs/status", s.refsStatus)
 	// reference screenshots (refs/ is gitignored; local comparison only)
@@ -319,6 +411,13 @@ func (s *Server) Handler() http.Handler {
 	// rather than keeping its own copy of the table.
 	mux.HandleFunc("/api/style", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// "global" is not a feed: it is the world context, and its style is
+		// the default layer alone — no city has been chosen to override it
+		if r.URL.Query().Get("feed") == "global" {
+			set, _ := s.styleFor("")
+			json.NewEncoder(w).Encode(set)
+			return
+		}
 		_, feed, ok := s.feedCfg(r)
 		if !ok {
 			http.Error(w, "unknown feed", 404)
@@ -327,8 +426,8 @@ func (s *Server) Handler() http.Handler {
 		set, _ := s.styleFor(feed)
 		json.NewEncoder(w).Encode(set)
 	})
-	mux.HandleFunc("/api/cities", s.citiesAPI)
-	mux.HandleFunc("/api/cities/", s.cityAPI)
+	mux.HandleFunc("/api/feeds", s.citiesAPI)
+	mux.HandleFunc("/api/feeds/", s.cityAPI)
 	mux.HandleFunc("/api/style/config", s.styleConfigAPI)
 	mux.HandleFunc("/api/routes", s.routesAPI)
 	mux.HandleFunc("/console/", s.console)
