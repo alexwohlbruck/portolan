@@ -28,18 +28,14 @@ const lineIndexCell = 32.0
 func (l *Line) index() *lineIndex {
 	l.idxOnce.Do(func() {
 		cells := map[[2]int][]int32{}
-		key := func(p Pt) [2]int {
-			return [2]int{int(math.Floor(p.X / lineIndexCell)), int(math.Floor(p.Y / lineIndexCell))}
-		}
 		for i := 1; i < len(l.Pts); i++ {
-			ka, kb := key(l.Pts[i-1]), key(l.Pts[i])
-			x0, x1 := min(ka[0], kb[0]), max(ka[0], kb[0])
-			y0, y1 := min(ka[1], kb[1]), max(ka[1], kb[1])
-			for x := x0; x <= x1; x++ {
-				for y := y0; y <= y1; y++ {
-					cells[[2]int{x, y}] = append(cells[[2]int{x, y}], int32(i))
-				}
-			}
+			// same rectangle-vs-walk split as Grid (see eachSegCell): the
+			// endpoint rectangle of a long diagonal segment is quadratic
+			// in its length, and one continental segment allocated more
+			// index than a whole city
+			eachSegCell(l.Pts[i-1], l.Pts[i], lineIndexCell, func(c [2]int) {
+				cells[c] = append(cells[c], int32(i))
+			})
 		}
 		// hood covers the DILATED cell set: a query may sit in a cell the
 		// line never enters while segments occupy a neighbor

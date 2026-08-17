@@ -25,6 +25,12 @@ import (
 
 type matchParams struct {
 	SampleDs   float64 // shape sample spacing
+	// MaxSamples caps samples per pattern by widening the spacing on long
+	// shapes: memory for the emission and DP tables is linear in samples,
+	// and at 20 m a 3,900 km intercity pattern is 195k samples — gigabytes
+	// of map cells for one train. Patterns under MaxSamples×SampleDs
+	// (400 km at the defaults: every city pattern) are untouched.
+	MaxSamples int
 	Reach      float64 // candidate piece radius
 	MaxCand    int     // candidate pieces per sample
 	WHead      float64 // weight of (1 - cos heading agreement)
@@ -47,8 +53,9 @@ const barredGap = 1e7
 
 func defaultMatchParams() matchParams {
 	return matchParams{
-		SampleDs: 20,
-		Reach:    dial("match_reach", 90),
+		SampleDs:   20,
+		MaxSamples: int(dial("match_max_samples", 20_000)),
+		Reach:      dial("match_reach", 90),
 		MaxCand:  int(dial("match_cands", 14)),
 		WHead:    dial("match_w_head", 35),
 		WTurn:    dial("match_w_turn", 0.8),
@@ -378,7 +385,13 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 	if shape.Len() < 2*m.p.SampleDs {
 		return Path{}, false
 	}
-	samples := shape.Resample(m.p.SampleDs)
+	ds := m.p.SampleDs
+	if m.p.MaxSamples > 0 {
+		if need := shape.Len() / float64(m.p.MaxSamples); need > ds {
+			ds = need
+		}
+	}
+	samples := shape.Resample(ds)
 	n := len(samples)
 	shapeArc := func(i int) float64 { return shape.Len() * float64(i) / float64(n-1) }
 
@@ -441,6 +454,25 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
 		}(wk)
 	}
 	wg.Wait()
+
+	// PORTOLAN_DBGM2=<route>:<shape> dumps the emission table for ONE
+	// pattern — the way to see WHY a stretch went to GAP instead of
+	// theorizing about it. Debug family (PORTOLAN_DBG*).
+	if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+		want == pat.Route.ID+":"+pat.ShapeID {
+		for i := 0; i < n; i++ {
+			best := math.Inf(1)
+			for _, c := range cands[i] {
+				if c.emit < best {
+					best = c.emit
+				}
+			}
+			_, spread, seg := sampleConf(shapeArc(i))
+			println("EMIT", i, "cands", len(cands[i]),
+				"best", int(best), "gap", int(gapEmit[i]),
+				"spread", int(spread), "chord", int(seg))
+		}
+	}
 
 	// Viterbi
 	type cell struct {
@@ -660,11 +692,36 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 		if len(events) > 0 && s != gapState && events[len(events)-1].edge != gapState {
 			// splice the connecting walk's intermediate edges
 			w := m.walks[[2]int{events[len(events)-1].edge, s}]
+			if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+				want == pat.Route.ID+":"+pat.ShapeID && len(w.via) > 0 {
+				wl := 0.0
+				for _, e := range w.via {
+					wl += g.edges[e].Line.Len()
+				}
+				if wl > 10_000 {
+					at := g.nodes[g.edges[events[len(events)-1].edge].To].At
+					println("MEGAWALK", int(shapeArc(i)/1000), "km-arc",
+						"len", int(wl/1000), "km at", int(at.X), int(at.Y))
+				}
+			}
 			for _, e := range w.via {
 				events = append(events, event{e, shapeArc(i), shapeArc(i)})
 			}
 		}
 		events = append(events, event{s, shapeArc(i), shapeArc(i)})
+	}
+	// PORTOLAN_DBGM2: where exactly did the DP fall to GAP? Arc ranges in
+	// km along the shape — the coordinates to aim the next probe at.
+	if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+		want == pat.Route.ID+":"+pat.ShapeID {
+		for _, ev := range events {
+			if ev.edge == gapState && ev.toArc-ev.fromArc > 1000 {
+				a := shape.AtArc(ev.fromArc)
+				b := shape.AtArc(ev.toArc)
+				println("GAPRANGE", int(ev.fromArc/1000), "-", int(ev.toArc/1000), "km",
+					"from", int(a.X), int(a.Y), "to", int(b.X), int(b.Y))
+			}
+		}
 	}
 
 	var pts []geo.Pt

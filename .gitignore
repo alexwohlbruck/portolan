@@ -11,3 +11,4 @@ clients/npm/node_modules/
 clients/npm/dist/
 clients/npm/platforms/
 clients/npm/*.tgz
+/portolan

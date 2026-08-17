@@ -40,6 +40,13 @@ func dbgRPt(l *geo.Line) bool {
 type splitParams struct {
 	JoinTol   float64 // strand chaining tolerance
 	MinRefine float64 // edges shorter than this keep raw track geometry
+	// MaxRefine skips refinement ABOVE a length too: refinement merges
+	// near-parallel member tracks, and its cost is quadratic in edge
+	// length. A city edge is tens of km; a continental intercity corridor
+	// is thousands (us-intercity's 4,000 km edges peaked past 5 GB and
+	// drew the OOM killer). Past this length the corridor is a solo
+	// mainline whose bundled strand IS the centerline — nothing to merge.
+	MaxRefine float64
 	MateMax   float64 // strand counts as corridor mate within this offset
 	MateRun   float64 // ...sustained at least this much arc (the kiss rule)
 	RayNear   float64 // end-ray window inner inset (skip pinned-end bend)
@@ -51,6 +58,7 @@ func defaultSplitParams() splitParams {
 	return splitParams{
 		JoinTol:   1.0,
 		MinRefine: dial("split_min_refine", 40),
+		MaxRefine: dial("split_max_refine", 250_000),
 		MateMax:   dial("split_mate_max", 12),
 		MateRun:   dial("split_mate_run", 60),
 		RayNear:   15,
@@ -78,11 +86,15 @@ var patternActs map[string]gtfs.Mask168
 
 func SetPatternActs(m map[string]gtfs.Mask168) { patternActs = m }
 
-// pathActKey strips the bbox-clip suffix: "<shape>#clipN" pieces are the
-// same service pattern as their parent shape.
+// pathActKey strips the window suffixes: "<shape>#clipN" (bbox clip) and
+// "<shape>#excN" (group-window exclusion) pieces are the same service
+// pattern as their parent shape.
 func pathActKey(pa Path) string {
 	sid := pa.Pattern.ShapeID
 	if i := strings.Index(sid, "#clip"); i >= 0 {
+		sid = sid[:i]
+	}
+	if i := strings.Index(sid, "#exc"); i >= 0 {
 		sid = sid[:i]
 	}
 	return pa.Pattern.Route.ID + "\x1f" + sid
@@ -1175,7 +1187,12 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 	}
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, runtime.NumCPU())
+	// GOMAXPROCS, not NumCPU: each in-flight refinement holds working
+	// buffers proportional to its edge's LENGTH, and a continental region
+	// (us-intercity: 4,000 km edges) at NumCPU concurrency peaked past
+	// 6 GB and drew the OOM killer. Capping admission caps peak memory;
+	// GOMAXPROCS=4 is the lever on a loaded machine.
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
 	for i := range net.Edges {
 		e := &net.Edges[i]
 		if e.Gap || len(e.Pts) < 3 {
@@ -1184,7 +1201,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 		if edgeFamily(e) != 0 {
 			continue // seaway ways are already the drawn centerline
 		}
-		if geo.NewLine(e.Pts).Len() < p.MinRefine {
+		if l := geo.NewLine(e.Pts).Len(); l < p.MinRefine || l > p.MaxRefine {
 			continue
 		}
 		wg.Add(1)

@@ -32,12 +32,47 @@ func (g *Grid) key(p Pt) [2]int {
 }
 
 func (g *Grid) eachCell(a, b Pt, fn func([2]int)) {
-	ka, kb := g.key(a), g.key(b)
+	eachSegCell(a, b, g.cell, fn)
+}
+
+// eachSegCell visits the cells a segment is indexed under. Short spans use
+// the exact endpoint rectangle — its cell ORDER is load-bearing (see Near)
+// and city geometry never exceeds it, so every existing build is
+// byte-identical. Long spans walk ALONG the segment instead: the rectangle
+// between the endpoints of a km-long diagonal is quadratic in its length
+// (a 50 km segment at 64 m cells is 600k cells), and simplified intercity
+// shapes produced exactly that — gigabytes of live index for geometry that
+// only ever touches a thin band of cells.
+func eachSegCell(a, b Pt, cell float64, fn func([2]int)) {
+	key := func(p Pt) [2]int {
+		return [2]int{int(math.Floor(p.X / cell)), int(math.Floor(p.Y / cell))}
+	}
+	ka, kb := key(a), key(b)
 	x0, x1 := min(ka[0], kb[0]), max(ka[0], kb[0])
 	y0, y1 := min(ka[1], kb[1]), max(ka[1], kb[1])
-	for x := x0; x <= x1; x++ {
-		for y := y0; y <= y1; y++ {
-			fn([2]int{x, y})
+	if (x1-x0+1)*(y1-y0+1) <= 16 {
+		for x := x0; x <= x1; x++ {
+			for y := y0; y <= y1; y++ {
+				fn([2]int{x, y})
+			}
+		}
+		return
+	}
+	// Half-cell steps emit the cells the segment CROSSES — nothing more.
+	// That is sufficient for every consumer: Grid.Near scans a +1-cell
+	// margin around the query, and lineIndex dilates its hood at build
+	// time, so a corner-clipped cell the stepping skips is always covered
+	// by a neighboring crossed cell inside those margins. (A 3×3 stamp
+	// here once "helped" — and made the continental index 9× fatter for
+	// zero extra correctness.)
+	seen := map[[2]int]bool{}
+	n := int(math.Ceil(a.Dist(b)/(cell/2))) + 1
+	for i := 0; i <= n; i++ {
+		t := float64(i) / float64(n)
+		c := key(Pt{a.X + t*(b.X-a.X), a.Y + t*(b.Y-a.Y)})
+		if !seen[c] {
+			seen[c] = true
+			fn(c)
 		}
 	}
 }

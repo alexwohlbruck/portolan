@@ -38,15 +38,10 @@ func (g *MutGrid) key(p Pt) [2]int {
 
 // eachCell visits every cell the segment a→b touches, by endpoint bbox —
 // the same rasterization Grid uses, so both index a segment identically.
+// eachCell shares Grid's insertion walk (see eachSegCell): Add and Remove
+// both come through here, so the two always agree on a segment's cell set.
 func (g *MutGrid) eachCell(a, b Pt, fn func([2]int)) {
-	ka, kb := g.key(a), g.key(b)
-	x0, x1 := min(ka[0], kb[0]), max(ka[0], kb[0])
-	y0, y1 := min(ka[1], kb[1]), max(ka[1], kb[1])
-	for x := x0; x <= x1; x++ {
-		for y := y0; y <= y1; y++ {
-			fn([2]int{x, y})
-		}
-	}
+	eachSegCell(a, b, g.cell, fn)
 }
 
 // Add indexes a line under key. Adding a key that is already present
