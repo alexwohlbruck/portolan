@@ -82,6 +82,17 @@ type Entity struct {
 	// merges by colour, which is right where colour carries meaning
 	// and wrong where a caller assigns colours arbitrarily.
 	Trunk string `json:"trunk,omitempty"`
+	// RouteType REPAIRS a feed's route_type where the agency mistyped it —
+	// Mexico City files the Tren Suburbano (a commuter railway) as
+	// route_type 1, and everything downstream then demands metro-class
+	// steel for it. Applied at GTFS load, before any stage looks, so the
+	// whole pipeline sees the corrected class. Routes and agencies.
+	RouteType *int `json:"route_type,omitempty"`
+	// Hidden drops the route from the build entirely — for services whose
+	// feed data cannot draw honestly (the Meadowlands event shuttle ships
+	// 3-point skeleton shapes) or that a curator judges noise. Routes and
+	// agencies, like every override.
+	Hidden *bool `json:"hidden,omitempty"`
 }
 
 // Options are the whole-city switches.
@@ -139,6 +150,18 @@ func (d Doc) Config() Config {
 					c.Trunks = map[string]string{}
 				}
 				c.Trunks[key] = e.Trunk
+			}
+			if e.RouteType != nil {
+				if c.RouteTypes == nil {
+					c.RouteTypes = map[string]int{}
+				}
+				c.RouteTypes[key] = *e.RouteType
+			}
+			if e.Hidden != nil && *e.Hidden {
+				if c.Hiddens == nil {
+					c.Hiddens = map[string]bool{}
+				}
+				c.Hiddens[key] = true
 			}
 			if e.Name != "" {
 				if c.Names == nil {
@@ -207,14 +230,17 @@ func ReadDoc(path string) (Doc, bool, error) {
 	return d, true, nil
 }
 
-// LoadDir resolves the layers for one city: the default document, then
-// the city's own on top. Returns the merged Set and the agencies the
-// documents mark as line-coloured.
+// LoadDir resolves the layers for one build: the default document, then
+// each named document in order, later names winning field by field.
+// One name is the ordinary feed build; a GROUP build passes its members
+// in gtfs order and its own name last, so member curation rides along
+// and the group's own document has the final say. Returns the merged Set
+// and the agencies the documents mark as line-coloured.
 //
-// Both layers are optional. A tree with no style/ directory at all
+// Every layer is optional. A tree with no style/ directory at all
 // resolves to exactly the shipped defaults, which is what every city got
 // before curation existed.
-func LoadDir(dir, city string) (*Set, []string, error) {
+func LoadDir(dir string, names ...string) (*Set, []string, error) {
 	if dir == "" {
 		dir = DefaultDir
 	}
@@ -222,7 +248,7 @@ func LoadDir(dir, city string) (*Set, []string, error) {
 		layers []Config
 		las    []string
 	)
-	for _, name := range []string{defaultDoc, city} {
+	for _, name := range append([]string{defaultDoc}, names...) {
 		if name == "" {
 			continue
 		}

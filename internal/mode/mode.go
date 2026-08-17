@@ -26,6 +26,11 @@ const (
 	Bus
 )
 
+// IntercityKey is THE trunk key for style.TrunkIntercity — one string,
+// shared across agencies and feeds, so every opted-in operator's routes
+// pool into a single drawn line wherever they share track.
+const IntercityKey = "intercity:rail"
+
 var names = map[Class]string{
 	Unknown: "unknown", Metro: "metro", Tram: "tram", Regional: "regional",
 	Monorail: "monorail", Funicular: "funicular", Cable: "cable",
@@ -167,6 +172,8 @@ func TrunkKey(r gtfs.Route) string {
 			return "agency:" + r.Agency
 		}
 		return "route:" + r.ID
+	case style.TrunkIntercity:
+		return IntercityKey
 	}
 	// color trunking (law 5): the key IS the color string, byte for byte.
 	if hex, ok := colorOverride(r); ok {

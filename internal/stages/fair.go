@@ -140,6 +140,27 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 				return n
 			}
 		}
+		// the intercity pool is labelled by operator while one operator
+		// rides it ("Amtrak"), and generically once it is genuinely shared
+		// — a border corridor's ribbon belongs to no single agency.
+		if len(rs) > 1 && color == mode.IntercityKey {
+			ags := map[string]bool{}
+			for _, r := range rs {
+				ags[routes[r].Agency] = true
+			}
+			if len(ags) == 1 {
+				for ag := range ags {
+					n := agencyNames[ag]
+					if o, ok := sty.AgencyName(ag, n); ok {
+						return o
+					}
+					if n != "" {
+						return n
+					}
+				}
+			}
+			return "Intercity Rail"
+		}
 		// One LINE can be many route_ids: Wiener Linien files a route per
 		// service variant, so tram 11 arrives as a dozen routes that all
 		// display "11". The label is about lines, not feed bookkeeping —
@@ -214,6 +235,30 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 			agencyHex[ag] = best
 		}
 	}
+	// the intercity pool needs the same treatment one level up: its
+	// members span agencies, so the pooled line's hue is the majority
+	// route_color across every member route in the build — one hue for
+	// all intercity rail, everywhere, ties lexicographic.
+	intercityHex := ""
+	{
+		counts := map[string]int{}
+		for _, r := range routes {
+			if r.Color != "" && mode.TrunkKey(r) == mode.IntercityKey {
+				counts[r.Color]++
+			}
+		}
+		cols := make([]string, 0, len(counts))
+		for c := range counts {
+			cols = append(cols, c)
+		}
+		sort.Strings(cols)
+		bestN := -1
+		for _, c := range cols {
+			if counts[c] > bestN {
+				intercityHex, bestN = c, counts[c]
+			}
+		}
+	}
 	// display color, in precedence order: an explicit config override, the
 	// class's canonical color (Apple paints every ferry one blue — a harbor
 	// of per-route brand colors reads as seven unrelated lines), the
@@ -229,7 +274,10 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 				if h, ok := sty.AgencyColor(ag, mode.AgencyName(ag)); ok {
 					return h
 				}
-			} else {
+			} else if color != mode.IntercityKey {
+				// (the intercity pool skips route overrides for the same
+				// reason an agency trunk does: a member's override would
+				// repaint the shared ribbon at every membership seam)
 				// deterministic: of the routes carrying an override, the
 				// lowest id wins — never map or slice order.
 				bestID, bestHex := "", ""
@@ -257,6 +305,19 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 		if ag, ok := strings.CutPrefix(color, "agency:"); ok {
 			if h := agencyHex[ag]; h != "" {
 				return h
+			}
+		}
+		if color == mode.IntercityKey {
+			// the pooled line is curatable as the pseudo-agency
+			// "intercity" — one style entry recolors every long-distance
+			// operator everywhere, which is the entire point of the pool
+			if sty.Any() {
+				if h, ok := sty.AgencyColor("intercity", "intercity"); ok {
+					return h
+				}
+			}
+			if intercityHex != "" {
+				return intercityHex
 			}
 		}
 		if len(rs) == 0 || routes[rs[0]].Color == "" {

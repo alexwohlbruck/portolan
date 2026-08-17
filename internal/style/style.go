@@ -35,6 +35,14 @@ const (
 	// TrunkNone skips the junction pipeline entirely: the matched path is
 	// already the drawn geometry, so it emits directly. The bus default.
 	TrunkNone = "none"
+	// TrunkIntercity pools routes across AGENCIES into the one shared
+	// intercity line — Apple draws Amtrak, VIA and every international
+	// operator as a single ribbon. Opt-in per agency or route (never a
+	// class default: commuter rail shares route_type 2 and must keep its
+	// per-agency identity). Pooling is also what decouples regions: one
+	// key means one slot, so a corridor's ordering never depends on which
+	// distant operator's trains happen to ride it.
+	TrunkIntercity = "intercity"
 )
 
 // Class is the look and merge policy for one transit class. Zero values
@@ -109,6 +117,14 @@ type Config struct {
 	// hex would otherwise merge into one ribbon. This is the escape
 	// hatch, per route rather than per class.
 	Trunks map[string]string `json:"trunks,omitempty"`
+	// RouteTypes: per-route/agency GTFS route_type REPAIRS, keyed like
+	// Colors. A feed that mistypes a commuter railway as metro (Mexico
+	// City's Tren Suburbano, route_type 1) drags every downstream stage
+	// into demanding the wrong steel; the repair applies at feed load so
+	// nothing ever sees the lie.
+	RouteTypes map[string]int `json:"route_types,omitempty"`
+	// Hiddens: routes/agencies dropped from the build (Entity.Hidden).
+	Hiddens map[string]bool `json:"hiddens,omitempty"`
 	// BulletOrder: one of the Bullets* policies above. Empty inherits
 	// (default BulletsColor).
 	BulletOrder string `json:"bullet_order,omitempty"`
@@ -168,6 +184,11 @@ type Set struct {
 	Fonts    map[string]string   `json:"fonts,omitempty"`
 	Bordered map[string]bool     `json:"bordered,omitempty"`
 	Trunks   map[string]string   `json:"trunks,omitempty"`
+	// RouteTypes: per-route/agency GTFS route_type repairs, keyed like
+	// Colors — applied at feed load (see style.Entity.RouteType).
+	RouteTypes map[string]int `json:"route_types,omitempty"`
+	// Hiddens: routes/agencies dropped from the build (Entity.Hidden).
+	Hiddens map[string]bool `json:"hiddens,omitempty"`
 	// BulletOrder: resolved Bullets* policy, never empty.
 	BulletOrder string `json:"bullet_order"`
 	// Caterpillars: resolved on/off for inline route bullets.
@@ -189,6 +210,10 @@ type Set struct {
 	bRoute   map[string]bool
 	tAgency  map[string]string
 	tRoute   map[string]string
+	rtAgency map[string]int
+	rtRoute  map[string]int
+	hAgency2 map[string]bool
+	hRoute2  map[string]bool
 }
 
 // New resolves configs in precedence order — later ones win field by field.
@@ -207,7 +232,9 @@ func New(layers ...Config) *Set {
 		sAgency: map[string]string{}, sRoute: map[string]string{},
 		fAgency: map[string]string{}, fRoute: map[string]string{},
 		bAgency: map[string]bool{}, bRoute: map[string]bool{},
-		tAgency: map[string]string{}, tRoute: map[string]string{}}
+		tAgency: map[string]string{}, tRoute: map[string]string{},
+		rtAgency: map[string]int{}, rtRoute: map[string]int{},
+		hAgency2: map[string]bool{}, hRoute2: map[string]bool{}}
 	for name, d := range defaults {
 		merged := d
 		for _, l := range layers {
@@ -242,6 +269,18 @@ func New(layers ...Config) *Set {
 		}
 		for k, v := range l.Trunks {
 			s.Trunks[k] = v
+		}
+		for k, v := range l.RouteTypes {
+			if s.RouteTypes == nil {
+				s.RouteTypes = map[string]int{}
+			}
+			s.RouteTypes[k] = v
+		}
+		for k, v := range l.Hiddens {
+			if s.Hiddens == nil {
+				s.Hiddens = map[string]bool{}
+			}
+			s.Hiddens[k] = v
 		}
 		if l.BulletOrder != "" {
 			s.BulletOrder = l.BulletOrder
@@ -304,6 +343,25 @@ func New(layers ...Config) *Set {
 			s.tRoute[strings.TrimPrefix(key, "route:")] = val
 		}
 	}
+	for k, v := range s.RouteTypes {
+		key := strings.ToLower(strings.TrimSpace(k))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.rtAgency[strings.TrimPrefix(key, "agency:")] = v
+		case strings.HasPrefix(key, "route:"):
+			s.rtRoute[strings.TrimPrefix(key, "route:")] = v
+		}
+	}
+	for k, v := range s.Hiddens {
+		key := strings.ToLower(strings.TrimSpace(k))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.hAgency2[strings.TrimPrefix(key, "agency:")] = v
+		case strings.HasPrefix(key, "route:"):
+			s.hRoute2[strings.TrimPrefix(key, "route:")] = v
+		}
+	}
+
 	for k, v := range s.Names {
 		key := strings.ToLower(strings.TrimSpace(k))
 		name := strings.TrimSpace(v)
@@ -363,8 +421,14 @@ func (s *Set) RouteColor(ids ...string) (string, bool) {
 		if id == "" {
 			continue
 		}
-		if hex, ok := s.byRoute[strings.ToLower(id)]; ok {
+		key := strings.ToLower(id)
+		if hex, ok := s.byRoute[key]; ok {
 			return hex, true
+		}
+		if u := unprefix(key); u != key {
+			if hex, ok := s.byRoute[u]; ok {
+				return hex, true
+			}
 		}
 	}
 	return "", false
@@ -379,8 +443,14 @@ func (s *Set) AgencyColor(ids ...string) (string, bool) {
 		if id == "" {
 			continue
 		}
-		if hex, ok := s.byAgency[strings.ToLower(id)]; ok {
+		key := strings.ToLower(id)
+		if hex, ok := s.byAgency[key]; ok {
 			return hex, true
+		}
+		if u := unprefix(key); u != key {
+			if hex, ok := s.byAgency[u]; ok {
+				return hex, true
+			}
 		}
 	}
 	return "", false
@@ -392,6 +462,23 @@ func (s *Set) Any() bool {
 	return s != nil && (len(s.byAgency) > 0 || len(s.byRoute) > 0)
 }
 
+// unprefix strips the overlay tag loadFeeds stamps on ids ("f2:1" → "1")
+// so a member feed's curation keeps matching when the feed rides in a
+// group build as an overlay. The exact id is always tried FIRST, so a
+// native id that merely looks like a tag cannot be shadowed.
+func unprefix(id string) string {
+	if len(id) > 2 && id[0] == 'f' {
+		i := 1
+		for i < len(id) && id[i] >= '0' && id[i] <= '9' {
+			i++
+		}
+		if i > 1 && i < len(id) && id[i] == ':' {
+			return id[i+1:]
+		}
+	}
+	return id
+}
+
 // lookup walks every identifier the caller knows — id, short name, long
 // name — so the config can say what a human would say ("route:Red Line"
 // beats "route:f2:1"). Shared by all three name lookups.
@@ -400,8 +487,14 @@ func lookup(tbl map[string]string, ids []string) (string, bool) {
 		if id == "" {
 			continue
 		}
-		if n, ok := tbl[strings.ToLower(strings.TrimSpace(id))]; ok {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if n, ok := tbl[key]; ok {
 			return n, true
+		}
+		if u := unprefix(key); u != key {
+			if n, ok := tbl[u]; ok {
+				return n, true
+			}
 		}
 	}
 	return "", false
@@ -463,21 +556,11 @@ func (s *Set) RouteBordered(routeIDs []string, agencyIDs []string) (bool, bool) 
 	if s == nil {
 		return false, false
 	}
-	for _, id := range routeIDs {
-		if id == "" {
-			continue
-		}
-		if v, ok := s.bRoute[strings.ToLower(strings.TrimSpace(id))]; ok {
-			return v, true
-		}
+	if v, ok := lookupBool(s.bRoute, routeIDs); ok {
+		return v, true
 	}
-	for _, id := range agencyIDs {
-		if id == "" {
-			continue
-		}
-		if v, ok := s.bAgency[strings.ToLower(strings.TrimSpace(id))]; ok {
-			return v, true
-		}
+	if v, ok := lookupBool(s.bAgency, agencyIDs); ok {
+		return v, true
 	}
 	return false, false
 }
@@ -527,3 +610,69 @@ func Set_(s *Set) {
 
 // Active is the current process-wide style set.
 func Active() *Set { return active }
+
+// AnyRouteType reports whether any route_type repair exists — the cheap
+// skip mirroring AnyTrunk, on a lookup that would run per route at load.
+func (s *Set) AnyRouteType() bool {
+	return s != nil && (len(s.rtRoute) > 0 || len(s.rtAgency) > 0)
+}
+
+// RouteTypeOf resolves a route_type repair for a route, id-or-name like
+// every other override; route keys beat agency keys.
+func (s *Set) RouteTypeOf(routeIDs []string, agencyIDs []string) (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	if v, ok := lookupInt(s.rtRoute, routeIDs); ok {
+		return v, true
+	}
+	return lookupInt(s.rtAgency, agencyIDs)
+}
+
+func lookupInt(m map[string]int, keys []string) (int, bool) {
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(k))
+		if v, ok := m[key]; ok {
+			return v, true
+		}
+		if u := unprefix(key); u != key {
+			if v, ok := m[u]; ok {
+				return v, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// RouteHidden reports whether curation drops this route from the build.
+func (s *Set) RouteHidden(routeIDs []string, agencyIDs []string) bool {
+	if s == nil {
+		return false
+	}
+	if _, ok := lookupBool(s.hRoute2, routeIDs); ok {
+		return true
+	}
+	_, ok := lookupBool(s.hAgency2, agencyIDs)
+	return ok
+}
+
+func lookupBool(m map[string]bool, keys []string) (bool, bool) {
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(k))
+		if v, ok := m[key]; ok {
+			return v, true
+		}
+		if u := unprefix(key); u != key {
+			if v, ok := m[u]; ok {
+				return v, true
+			}
+		}
+	}
+	return false, false
+}
