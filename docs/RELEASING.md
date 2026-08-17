@@ -98,12 +98,15 @@ built. The release is the CLI and the build server.
 |---|---|---|
 | `ci.yml` | every PR, pushes to `main` and `dev` | build, vet, test, report formatting |
 | `tag-release.yml` | push to `main` | read `VERSION`, create the tag, call the release |
-| `release.yml` | that call, or any `v*` tag push | test, cross-compile six targets, publish |
+| `release.yml` | that call, or any `v*` tag push | test, cross-compile six targets, publish the GitHub release and the npm packages |
 
 Tests run again inside `release.yml` before anything is built, so a
 commit that reached `main` without a PR still cannot ship broken.
 
-No secrets are needed. `GITHUB_TOKEN` creates the release.
+`GITHUB_TOKEN` creates the GitHub release and needs no setup. The npm job
+is the one part that needs a secret — `NPM_TOKEN`, scoped to
+`@alexwohlbruck`. It is a separate job, so a missing token costs the npm
+packages and not the release.
 
 ## When a release does not happen
 
@@ -181,7 +184,31 @@ drops only the registry leg, for an offline dry run.
 rather than invoking the Go toolchain, so what npm carries is
 byte-identical to what the GitHub release carries.
 
-Publishing is deliberately **not** wired into `release.yml`. It needs an
-`NPM_TOKEN`, and an npm publish cannot be undone the way a GitHub
-release can — unpublishing is restricted and republishing a version is
-forbidden outright.
+### CI publishes it
+
+`release.yml` runs the runbook above as its `npm` job, from the same
+archives the GitHub release carries. A version bump merged to `main`
+therefore ships the engine, the GitHub release AND the npm packages —
+there is no second step to forget.
+
+It needs an `NPM_TOKEN` repository secret with publish rights to the
+`@alexwohlbruck` scope. Without it the job fails and the GitHub release
+still succeeds, because the two are independent jobs.
+
+An npm publish cannot be undone the way a GitHub release can —
+unpublishing is restricted and republishing a version is forbidden
+outright — so the job is bounded on all four sides:
+
+  1. It only runs for a release, and a release only happens when
+     `VERSION` changes. Merging anything else publishes nothing.
+  2. `VERSION` must equal the tag, or the job stops before publishing.
+     A hand-pushed tag that disagrees would otherwise put a version on
+     npm that names a release nobody cut.
+  3. `npm test` runs first — the same real-engine e2e the manual runbook
+     runs — so a broken build fails before it becomes permanent.
+  4. A version already on the registry is SKIPPED, not retried. npm
+     forbids republishing, so without this a release that failed halfway
+     could never be re-run.
+
+The manual runbook still works and needs no changes; it is the fallback
+for a release CI cannot make.

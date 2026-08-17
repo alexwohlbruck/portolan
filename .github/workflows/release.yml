@@ -9,7 +9,10 @@
 # install, and no signing — which is why this is one short job and not
 # parchment's matrix of macOS and Android builders.
 #
-# No secrets are required. GITHUB_TOKEN creates the release.
+# GITHUB_TOKEN creates the release. The npm job additionally needs an
+# NPM_TOKEN secret with publish rights to the @alexwohlbruck scope; it is
+# a separate job, so a missing token costs the packages and not the
+# release.
 
 name: Release
 
@@ -118,6 +121,97 @@ jobs:
             portolan_*.tar.gz
             portolan_*.zip
           retention-days: 1
+
+  npm:
+    name: Publish npm packages
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm provenance: signs the packages against this workflow run, so a
+      # consumer can see which commit produced the binary they are running.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      # e2e.test.js compiles a real engine and drives it before anything is
+      # published. The manual runbook ran `npm test` at exactly this point and
+      # dropping it would be the one difference between the two paths.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Download every archive
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: portolan-*
+          merge-multiple: true
+
+      # The packages take their version from VERSION, the release takes its
+      # own from the tag. They agree when tag-release.yml cut the tag; a tag
+      # pushed by hand can disagree, and the result would be npm packages
+      # numbered differently from the release they came from.
+      - name: VERSION must agree with the tag
+        run: |
+          TAG_VERSION="${RELEASE_TAG#v}"
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "tag ${RELEASE_TAG} says ${TAG_VERSION}, VERSION says ${FILE_VERSION}"
+            exit 1
+          fi
+
+      - name: Stage the platform packages from the released archives
+        working-directory: clients/npm
+        run: |
+          npm ci
+          # Reads the ARCHIVES rather than rebuilding, so what npm carries is
+          # byte-identical to what the GitHub release carries.
+          node scripts/build-platform-packages.mjs --dist ../../artifacts
+
+      - name: Test
+        working-directory: clients/npm
+        run: npm test
+
+      - name: Publish
+        working-directory: clients/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < ../../VERSION)"
+
+          # Already-published versions are SKIPPED rather than retried. npm
+          # forbids republishing a version, so without this a re-run of a
+          # partially-failed release could never get past the first package.
+          publish() {
+            local dir="$1" name
+            name="$(node -p "require('./${dir}/package.json').name")"
+            if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
+              echo "  already on the registry: ${name}@${VERSION}"
+              return 0
+            fi
+            echo "  publishing ${name}@${VERSION}"
+            npm publish "${dir}" --access public --provenance
+          }
+
+          # The six engines FIRST. npm skips an optional dependency it cannot
+          # resolve and still calls the install a success, so a wrapper that
+          # went out ahead of them would install cleanly and fail at the
+          # consumer's first chart call. The wrapper's own prepublishOnly
+          # (check-publish.mjs) refuses to go out until all six are live —
+          # this ordering is what lets that check pass.
+          for dir in platforms/*/; do
+            publish "${dir%/}"
+          done
+
+          publish .
 
   release:
     name: Publish GitHub Release
