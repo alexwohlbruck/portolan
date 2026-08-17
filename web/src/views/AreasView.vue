@@ -11,7 +11,7 @@ import Label from '@/components/ui/Label.vue'
 import Dialog from '@/components/ui/Dialog.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { api, type Area } from '@/lib/api'
-import { cities, feed } from '@/lib/store'
+import { feeds, feed, isGlobal } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 const areas = ref<Area[]>([])
@@ -41,9 +41,9 @@ const shown = computed(() => {
   )
 })
 
-const cityName = (a: Area) => {
+const feedName = (a: Area) => {
   const id = String(a.feed ?? a.city ?? '')
-  return cities.value.find((c) => c.id === id)?.name ?? id
+  return feeds.value.find((c) => c.id === id)?.name ?? id
 }
 
 async function persist(next: Area[]) {
@@ -63,7 +63,8 @@ async function persist(next: Area[]) {
 async function add() {
   const d = draft.value
   if (!d.id.trim()) return
-  const next = [...areas.value, { ...d, feed: d.feed || feed.value }]
+  // 'global' is a context, not a feed — an area added there carries no feed
+  const next = [...areas.value, { ...d, feed: d.feed || (isGlobal.value ? '' : feed.value) }]
   if (await persist(next)) {
     toast({ title: 'Area added', description: d.id, variant: 'success' })
     adding.value = false
@@ -109,7 +110,7 @@ async function remove(a: Area) {
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
               <span class="truncate font-medium">{{ a.label || a.id }}</span>
-              <Badge v-if="cityName(a)" variant="muted" class="text-[10px]">{{ cityName(a) }}</Badge>
+              <Badge v-if="feedName(a)" variant="muted" class="text-[10px]">{{ feedName(a) }}</Badge>
             </div>
             <div class="truncate text-xs text-muted-foreground">{{ a.note || a.id }}</div>
           </div>

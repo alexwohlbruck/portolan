@@ -11,8 +11,9 @@ import CardContent from '@/components/ui/CardContent.vue'
 import Progress from '@/components/ui/Progress.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import Select from '@/components/ui/Select.vue'
+import GlobalNotice from '@/components/GlobalNotice.vue'
 import { api, type Scenario } from '@/lib/api'
-import { feed, currentCity, run } from '@/lib/store'
+import { feed, currentFeed, isGlobal, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 const scenarios = ref<Scenario[]>([])
@@ -50,7 +51,7 @@ const scenarioOptions = computed(() => [
 
 async function loadScenarios() {
   scenarios.value = []
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) return // builds are per-feed
   try {
     const r = await api.scenarios(feed.value)
     if (r.available && r.scenarios) scenarios.value = r.scenarios
@@ -76,7 +77,7 @@ function onScroll() {
 }
 
 async function start(cmd: 'chart' | 'sound') {
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) return
   starting.value = true
   try {
     await api.run(feed.value, cmd, cmd === 'chart' && scenario.value !== ALL ? scenario.value : undefined)
@@ -90,7 +91,7 @@ async function start(cmd: 'chart' | 'sound') {
 }
 
 const missingInputs = computed(() => {
-  const s = currentCity.value?.status
+  const s = currentFeed.value?.status
   if (!s) return []
   const out: string[] = []
   s.gtfs.filter((f) => !f.ok).forEach((f) => out.push(f.path))
@@ -101,12 +102,12 @@ const missingInputs = computed(() => {
 </script>
 
 <template>
-  <PageHeader title="Build" :subtitle="currentCity ? `${currentCity.name || currentCity.id} — run the pipeline` : 'Pick a city'">
+  <PageHeader title="Build" :subtitle="currentFeed ? `${currentFeed.name || currentFeed.id} — run the pipeline` : 'Pick a feed'">
     <template #actions>
-      <Button variant="outline" :disabled="!feed || run.running" @click="start('sound')">
+      <Button variant="outline" :disabled="!feed || isGlobal || run.running" @click="start('sound')">
         <Gauge class="size-4" /> Score
       </Button>
-      <Button :disabled="!feed || run.running || starting" @click="start('chart')">
+      <Button :disabled="!feed || isGlobal || run.running || starting" @click="start('chart')">
         <Spinner v-if="run.running || starting" class="size-4" />
         <Play v-else class="size-4" />
         Build
@@ -114,7 +115,8 @@ const missingInputs = computed(() => {
     </template>
   </PageHeader>
 
-  <div class="space-y-6 p-8">
+  <GlobalNotice v-if="isGlobal" title="Build" />
+  <div v-else class="space-y-6 p-8">
     <div v-if="missingInputs.length" class="flex gap-2 rounded-lg border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3 text-xs text-[var(--warning)]">
       <AlertTriangle class="mt-0.5 size-3.5 shrink-0" />
       <span>Missing inputs — the build will fail: <span class="font-mono">{{ missingInputs.join(', ') }}</span></span>

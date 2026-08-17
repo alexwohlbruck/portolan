@@ -8,7 +8,8 @@ import Badge from '@/components/ui/Badge.vue'
 import Input from '@/components/ui/Input.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
-import { feed, currentCity } from '@/lib/store'
+import GlobalNotice from '@/components/GlobalNotice.vue'
+import { feed, currentFeed, isGlobal } from '@/lib/store'
 import { basemapTiles, isDark } from '@/lib/theme'
 import { toast } from '@/lib/toast'
 import {
@@ -69,7 +70,19 @@ async function save() {
 }
 
 async function load() {
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) {
+    // sketches are per-feed; clear the canvas so a stray edit cannot
+    // autosave into the previously selected feed's document
+    window.clearTimeout(saveTimer)
+    net.value = { feed: '', lines: [] }
+    hist.reset()
+    selId.value = null
+    selAnchor.value = -1
+    tool.value = 'idle'
+    render()
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
     const r = await fetch('/api/network?feed=' + encodeURIComponent(feed.value))
@@ -81,7 +94,7 @@ async function load() {
     selAnchor.value = -1
     tool.value = 'idle'
     render()
-    if (map?.isStyleLoaded?.()) fitCity()
+    if (map?.isStyleLoaded?.()) fitFeed()
   } catch (e: any) {
     toast({ title: 'Could not load sketch', description: e.message, variant: 'error' })
   } finally {
@@ -561,7 +574,8 @@ function onKeyUp(e: KeyboardEvent) {
 // ── overlay (the built map, for tracing against) ──────────────────────
 async function loadOverlay() {
   if (!map?.getSource('sk-overlay')) return
-  if (!showOverlay.value) return setOverlay([])
+  // the built-map underlay is per-feed too — never fetch with build=global
+  if (!showOverlay.value || !feed.value || isGlobal.value) return setOverlay([])
   const c = map.getCenter()
   try {
     const r = await fetch(`/api/features?lat=${c.lat}&lon=${c.lng}&r=1200&build=${encodeURIComponent(feed.value)}`)
@@ -573,8 +587,8 @@ async function loadOverlay() {
 }
 const setOverlay = (features: any[]) => map.getSource('sk-overlay').setData(fc(features))
 
-function fitCity() {
-  const b = currentCity.value?.bbox
+function fitFeed() {
+  const b = currentFeed.value?.bbox
   if (map && b?.length === 4) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, duration: 0 })
 }
 
@@ -682,7 +696,7 @@ onMounted(() => {
     // the document is already loaded (see below) — draw it and fetch the
     // build underlay now that there are layers to put them in
     render()
-    fitCity()
+    fitFeed()
     loadOverlay()
   })
 
@@ -710,12 +724,20 @@ watch(selId, () => nextTick(render))
 
 <template>
   <div class="relative flex h-full">
+    <!-- the editor stays mounted (WebGL init is not re-entrant here); the
+         global context covers it with the shared notice instead -->
+    <div
+      v-if="isGlobal"
+      class="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm"
+    >
+      <GlobalNotice title="Sketch" class="w-full max-w-2xl" />
+    </div>
     <div class="relative min-w-0 flex-1">
       <div ref="el" class="h-full w-full" :class="tool === 'draw' ? 'cursor-crosshair' : ''" />
 
       <div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-4">
         <div class="pointer-events-auto flex items-center gap-2 rounded-xl border border-border bg-card/90 px-3 py-2 shadow-sm backdrop-blur">
-          <span class="text-sm font-medium">{{ currentCity?.name || 'No city' }}</span>
+          <span class="text-sm font-medium">{{ currentFeed?.name || 'No feed' }}</span>
           <Badge v-if="loading" variant="info"><Spinner class="size-3" /> loading</Badge>
           <Badge v-else-if="saving" variant="info"><Spinner class="size-3" /> saving</Badge>
           <Badge v-else-if="status" variant="muted">{{ status }}</Badge>

@@ -133,7 +133,7 @@ export function activeRouteIdx(
 // ── bullet strips ──────────────────────────────────────────────────────
 
 /** bullet image id for one route; the image itself is generated on
- *  demand by the styleimagemissing handler, so any city's bullets exist
+ *  demand by the styleimagemissing handler, so any feed's bullets exist
  *  the moment a label asks for them. */
 export const bulletId = (label: string, hex: string, shape = '') =>
   `blt-${hex || '888888'}-${shape}-${label}`

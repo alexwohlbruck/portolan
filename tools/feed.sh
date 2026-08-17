@@ -1,18 +1,22 @@
 #!/bin/bash
-# city.sh — bring one of the cities in portolan.json up: fetch its OSM rail
-# extract, build it, see what's still missing (docs/CITIES.md).
+# feed.sh — bring one GTFS feed in portolan.json up: fetch its track
+# extract, build it, see what is still missing. The FEED is the unit of
+# everything — build, curation, refresh; there are no city bundles.
 #
-#   tools/city.sh list              # every configured city + which inputs it has
-#   tools/city.sh gtfs london       # Transitland feeds covering the city bbox
-#   tools/city.sh gtfs london 1234  # …download one of them
-#   tools/city.sh rail london       # Overpass → the city's rail geojson
-#   tools/city.sh stops london      # Overpass → the city's named transit stops
-#   tools/city.sh build london      # chart (+ sound when a sketch exists)
-#   tools/city.sh all london        # rail then build
+#   tools/feed.sh list                # every configured feed + which inputs it has
+#   tools/feed.sh gtfs london         # Transitland feeds covering the bbox
+#   tools/feed.sh gtfs london 1234    # …download one of them
+#   tools/feed.sh rail london         # Overpass → the feed's rail geojson
+#   tools/feed.sh shapesrail amtrak   # the feed's OWN shapes as the track
+#   tools/feed.sh stops london        # Overpass → named transit stops
+#   tools/feed.sh build london        # chart (+ sound when a sketch exists)
+#   tools/feed.sh all london          # rail then build
+#   tools/feed.sh refresh london      # rebuild ONLY if the feed content changed
 #
-# A city needs two inputs: a GTFS zip (Transitland, or any of the operator
-# portals in docs/CITIES.md) and a rail extract (Overpass). Nothing here is
-# city-specific: the bbox, paths and name all come from portolan.json.
+# A feed needs two inputs: its GTFS zip and a track extract — Overpass
+# where OSM is the truth, or `shapesrail` where the feed's own shapes
+# are (intercity feeds with no city window). Everything else — bbox,
+# paths, name, extra chart flags — comes from portolan.json.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,9 +31,9 @@ feeds() { jq -r '.feeds | keys[]' "$CFG"; }
 get()   { jq -r --arg f "$1" --arg k "$2" '.feeds[$f][$k] // empty' "$CFG"; }
 
 known() { # $1 = feed key, $2 = subcommand (for the usage line)
-  [ -n "${1:-}" ] || { echo "usage: $0 $2 <city> — one of: $(feeds | tr '\n' ' ')"; exit 2; }
+  [ -n "${1:-}" ] || { echo "usage: $0 $2 <feed> — one of: $(feeds | tr '\n' ' ')"; exit 2; }
   jq -e --arg f "$1" '.feeds | has($f)' "$CFG" >/dev/null 2>&1 || {
-    echo "unknown city '$1' — configured: $(feeds | tr '\n' ' ')"; exit 2; }
+    echo "unknown feed '$1' — configured: $(feeds | tr '\n' ' ')"; exit 2; }
 }
 
 list() {
@@ -53,12 +57,12 @@ bbox() { # $1 = feed key → sets w s e n
   [ -n "${n:-}" ] || { echo "$1: no 'bbox' [w,s,e,n] in $CFG"; exit 2; }
 }
 
-# gtfs: Transitland's feed registry, queried by the city's own bbox.
-#   tools/city.sh gtfs paris          — list the GTFS feeds covering Paris
-#   tools/city.sh gtfs paris 1234     — download feed 1234 to the configured path
+# gtfs: Transitland's feed registry, queried by the feed's own bbox.
+#   tools/feed.sh gtfs paris          — list the GTFS feeds covering Paris
+#   tools/feed.sh gtfs paris 1234     — download feed 1234 to the configured path
 # Needs TRANSITLAND_API_KEY (free: transit.land/users/sign_up). The list step
 # is deliberately separate: a metro bbox matches every bus operator in the
-# region, and only you can say which feed is the city's rail network.
+# region, and only you can say which one is the rail network you mean.
 gtfs() { # $1 = feed key, $2 = optional Transitland feed id
   local feed=$1 id="${2:-}" w s e n out url
   [ -n "${TRANSITLAND_API_KEY:-}" ] || {
@@ -99,7 +103,7 @@ gtfs() { # $1 = feed key, $2 = optional Transitland feed id
   echo "$feed: $(du -h "$out" | cut -f1), $(unzip -p "$out" routes.txt | tail -n +2 | wc -l | tr -d ' ') routes"
 }
 
-# rail: one Overpass query for the city's window, converted to the geojson
+# rail: one Overpass query for the feed's window, converted to the geojson
 # shape internal/osm reads (way/<id> + railway/service/bridge/tunnel/layer
 # tags). Every service value is kept — osm.Load does the yard/siding
 # filtering itself, and it needs the crossovers.
@@ -110,11 +114,16 @@ rail() { # $1 = feed key
   bbox "$feed"
 
   # every drawable infrastructure class (docs/MODES.md): the rail family
-  # plus cable-supported aerialways. Buses stay out — highways would grow
+  # plus cable-supported aerialways. disused|construction ride along
+  # because a feed outlives the map: OSM retags a suspended line's steel
+  # (DC Streetcar) or a rebuild-closure (Toronto's 50x branches) while
+  # the agency still publishes service — the rails are physically there,
+  # and the map draws what the feed says runs. overpass2geojson resolves
+  # their underlying class from disused:railway/construction:railway. Buses stay out — highways would grow
   # the extract 10-100x, and bus matching is not implemented yet.
   query="[out:json][timeout:600];
 (
-way[\"railway\"~\"^(rail|subway|light_rail|tram|monorail|funicular|narrow_gauge)\$\"]($s,$w,$n,$e);
+way[\"railway\"~\"^(rail|subway|light_rail|tram|monorail|funicular|narrow_gauge|disused|construction)\$\"]($s,$w,$n,$e);
 way[\"aerialway\"~\"^(cable_car|gondola|mixed_lift)\$\"]($s,$w,$n,$e);
 way[\"route\"=\"ferry\"]($s,$w,$n,$e);
 );
@@ -154,7 +163,13 @@ build() { # $1 = feed key
   gtfs=$(get "$feed" gtfs); rail=$(get "$feed" rail)
   out=$(get "$feed" out);   net=$(get "$feed" network)
   streets=$(get "$feed" streets); stops=$(get "$feed" stops)
-  [ -s "$rail" ] || { echo "$feed: no rail extract at $rail — tools/city.sh rail $feed"; exit 2; }
+  local corr
+  corr=$(get "$feed" corridors)
+  if [ -n "$corr" ]; then
+    [ -s "$corr" ] || { echo "$feed: no corridor graph at $corr — tools/feed.sh shapescorr $feed"; exit 2; }
+  else
+    [ -s "$rail" ] || { echo "$feed: no rail extract at $rail — tools/feed.sh rail $feed"; exit 2; }
+  fi
   # gtfs may be a comma list (primary + overlay feeds) — every part must exist
   local IFS=','
   for first in $gtfs; do
@@ -162,21 +177,56 @@ build() { # $1 = feed key
   done
   unset IFS
   bboxarg=$(jq -r --arg f "$feed" '.feeds[$f].bbox // empty | join(",")' "$CFG")
-  set -- --gtfs "$gtfs" --rail "$rail" --out "$out"
+  if [ -n "$corr" ]; then
+    set -- --gtfs "$gtfs" --corridors "$corr" --out "$out"
+  else
+    set -- --gtfs "$gtfs" --rail "$rail" --out "$out"
+  fi
   [ -n "$bboxarg" ] && set -- "$@" --bbox "$bboxarg"
+  # a feed that also rides in GROUP builds as an overlay cedes those
+  # windows: the group draws it there, this build draws everywhere else,
+  # and the two meet at the group's clip line — the world draws the
+  # railroad exactly once. Derived from the groups' gtfs lists, so it
+  # cannot rot. Absorbed members (listed in `members`) keep their full
+  # standalone builds — those are hidden from the global index instead.
+  local exarg primary
+  primary=${gtfs%%,*}
+  exarg=$(jq -r --arg f "$feed" --arg p "$primary" '
+    [ .feeds | to_entries[]
+      | select(.key != $f
+          and ((.value.members // []) | length > 0)
+          and ((.value.members // []) | index($f) | not)
+          and ((.value.gtfs // "" | split(",") | map(gsub("^\\s+|\\s+$";""))) | index($p)))
+      | .value.bbox | join(",") ] | join(";")' "$CFG")
+  [ -n "$exarg" ] && set -- "$@" --exclude-bbox "$exarg"
   # style: ONE loader, in Go. This used to be a jq merge here plus a
   # second merge in the atlas, and the two drifted — CLI builds silently
   # dropped bullet_order for weeks. chart now reads style/_default.json
   # and style/<city>.json itself, so both paths cannot disagree.
-  set -- "$@" --style-dir style --city "$feed"
+  # A GROUP entry (members: [...]) layers each member's document under
+  # its own, so member curation rides into the group build.
+  local members stylefeed
+  members=$(jq -r --arg f "$feed" '.feeds[$f].members // [] | join(",")' "$CFG")
+  stylefeed="$feed"
+  [ -n "$members" ] && stylefeed="$members,$feed"
+  set -- "$@" --style-dir style --feed "$stylefeed"
   if [ -n "$streets" ]; then
     if [ -s "$streets" ]; then set -- "$@" --streets "$streets"
-    else echo "$feed: streets configured but missing at $streets — tools/city.sh streets $feed (building rail-only)"; fi
+    else echo "$feed: streets configured but missing at $streets — tools/feed.sh streets $feed (building rail-only)"; fi
   fi
   # stops are opt-in and silent when absent: the extract's presence IS the
   # switch for OSM station naming, so a city without one is unchanged
   if [ -n "$stops" ] && [ -s "$stops" ]; then set -- "$@" --stops "$stops"; fi
-  go run ./cmd/portolan chart "$@"
+  # EXPORT_GTFS=<dir> also writes the source feeds back out with matched
+  # shapes.txt (docs/REGIONS.md) — env rather than a flag so `all` and
+  # feed.sh reads them for every build
+  if [ -n "${EXPORT_GTFS:-}" ]; then set -- "$@" --export-gtfs "$EXPORT_GTFS"; fi
+  # chart_args: per-feed extra chart flags (e.g. "--set match_gap_cost=150"
+  # for us-intercity) — how a region's tuned dials survive a refresh
+  local extra
+  extra=$(get "$feed" chart_args)
+  # shellcheck disable=SC2086 — word splitting is the point
+  go run ./cmd/portolan chart "$@" $extra
   if [ -s "$net" ]; then
     go run ./cmd/portolan sound --network "$net" --build "$out" || true
   else
@@ -328,6 +378,67 @@ out;"
   echo "$feed: shapes.txt now $(unzip -p "$gtfs" shapes.txt | wc -l | tr -d ' ') rows (was $(unzip -p "$gtfs.bak" shapes.txt 2>/dev/null | wc -l | tr -d ' ')); original at $gtfs.bak"
 }
 
+# shapescorr: the feed's OWN shapes become an AUTHORED corridor graph
+# (tools/gtfscorridors.py, docs/CORRIDORS.md) — chart --corridors then
+# skips osm/bundle/MATCH/SPLIT entirely. THE path for intercity feeds:
+# matching shapes against themselves is circular and produced every
+# pathology from forced-GAP chords to piece oscillation; the graph is
+# what the shapes already say.
+shapescorr() { # $1 = feed key
+  local feed=$1 out gtfs
+  out=$(get "$feed" corridors); gtfs=$(get "$feed" gtfs)
+  [ -n "$out" ] || { echo "$feed: no 'corridors' path in $CFG"; exit 2; }
+  [ -s "$gtfs" ] || { echo "$feed: no GTFS at $gtfs"; exit 2; }
+  mkdir -p "$(dirname "$out")"
+  python3 tools/gtfscorridors.py "$gtfs" > "$out.tmp" && mv "$out.tmp" "$out"
+  echo "$feed: corridors → $out ($(du -h "$out" | cut -f1))"
+}
+
+# shapesrail: the feed's OWN shapes become the track extract
+# (tools/gtfsrail.py) — for intercity/no-city-window feeds where the
+# shapes are denser truth than any Overpass query could be.
+shapesrail() { # $1 = feed key
+  local feed=$1 out gtfs
+  out=$(get "$feed" rail); gtfs=$(get "$feed" gtfs)
+  [ -n "$out" ] || { echo "$feed: no 'rail' path in $CFG"; exit 2; }
+  [ -s "$gtfs" ] || { echo "$feed: no GTFS at $gtfs"; exit 2; }
+  mkdir -p "$(dirname "$out")"
+  python3 tools/gtfsrail.py "$gtfs" > "$out.tmp" && mv "$out.tmp" "$out"
+  echo "$feed: rail → $out ($(du -h "$out" | cut -f1))"
+}
+
+# fingerprint: content hash of the feed's tables. Zip BYTES are useless —
+# a re-download re-stamps member mtimes while the tables are identical.
+fingerprint() { # $1 = feed key — hashes EVERY member of a comma list.
+  # Passing the whole list to unzip as one path hashed empty input: every
+  # multi-feed entry got the SAME fingerprint, so refresh never rebuilt.
+  local gtfs part
+  gtfs=$(get "$1" gtfs)
+  printf '%s ' "$gtfs"
+  (IFS=','; for part in $gtfs; do unzip -p "$part" '*.txt' 2>/dev/null; done) \
+    | shasum -a 256 | cut -d' ' -f1
+}
+
+# refresh: rebuild ONLY when the feed content actually changed, then cut
+# the tile pyramid. GTFS updates daily or faster; this is the cron entry
+# point — a no-op refresh costs a hash pass, and a real one rewrites only
+# the tiles that differ (the tiler prunes and skips identical files).
+# Style/curation changes need an explicit build: the manifest covers the
+# FEED only, by design.
+refresh() { # $1 = feed key
+  local feed=$1 manifest="build/$1.manifest" now
+  now=$(fingerprint "$feed")
+  if [ -s "$manifest" ] && [ "$now" = "$(cat "$manifest")" ]; then
+    echo "$feed: feed unchanged — nothing to do"
+    return 0
+  fi
+  echo "$feed: feed content changed — rebuilding"
+  build "$feed"
+  go run ./cmd/portolan tiles --build "$(get "$feed" out)" \
+    --out "build/tiles/$feed" --name "$feed"
+  fingerprint "$feed" > "$manifest"
+}
+
 case "${1:-list}" in
   list) list ;;
   gtfs)  known "${2:-}" gtfs;  gtfs "$2" "${3:-}" ;;
@@ -336,6 +447,10 @@ case "${1:-list}" in
   stops) known "${2:-}" stops; stops "$2" ;;
   shapes) known "${2:-}" shapes; shapes "$2" ;;
   build) known "${2:-}" build; build "$2" ;;
+  shapesrail) known "${2:-}" shapesrail; shapesrail "$2" ;;
+  shapescorr) known "${2:-}" shapescorr; shapescorr "$2" ;;
+  refresh) known "${2:-}" refresh; refresh "$2" ;;
+  railwindows) shift; exec tools/fetchwindows.sh "$@" ;;
   all)   known "${2:-}" all;   rail "$2"; build "$2" ;;
-  *) echo "usage: $0 list|gtfs|rail|stops|streets|shapes|build|all [city] [transitland-feed-id]"; exit 2 ;;
+  *) echo "usage: $0 list|gtfs|rail|shapesrail|stops|streets|shapes|build|all|refresh [feed] [transitland-feed-id]"; exit 2 ;;
 esac

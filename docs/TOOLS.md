@@ -166,7 +166,7 @@ line-offset along line-progress); the server exposes it at
 build cannot draw portolan's output.
 
 **Config is the contract.** Every editor writes `portolan.json`, the same
-file the CLI and `tools/city.sh` read, so a dashboard build and a terminal
+file the CLI and `tools/feed.sh` read, so a dashboard build and a terminal
 build always agree. Writes are atomic and preserve unknown keys, and a
 config that would not parse is rejected rather than written.
 

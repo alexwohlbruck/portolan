@@ -31,7 +31,7 @@ export interface StyleEntity {
   line_colors?: boolean
 }
 
-/** One curation document — style/_default.json or style/<city>.json.
+/** One curation document — style/_default.json or style/<feed>.json.
  *  Subject-keyed: a route is named once and carries everything known
  *  about it. Absent fields inherit. */
 export interface StyleConfig {
@@ -49,7 +49,8 @@ export interface StyleConfig {
   }
 }
 
-export interface City {
+/** One portolan.json entry — a single GTFS feed and its inputs/outputs. */
+export interface Feed {
   id: string
   name: string
   gtfs: string
@@ -61,10 +62,10 @@ export interface City {
   line_agencies?: string[]
   stops?: string
   /** server-computed: which inputs actually exist on disk */
-  status?: CityStatus
+  status?: FeedStatus
 }
 
-export interface CityStatus {
+export interface FeedStatus {
   gtfs: { path: string; ok: boolean; size?: number }[]
   rail: { path: string; ok: boolean; size?: number }
   streets?: { path: string; ok: boolean; size?: number }
@@ -96,6 +97,7 @@ export interface RunStatus {
 
 export interface Area {
   id: string
+  /** legacy key on areas saved before the feed rename; `feed` wins */
   city?: string
   feed?: string
   label?: string
@@ -103,6 +105,31 @@ export interface Area {
   c?: [number, number]
   z?: number
   [k: string]: unknown
+}
+
+/** TileJSON 3.0 for a region pyramid cut by `portolan tiles`. The server
+ *  answers /api/tiles/<feed>/tiles.json only when a pyramid exists —
+ *  a 404 IS the mode switch, so the helper folds it into null rather
+ *  than throwing like every other endpoint. */
+export interface TileJSON {
+  tilejson?: string
+  name?: string
+  /** relative template ("{z}/{x}/{y}.mvt"), resolved by the client */
+  tiles: string[]
+  minzoom: number
+  maxzoom: number
+  bounds?: number[] // [w,s,e,n]
+  vector_layers?: { id: string; minzoom?: number; maxzoom?: number }[]
+}
+
+/** One row of /api/tiles/index.json — every feed with a cut pyramid.
+ *  Bounds and maxzoom ride along so the global map can build all its
+ *  sources from the index alone, without touching each tiles.json. */
+export interface TilesIndexEntry {
+  feed: string
+  name?: string
+  bounds: number[] // [w,s,e,n]
+  maxzoom: number
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -122,19 +149,35 @@ const json = (body: unknown): RequestInit => ({
 })
 
 export const api = {
-  cities: () => req<City[]>('/api/cities'),
-  city: (id: string) => req<City>(`/api/cities/${encodeURIComponent(id)}`),
-  saveCity: (id: string, c: Partial<City>) => req<City>(`/api/cities/${encodeURIComponent(id)}`, json(c)),
-  deleteCity: (id: string) =>
-    req<null>(`/api/cities/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  feeds: () => req<Feed[]>('/api/feeds'),
+  feed: (id: string) => req<Feed>(`/api/feeds/${encodeURIComponent(id)}`),
+  saveFeed: (id: string, c: Partial<Feed>) => req<Feed>(`/api/feeds/${encodeURIComponent(id)}`, json(c)),
+  deleteFeed: (id: string) =>
+    req<null>(`/api/feeds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   style: (feed: string) => req<StyleSet>(`/api/style?feed=${encodeURIComponent(feed)}`),
+  // the `city` key is the per-feed layer — the wire name predates the
+  // feed-as-unit rename and the server still speaks it
   styleConfig: (feed: string) =>
     req<{ global: StyleConfig; city: StyleConfig }>(`/api/style/config?feed=${encodeURIComponent(feed)}`),
   saveStyleConfig: (feed: string, body: { global?: StyleConfig; city?: StyleConfig }) =>
     req<null>(`/api/style/config?feed=${encodeURIComponent(feed)}`, json(body)),
 
   scenarios: (feed: string) => req<ScenariosResp>(`/api/scenarios?feed=${encodeURIComponent(feed)}`),
+
+  tilesIndex: () => req<TilesIndexEntry[]>('/api/tiles/index.json'),
+
+  // null = no pyramid for this feed (404); the caller falls back to the
+  // band-GeoJSON path. Any other failure still throws.
+  tilejson: async (feed: string): Promise<TileJSON | null> => {
+    const r = await fetch(`/api/tiles/${encodeURIComponent(feed)}/tiles.json`)
+    if (r.status === 404) return null
+    if (!r.ok) {
+      const body = await r.text().catch(() => '')
+      throw new Error(body.trim() || `${r.status} ${r.statusText}`)
+    }
+    return (await r.json()) as TileJSON
+  },
 
   run: (feed: string, cmd: 'chart' | 'sound', scenario?: string) =>
     req<null>(
@@ -174,7 +217,7 @@ const geomCache = new Map<string, number[][]>()
 // Content addressing makes the cache safe across rebuilds — a hash always
 // means the same coordinates, so a stale entry can only ever be unused,
 // never wrong. It only needs a ceiling so a long session browsing every
-// city does not grow it without bound.
+// feed does not grow it without bound.
 const GEOM_CACHE_MAX = 20000
 
 export interface DeltaStats {

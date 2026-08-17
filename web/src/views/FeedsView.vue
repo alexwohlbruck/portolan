@@ -13,19 +13,19 @@ import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import Label from '@/components/ui/Label.vue'
 import Spinner from '@/components/ui/Spinner.vue'
-import { api, type City } from '@/lib/api'
-import { cities, citiesLoading, refreshCities, feed } from '@/lib/store'
+import { api, type Feed } from '@/lib/api'
+import { feeds, feedsLoading, refreshFeeds, feed } from '@/lib/store'
 import { toast } from '@/lib/toast'
 import { formatNumber } from '@/lib/utils'
 
 const router = useRouter()
-const editing = ref<City | null>(null)
+const editing = ref<Feed | null>(null)
 const isNew = ref(false)
 const saving = ref(false)
-const confirmDelete = ref<City | null>(null)
+const confirmDelete = ref<Feed | null>(null)
 const bboxText = ref('')
 
-const blank = (): City => ({
+const blank = (): Feed => ({
   id: '', name: '', gtfs: '', rail: '', streets: '', out: '', network: '', bbox: undefined,
 })
 
@@ -35,7 +35,7 @@ function openNew() {
   isNew.value = true
 }
 
-function openEdit(c: City) {
+function openEdit(c: Feed) {
   editing.value = JSON.parse(JSON.stringify(c))
   bboxText.value = c.bbox?.join(', ') ?? ''
   isNew.value = false
@@ -73,12 +73,12 @@ async function save() {
     const t = bboxText.value.trim()
     c.bbox = t ? (t.split(',').map((s) => Number(s.trim())) as any) : undefined
     if (!c.out) c.out = `build/${c.id}.geojson`
-    await api.saveCity(c.id, c)
-    await refreshCities()
-    toast({ title: isNew.value ? 'City added' : 'City saved', description: c.name || c.id, variant: 'success' })
+    await api.saveFeed(c.id, c)
+    await refreshFeeds()
+    toast({ title: isNew.value ? 'Feed added' : 'Feed saved', description: c.name || c.id, variant: 'success' })
     editing.value = null
   } catch (e: any) {
-    toast({ title: 'Could not save city', description: e.message, variant: 'error' })
+    toast({ title: 'Could not save feed', description: e.message, variant: 'error' })
   } finally {
     saving.value = false
   }
@@ -88,27 +88,27 @@ async function doDelete() {
   const c = confirmDelete.value
   if (!c) return
   try {
-    await api.deleteCity(c.id)
-    await refreshCities()
+    await api.deleteFeed(c.id)
+    await refreshFeeds()
     toast({ title: `Removed ${c.name || c.id}`, variant: 'success' })
   } catch (e: any) {
-    toast({ title: 'Could not remove city', description: e.message, variant: 'error' })
+    toast({ title: 'Could not remove feed', description: e.message, variant: 'error' })
   } finally {
     confirmDelete.value = null
   }
 }
 
-function openBuild(c: City) {
+function openBuild(c: Feed) {
   feed.value = c.id
   router.push('/build')
 }
 
-function openMap(c: City) {
+function openMap(c: Feed) {
   feed.value = c.id
   router.push('/map')
 }
 
-const missing = (c: City) => {
+const missing = (c: Feed) => {
   const s = c.status
   if (!s) return []
   const out: string[] = []
@@ -121,26 +121,26 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
 </script>
 
 <template>
-  <PageHeader title="Cities" subtitle="Test regions, their feeds and extracts">
+  <PageHeader title="Feeds" subtitle="GTFS feeds, their extracts and builds">
     <template #actions>
-      <Button @click="openNew"><Plus class="size-4" /> Add city</Button>
+      <Button @click="openNew"><Plus class="size-4" /> Add feed</Button>
     </template>
   </PageHeader>
 
   <div class="p-8">
-    <div v-if="citiesLoading && !cities.length" class="flex justify-center py-16"><Spinner class="size-6" /></div>
+    <div v-if="feedsLoading && !feeds.length" class="flex justify-center py-16"><Spinner class="size-6" /></div>
 
-    <div v-else-if="!cities.length" class="rounded-xl border border-dashed border-border py-16 text-center">
+    <div v-else-if="!feeds.length" class="rounded-xl border border-dashed border-border py-16 text-center">
       <div class="mx-auto flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
         <MapPin class="size-6" />
       </div>
-      <p class="mt-3 font-medium">No cities configured</p>
+      <p class="mt-3 font-medium">No feeds configured</p>
       <p class="mt-1 text-sm text-muted-foreground">Add one to point portolan at a GTFS feed and an OSM extract.</p>
-      <Button class="mt-4" @click="openNew"><Plus class="size-4" /> Add your first city</Button>
+      <Button class="mt-4" @click="openNew"><Plus class="size-4" /> Add your first feed</Button>
     </div>
 
     <div v-else class="grid gap-3">
-      <Card v-for="c in cities" :key="c.id">
+      <Card v-for="c in feeds" :key="c.id">
         <CardContent class="flex items-center gap-4 py-4">
           <div
             class="flex size-9 shrink-0 items-center justify-center rounded-lg"
@@ -159,7 +159,7 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
               </Badge>
             </div>
             <div class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-              {{ c.status?.gtfs.length ?? 0 }} feed{{ (c.status?.gtfs.length ?? 0) === 1 ? '' : 's' }} ·
+              {{ c.status?.gtfs.length ?? 0 }} zip{{ (c.status?.gtfs.length ?? 0) === 1 ? '' : 's' }} ·
               {{ c.out }}
             </div>
             <div v-if="missing(c).length" class="mt-1 flex items-center gap-1.5 text-xs text-[var(--warning)]">
@@ -192,7 +192,7 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
   <!-- editor -->
   <Dialog
     :open="!!editing"
-    :title="isNew ? 'Add city' : `Edit ${editing?.name || editing?.id}`"
+    :title="isNew ? 'Add feed' : `Edit ${editing?.name || editing?.id}`"
     description="Paths are relative to the repo root. The id names the config row and the build outputs."
     class="max-w-2xl"
     @update:open="(v) => !v && (editing = null)"
@@ -200,32 +200,32 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
     <div v-if="editing" class="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1">
       <div class="grid grid-cols-2 gap-4">
         <div class="flex flex-col gap-1.5">
-          <Label for="cid">City id</Label>
-          <Input id="cid" v-model="editing.id" :disabled="!isNew" placeholder="berlin" @blur="autofill" />
+          <Label for="cid">Feed id</Label>
+          <Input id="cid" v-model="editing.id" :disabled="!isNew" placeholder="bvg" @blur="autofill" />
           <p class="text-xs text-muted-foreground">Used in filenames and URLs. Cannot change later.</p>
         </div>
         <div class="flex flex-col gap-1.5">
           <Label for="cname">Display name</Label>
-          <Input id="cname" v-model="editing.name" placeholder="Berlin" />
+          <Input id="cname" v-model="editing.name" placeholder="BVG" />
         </div>
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <Label for="cgtfs">GTFS feeds</Label>
-        <Input id="cgtfs" v-model="editing.gtfs" placeholder="data/gtfs/berlin.zip, data/gtfs/sbahn.zip" />
+        <Label for="cgtfs">GTFS zips</Label>
+        <Input id="cgtfs" v-model="editing.gtfs" placeholder="data/gtfs/bvg.zip" />
         <p class="text-xs text-muted-foreground">
-          Comma list. The first is the primary feed — service scenarios are derived from it; later feeds overlay.
+          Comma list. The first is primary — service scenarios are derived from it; later zips overlay.
         </p>
       </div>
 
       <div class="grid grid-cols-2 gap-4">
         <div class="flex flex-col gap-1.5">
           <Label for="crail">Rail extract</Label>
-          <Input id="crail" v-model="editing.rail" placeholder="build/berlin-rail.geojson" />
+          <Input id="crail" v-model="editing.rail" placeholder="build/bvg-rail.geojson" />
         </div>
         <div class="flex flex-col gap-1.5">
           <Label for="cstreets">Street extract</Label>
-          <Input id="cstreets" v-model="editing.streets" placeholder="build/berlin-streets.geojson" />
+          <Input id="cstreets" v-model="editing.streets" placeholder="build/bvg-streets.geojson" />
           <p class="text-xs text-muted-foreground">Optional — enables bus routes.</p>
         </div>
       </div>
@@ -235,18 +235,18 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
         <Input id="cbbox" v-model="bboxText" placeholder="13.10, 52.35, 13.65, 52.65" />
         <p v-if="bboxError" class="text-xs text-destructive">{{ bboxError }}</p>
         <p v-else class="text-xs text-muted-foreground">
-          west, south, east, north. Sets the Overpass window and clips pattern shapes to the city.
+          west, south, east, north. Sets the Overpass window and clips pattern shapes to the feed's area.
         </p>
       </div>
 
       <div class="grid grid-cols-2 gap-4">
         <div class="flex flex-col gap-1.5">
           <Label for="cout">Build output</Label>
-          <Input id="cout" v-model="editing.out" placeholder="build/berlin.geojson" />
+          <Input id="cout" v-model="editing.out" placeholder="build/bvg.geojson" />
         </div>
         <div class="flex flex-col gap-1.5">
           <Label for="cnet">Drawn network</Label>
-          <Input id="cnet" v-model="editing.network" placeholder="sketches/network-berlin.json" />
+          <Input id="cnet" v-model="editing.network" placeholder="sketches/network-bvg.json" />
           <p class="text-xs text-muted-foreground">Ground truth for scoring. Optional.</p>
         </div>
       </div>
@@ -256,15 +256,15 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
       <Button variant="ghost" @click="editing = null">Cancel</Button>
       <Button :disabled="!canSave || saving" @click="save">
         <Loader2 v-if="saving" class="size-4 animate-spin" />
-        {{ isNew ? 'Add city' : 'Save' }}
+        {{ isNew ? 'Add feed' : 'Save' }}
       </Button>
     </div>
   </Dialog>
 
   <Dialog
     :open="!!confirmDelete"
-    title="Remove city?"
-    :description="`${confirmDelete?.name || confirmDelete?.id} will be removed from portolan.json. Feeds, extracts and builds on disk are left alone.`"
+    title="Remove feed?"
+    :description="`${confirmDelete?.name || confirmDelete?.id} will be removed from portolan.json. GTFS zips, extracts and builds on disk are left alone.`"
     @update:open="(v) => !v && (confirmDelete = null)"
   >
     <div class="flex justify-end gap-2">

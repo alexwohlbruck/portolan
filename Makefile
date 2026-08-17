@@ -70,10 +70,10 @@ nyc: build
 # the other test cities (docs/CITIES.md) — every one of them drives off
 # portolan.json alone, so adding a city is a config row, not a code change.
 cities:                 # what's wired, and which inputs are still missing
-	@tools/city.sh list
+	@tools/feed.sh list
 
-rail:                   # OSM rail extract for one city: make rail CITY=london
-	tools/city.sh rail $(CITY)
+rail:                   # OSM rail extract for one feed: make rail FEED=london
+	tools/feed.sh rail $(FEED)
 
-city: build             # chart + score one city: make city CITY=london
-	tools/city.sh build $(CITY)
+feed: build             # chart + score one feed: make feed FEED=london
+	tools/feed.sh build $(FEED)

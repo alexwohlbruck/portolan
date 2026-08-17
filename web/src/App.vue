@@ -2,10 +2,10 @@
 import { onMounted, onUnmounted } from 'vue'
 import AppSidebar from './components/AppSidebar.vue'
 import Toaster from './components/ui/Toaster.vue'
-import { refreshCities, startRunPoll, stopRunPoll } from './lib/store'
+import { refreshFeeds, startRunPoll, stopRunPoll } from './lib/store'
 
 onMounted(() => {
-  refreshCities()
+  refreshFeeds()
   startRunPoll()
 })
 onUnmounted(stopRunPoll)

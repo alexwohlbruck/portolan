@@ -117,7 +117,7 @@ func (s *Server) citiesAPI(w http.ResponseWriter, r *http.Request) {
 // cityAPI handles GET / POST (upsert) / DELETE for one city.
 func (s *Server) cityAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	id := strings.TrimPrefix(r.URL.Path, "/api/cities/")
+	id := strings.TrimPrefix(r.URL.Path, "/api/feeds/")
 	if id == "" || strings.Contains(id, "/") {
 		http.Error(w, "bad city id", 400)
 		return

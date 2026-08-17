@@ -96,7 +96,7 @@ You supply the GTFS zip, which agencies publish freely. The OpenStreetMap track
 extract takes one command:
 
 ```bash
-tools/city.sh rail london
+tools/feed.sh rail london
 ```
 
 `make cities` lists every city that is set up and shows which of its inputs you

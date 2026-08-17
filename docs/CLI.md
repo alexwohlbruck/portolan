@@ -66,7 +66,7 @@ Exactly one geometry source is required, and the two are alternatives:
 | flag | meaning |
 |---|---|
 | `--gtfs` | GTFS zip **or a directory of the `.txt` tables**. A comma list merges feeds: `primary.zip,overlay.zip`. Overlay route and stop ids are prefixed `f1:`, `f2:` … so ids from different agencies cannot collide. A zip made from a containing folder (`gtfs/routes.txt`) works too. |
-| `--rail` | OSM rail extract (GeoJSON). `tools/city.sh rail <city>` fetches one. |
+| `--rail` | OSM rail extract (GeoJSON). `tools/feed.sh rail <city>` fetches one. |
 | `--corridors` | A corridor graph (GeoJSON). `-` reads stdin. |
 | `--corridor-nodes` | The nodes half of that graph, when it arrives as two files rather than one mixed collection. |
 | `--streets` | OSM street extract (GeoJSON). Bus routes are drawn only when this is given — without street geometry there is nothing to match them onto. |
@@ -153,7 +153,7 @@ document format.
 | flag | meaning |
 |---|---|
 | `--style-dir` | Curation directory (default `style`). Reads `<dir>/_default.json` then `<dir>/<city>.json`, later winning field by field. **Both layers are optional** — the class defaults are compiled in, so a directory holding only your `<city>.json` is complete, and a missing directory resolves to the shipped defaults. |
-| `--city` | City id, selecting the second of those files. |
+| `--feed` | Feed key, selecting the second of those files. |
 | `--style` | One pre-merged document instead, overriding `--style-dir`. |
 | `--line-agencies` | Comma list of regional agencies whose per-line colours are real line identities rather than branch-diagram decoration, so they keep separate ribbons instead of collapsing into one agency trunk. |
 
@@ -190,7 +190,7 @@ ONE pre-merged document and replaces `--style-dir` entirely.
 ```bash
 # a city, with curation and OSM station names
 portolan chart --gtfs nyc.zip --rail nyc-rail.geojson \
-  --stops nyc-stops.geojson --style-dir style --city nyc --out nyc.geojson
+  --stops nyc-stops.geojson --style-dir style --feed mta-subway --out mta-subway.geojson
 
 # merge an overlay feed, clipped to the metro area
 portolan chart --gtfs mta.zip,lirr.zip --rail nyc-rail.geojson \
@@ -235,7 +235,7 @@ much of the build duplicates itself, and whether the colour matches —
 then jaggedness and wobble over the whole map.
 
 **Exits 1 when any gate fails**, so it works as a CI check or a Makefile
-step. Note that `make nyc` and `tools/city.sh` append `|| true`, because
+step. Note that `make nyc` and `tools/feed.sh` append `|| true`, because
 there the score is information rather than a build failure.
 
 ```bash
@@ -470,9 +470,9 @@ make cities                     # what is set up, and which inputs you have
 make city CITY=london
 
 # fetch the OSM inputs for one city
-tools/city.sh rail london
-tools/city.sh stops london
-tools/city.sh streets london    # only if you want buses
+tools/feed.sh rail london
+tools/feed.sh stops london
+tools/feed.sh streets london    # only if you want buses
 
 # CI: build and fail on a gate
 portolan chart --gtfs nyc.zip --rail nyc-rail.geojson --out /tmp/nyc.geojson \

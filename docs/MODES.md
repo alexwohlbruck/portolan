@@ -14,7 +14,7 @@ draw. Proof cities: Berlin's F-lines, Montmartre's funicular, the Câble
 C1 gondola, and Chicago running CTA rail + CTA bus + Metra + Amtrak from
 one config row — with NYC byte-identical before and after. Buses are
 opt-in per city: they draw only where a street extract is configured
-(`streets` in portolan.json, fetched by `tools/city.sh streets <city>`).
+(`streets` in portolan.json, fetched by `tools/feed.sh streets <city>`).
 The zoom floors marked *inferred* still need the observation pass in the
 last section — one of them has already been refuted by evidence (see the
 floors table).

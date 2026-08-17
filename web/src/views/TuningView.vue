@@ -11,7 +11,8 @@ import CardDescription from '@/components/ui/CardDescription.vue'
 import CardContent from '@/components/ui/CardContent.vue'
 import Input from '@/components/ui/Input.vue'
 import Spinner from '@/components/ui/Spinner.vue'
-import { feed, currentCity, run } from '@/lib/store'
+import GlobalNotice from '@/components/GlobalNotice.vue'
+import { feed, currentFeed, isGlobal, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 type Dials = Record<string, number>
@@ -21,8 +22,8 @@ const values = ref<Dials>({})
 const loading = ref(true)
 const starting = ref(false)
 
-// Dials are per city: a tolerance tuned on Berlin's trams is meaningless
-// on NYC's subway, and losing a tuning session by switching cities was
+// Dials are per feed: a tolerance tuned on Berlin's trams is meaningless
+// on NYC's subway, and losing a tuning session by switching feeds was
 // the old panel's sharpest edge.
 const storeKey = () => `portolan.dials.${feed.value}`
 
@@ -93,7 +94,7 @@ const shortName = (k: string, group: string) => (group === 'general' ? k : k.sli
  *  nothing is written to config and a tuning run never disturbs a
  *  teammate's build. */
 async function buildWith() {
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) return
   starting.value = true
   try {
     const r = await fetch(`/api/run?cmd=chart&feed=${encodeURIComponent(feed.value)}`, {
@@ -120,25 +121,26 @@ async function buildWith() {
 <template>
   <PageHeader
     title="Tuning"
-    :subtitle="currentCity ? `${currentCity.name || currentCity.id} — pipeline dials` : 'Pick a city'"
+    :subtitle="currentFeed ? `${currentFeed.name || currentFeed.id} — pipeline dials` : 'Pick a feed'"
   >
     <template #actions>
       <Badge v-if="modified.length" variant="warning">{{ modified.length }} modified</Badge>
       <Button variant="outline" :disabled="!modified.length" @click="resetAll">
         <RotateCcw class="size-4" /> Reset
       </Button>
-      <Button :disabled="!feed || run.running || starting" @click="buildWith">
+      <Button :disabled="!feed || isGlobal || run.running || starting" @click="buildWith">
         <Loader2 v-if="starting || run.running" class="size-4 animate-spin" /><Play v-else class="size-4" />
         Build with these
       </Button>
     </template>
   </PageHeader>
 
-  <div class="space-y-6 p-8">
+  <GlobalNotice v-if="isGlobal" title="Tuning" />
+  <div v-else class="space-y-6 p-8">
     <div class="flex gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
       <Info class="mt-0.5 size-3.5 shrink-0" />
       <span>
-        Dials are kept per city in this browser and travel with the build request — they are never written to
+        Dials are kept per feed in this browser and travel with the build request — they are never written to
         <span class="font-mono">portolan.json</span>, so a tuning run cannot disturb anyone else's build. Values
         off default are highlighted.
       </span>

@@ -15,8 +15,9 @@ import Select from '@/components/ui/Select.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import Dialog from '@/components/ui/Dialog.vue'
+import GlobalNotice from '@/components/GlobalNotice.vue'
 import { api, type StyleConfig, type StyleSet } from '@/lib/api'
-import { feed, currentCity } from '@/lib/store'
+import { feed, currentFeed, isGlobal } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 const CLASSES = [
@@ -32,14 +33,16 @@ const TRUNKS = [
 const loading = ref(false)
 const saving = ref(false)
 const resolved = ref<StyleSet | null>(null)
-const city = ref<StyleConfig>({ modes: {}, agencies: {}, routes: {}, stops: {}, options: {} })
-const scope = ref<'city' | 'global'>('city')
+const feedCfg = ref<StyleConfig>({ modes: {}, agencies: {}, routes: {}, stops: {}, options: {} })
+const scope = ref<'feed' | 'global'>('feed')
 const globalCfg = ref<StyleConfig>({ modes: {}, agencies: {}, routes: {}, stops: {}, options: {} })
 
-const layer = computed(() => (scope.value === 'city' ? city.value : globalCfg.value))
+const layer = computed(() => (scope.value === 'feed' ? feedCfg.value : globalCfg.value))
 
 async function load() {
-  if (!feed.value) return
+  // /api/style/config needs a real feed — the _default layer is only
+  // reachable through one, so the global context parks this page
+  if (!feed.value || isGlobal.value) return
   loading.value = true
   try {
     const [res, cfg] = await Promise.all([api.style(feed.value), api.styleConfig(feed.value)])
@@ -48,7 +51,7 @@ async function load() {
       modes: d?.modes ?? {}, agencies: d?.agencies ?? {}, routes: d?.routes ?? {},
       stops: d?.stops ?? {}, options: d?.options ?? {},
     })
-    city.value = norm(cfg.city)
+    feedCfg.value = norm(cfg.city) // `city` is the wire name for the per-feed layer
     globalCfg.value = norm(cfg.global)
   } catch (e: any) {
     toast({ title: 'Could not load style', description: e.message, variant: 'error' })
@@ -218,14 +221,14 @@ function setOSMStopNames(v: string) {
 }
 
 async function save() {
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) return
   saving.value = true
   try {
-    await api.saveStyleConfig(feed.value, { global: globalCfg.value, city: city.value })
+    await api.saveStyleConfig(feed.value, { global: globalCfg.value, city: feedCfg.value })
     await load()
     toast({
       title: 'Style saved',
-      description: 'Rebuild the city for it to show on the map.',
+      description: 'Rebuild the feed for it to show on the map.',
       variant: 'success',
     })
   } catch (e: any) {
@@ -247,12 +250,12 @@ const overrideCount = computed(
 <template>
   <PageHeader
     title="Style"
-    :subtitle="currentCity ? `${currentCity.name || currentCity.id} — colours, weights and trunking` : 'Pick a city'"
+    :subtitle="currentFeed ? `${currentFeed.name || currentFeed.id} — colours, weights and trunking` : 'Pick a feed'"
   >
     <template #actions>
       <div class="flex rounded-lg bg-muted p-1">
         <button
-          v-for="s in (['city', 'global'] as const)"
+          v-for="s in (['feed', 'global'] as const)"
           :key="s"
           class="rounded-md px-3 py-1 text-sm font-medium capitalize transition-all"
           :class="scope === s ? 'bg-background text-foreground shadow' : 'text-muted-foreground'"
@@ -261,21 +264,22 @@ const overrideCount = computed(
           {{ s }}
         </button>
       </div>
-      <Button :disabled="saving || loading" @click="save">
+      <Button :disabled="saving || loading || isGlobal" @click="save">
         <Loader2 v-if="saving" class="size-4 animate-spin" /><Save v-else class="size-4" /> Save
       </Button>
     </template>
   </PageHeader>
 
-  <div class="space-y-6 p-8">
+  <GlobalNotice v-if="isGlobal" title="Style" />
+  <div v-else class="space-y-6 p-8">
     <div class="flex gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
       <Info class="mt-0.5 size-3.5 shrink-0" />
-      <span v-if="scope === 'city'">
-        Editing <strong>{{ currentCity?.name || feed }}</strong> only. These values layer on top of the global block,
+      <span v-if="scope === 'feed'">
+        Editing <strong>{{ currentFeed?.name || feed }}</strong> only. These values layer on top of the global block,
         field by field — set one and the rest keep inheriting. Fields shown greyed are inherited, not set here.
       </span>
       <span v-else>
-        Editing the <strong>global</strong> block — the baseline for every city. A city's own overrides still win.
+        Editing the <strong>global</strong> block — the baseline for every feed. A feed's own overrides still win.
       </span>
     </div>
 
@@ -382,7 +386,7 @@ const overrideCount = computed(
       <Card>
         <CardHeader class="pb-3">
           <CardTitle class="text-sm">Map features</CardTitle>
-          <CardDescription>Optional layers a city can opt out of (or into, over a global off).</CardDescription>
+          <CardDescription>Optional layers a feed can opt out of (or into, over a global off).</CardDescription>
         </CardHeader>
         <CardContent>
           <div class="flex items-center justify-between gap-4">
@@ -390,7 +394,7 @@ const overrideCount = computed(
               <div class="text-sm font-medium">Route bullets on lines</div>
               <div class="text-xs text-muted-foreground">
                 Caterpillar chains riding the ribbons between stations. Currently
-                <strong>{{ catResolved ? 'on' : 'off' }}</strong> for this city.
+                <strong>{{ catResolved ? 'on' : 'off' }}</strong> for this feed.
               </div>
             </div>
             <select

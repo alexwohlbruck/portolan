@@ -28,7 +28,7 @@ is baked into the geometry stack.
 | `atlanta` | Atlanta (MARTA) | mirror `17.zip` | ✅ 60 seg | 4 lines + streetcar |
 | `charlotte` | Charlotte (CATS) | mirror `886.zip` | ✅ 8 seg | Blue Line + Gold streetcar |
 | `la` | LA Metro | Transitland `734` | ✅ 112 seg | rail-only feed; 6 lines |
-| `london` | London (TfL) | Transitland `9788` + pfaedle | ✅ 2898 seg | Interline's conversion ships SKELETAL shapes (2 per line, station-to-station chords) — `tools/city.sh shapes london` re-matches them; see below |
+| `london` | London (TfL) | Transitland `9788` + pfaedle | ✅ 2898 seg | Interline's conversion ships SKELETAL shapes (2 per line, station-to-station chords) — `tools/feed.sh shapes london` re-matches them; see below |
 | `paris` | Paris (RATP) | Transitland `762` | ⚠️ 4690 seg | Metro/tram correct; RER + Transilien + TER stray outside the window (below) |
 | `berlin` | Berlin (BVG) | Transitland `1268`, subset + pfaedle | ✅ 1358 seg | U1–U9 + 89 tram labels; no S-Bahn (below) |
 | `tokyo` | Tokyo Metro | Transitland `8923` + pfaedle | ✅ 132 seg | all 9 lines, official colours |
@@ -65,7 +65,7 @@ All of the above is now one command — it fetches the OSM XML window from
 the city's bbox, derives `-m` from `routes.txt`, and zips the result back
 over the feed (original kept at `<gtfs>.bak`):
 
-    tools/city.sh shapes london
+    tools/feed.sh shapes london
 
 **Skeletal shapes are worse than none.** London's Interline conversion HAS
 a `shapes.txt` — 965 rows for the whole network, two shapes per line
@@ -75,7 +75,7 @@ those chords onto whichever tracks they grazed — Bakerloo rode the Met's
 Allsop Place curve at Baker St, the Central tangled at North Acton, the
 Northern lost its entire Bank branch (one shape can only trace one
 branch), and the tube pairs braided at Waterloo. pfaedle's `-D` flag
-(part of `tools/city.sh shapes`) drops the feed's own shapes first —
+(part of `tools/feed.sh shapes`) drops the feed's own shapes first —
 without it pfaedle keeps whatever is there and returns the feed
 unchanged. After re-matching: 62,423 trips, 168,886 shape rows, 344
 patterns, and every branch draws on its own steel.
@@ -102,7 +102,7 @@ shapes. Transitland has no VBB or BVG-named feed at all (searched; the
 search endpoint works, `marta` → `17`).
 
 **Buses are opt-in per city.** Add a `streets` path to the feed row and
-fetch it (`tools/city.sh streets 29` — the highway extract is 10–50× the
+fetch it (`tools/feed.sh streets 29` — the highway extract is 10–50× the
 rail one); bus routes then draw as corridor-trunked ribbons in the top
 zoom band. Without the extract the same feed builds rail-only, unchanged.
 Wired everywhere except London (no bus feed — the UK DfT national feed is
@@ -208,7 +208,7 @@ and Charlotte are already there (MARTA's 4 heavy-rail routes + the
 streetcar; CATS' Lynx Blue Line + Gold Line) — the other five are not, and
 the mirror holds no non-US feeds at all.
 
-    tools/city.sh list          # the table above, live: which inputs exist
+    tools/feed.sh list          # the table above, live: which inputs exist
 
 ## Bringing a city up
 
@@ -222,8 +222,8 @@ Transitland indexes most of them, searchable by the bbox already in
 `portolan.json`:
 
     export TRANSITLAND_API_KEY=tlk_…      # free: transit.land/users/sign_up
-    tools/city.sh gtfs paris              # feeds covering the Paris window
-    tools/city.sh gtfs paris 1234         # download one to data/gtfs/paris.zip
+    tools/feed.sh gtfs paris              # feeds covering the Paris window
+    tools/feed.sh gtfs paris 1234         # download one to data/gtfs/paris.zip
 
 Listing and downloading are separate on purpose: a metro bbox matches every
 bus operator in the region, and only you can say which feed is the city's
@@ -234,12 +234,12 @@ which is exactly what happens for the feeds marked ⚠ below.
 
 This is the same registry the barrelman mirror was built from, which is why
 its zips are named by Transitland's numeric feed id (`5` = MTA NYCT, `29` =
-CTA, `17` = MARTA, `886` = CATS). `city.sh gtfs` refuses to write into that
+CTA, `17` = MARTA, `886` = CATS). `feed.sh gtfs` refuses to write into that
 shared mirror — it only fills repo-local `data/gtfs/` paths.
 
 **2. Rail extract.**
 
-    tools/city.sh rail london   # or: make rail CITY=london
+    tools/feed.sh rail london   # or: make rail CITY=london
 
 One Overpass query for that city's `bbox`, converted to the geojson shape
 `internal/osm` reads. Every `service` value is kept — `osm.Load` drops
@@ -250,8 +250,8 @@ the `bbox` in `portolan.json`.
 
 **3. Build.**
 
-    tools/city.sh build london  # or: make city CITY=london
-    tools/city.sh all london    # rail + build
+    tools/feed.sh build london  # or: make city CITY=london
+    tools/feed.sh all london    # rail + build
 
 **4. Draw the ground truth.** Open `portolan atlas`, pick the city in the
 feed dropdown, switch to **sketch**, and draw the network — it saves to
@@ -266,7 +266,7 @@ now enumerates whatever is in `portolan.json` rather than a hardcoded pair.
 
 ## Where the GTFS comes from
 
-Try `tools/city.sh gtfs <city>` first — it covers most of these. Direct
+Try `tools/feed.sh gtfs <city>` first — it covers most of these. Direct
 sources, for when Transitland's copy is stale or licence-restricted (verify
 before trusting them; operator portals move, and the two marked ⚠ need an
 account):
@@ -293,6 +293,6 @@ account):
 ## Adding another city
 
 Append a feed to `portolan.json` — `name`, `gtfs`, `rail`, `out`,
-`network`, `bbox` — and it appears in the atlas dropdown, `city.sh`, the
+`network`, `bbox` — and it appears in the atlas dropdown, `feed.sh`, the
 Makefile targets and the visual bench with no further wiring. Give it a
 couple of `locations.json` rows so the bench has somewhere to look.

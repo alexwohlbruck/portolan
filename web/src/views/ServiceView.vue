@@ -10,8 +10,9 @@ import CardTitle from '@/components/ui/CardTitle.vue'
 import CardDescription from '@/components/ui/CardDescription.vue'
 import CardContent from '@/components/ui/CardContent.vue'
 import Spinner from '@/components/ui/Spinner.vue'
+import GlobalNotice from '@/components/GlobalNotice.vue'
 import { api, type Scenario } from '@/lib/api'
-import { feed, currentCity, run } from '@/lib/store'
+import { feed, currentFeed, isGlobal, run } from '@/lib/store'
 import { toast } from '@/lib/toast'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -46,7 +47,7 @@ async function load() {
   grid.value = []
   error.value = ''
   selected.value = ''
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) return // scenarios are per-feed
   loading.value = true
   try {
     const r = await api.scenarios(feed.value)
@@ -65,7 +66,7 @@ async function load() {
 watch(feed, load, { immediate: true })
 
 async function build(id: string) {
-  if (!feed.value) return
+  if (!feed.value || isGlobal.value) return
   building.value = id
   try {
     await api.run(feed.value, 'chart', id)
@@ -86,10 +87,11 @@ watch(
 <template>
   <PageHeader
     title="Service"
-    :subtitle="currentCity ? `${currentCity.name || currentCity.id} — distinct maps across the week` : 'Pick a city'"
+    :subtitle="currentFeed ? `${currentFeed.name || currentFeed.id} — distinct maps across the week` : 'Pick a feed'"
   />
 
-  <div class="space-y-6 p-8">
+  <GlobalNotice v-if="isGlobal" title="Service" />
+  <div v-else class="space-y-6 p-8">
     <div v-if="loading" class="flex justify-center py-16"><Spinner class="size-6" /></div>
 
     <Card v-else-if="error">

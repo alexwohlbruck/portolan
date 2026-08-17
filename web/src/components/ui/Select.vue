@@ -4,7 +4,9 @@ import { ChevronDown, Check } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 const props = defineProps<{
   modelValue?: string
-  options: { value: string; label: string }[]
+  /** icon: optional lucide component drawn before the label; pinned: draw a
+   *  separator under this option (for entries that sit above the real list) */
+  options: { value: string; label: string; icon?: any; pinned?: boolean }[]
   placeholder?: string
   class?: any
 }>()
@@ -30,11 +32,15 @@ defineEmits<{ (e: 'update:modelValue', v: string): void }>()
             v-for="o in props.options"
             :key="o.value"
             :value="o.value"
-            class="relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+            :class="[
+              'relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground',
+              o.pinned ? 'mb-1 border-b border-border pb-2 font-medium' : '',
+            ]"
           >
             <span class="absolute left-2 flex size-4 items-center justify-center">
               <SelectItemIndicator><Check class="size-4" /></SelectItemIndicator>
             </span>
+            <component :is="o.icon" v-if="o.icon" class="mr-2 size-4 shrink-0 text-muted-foreground" />
             <SelectItemText>{{ o.label }}</SelectItemText>
           </SelectItem>
         </SelectViewport>

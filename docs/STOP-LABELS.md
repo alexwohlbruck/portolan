@@ -255,7 +255,7 @@ that recorded them would freeze one day's OSM against every later build
 and quietly stop tracking upstream.
 
 **OSM matching** is automatic, and fills in the rest of the world.
-`tools/city.sh stops <city>` fetches the window's named transit stops
+`tools/feed.sh stops <city>` fetches the window's named transit stops
 (`railway=station|halt|tram_stop`, `public_transport=station|stop_position`,
 `aerialway=station`, `amenity=ferry_terminal`) and `internal/pipeline/
 osmstops.go` pairs each drawn station with the one that is really the same

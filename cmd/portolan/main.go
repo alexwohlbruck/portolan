@@ -9,12 +9,17 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
 	"sort"
+	"time"
 	"strconv"
 	"strings"
 
@@ -24,6 +29,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
 	"github.com/alexwohlbruck/portolan/internal/serve"
 	"github.com/alexwohlbruck/portolan/internal/style"
+	"github.com/alexwohlbruck/portolan/internal/tiles"
 )
 
 // command is one verb. The help text is data, not a switch statement, so
@@ -50,7 +56,9 @@ type flagGroup struct {
 
 var commands []*command
 
-func init() { commands = []*command{chartCmd, soundCmd, scenariosCmd, atlasCmd, serveCmd} }
+func init() {
+	commands = []*command{chartCmd, soundCmd, scenariosCmd, tilesCmd, atlasCmd, serveCmd}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -270,9 +278,13 @@ func fail(format string, a ...any) {
 type chartFlags struct {
 	gtfs, rail, corridors, corridorNodes  string
 	streets, stops, bbox, anchor          string
+	excludeBBox                           string
 	out, format, band                     string
 	styleDir, city, stylePath, lineAgency string
 	scenario                              string
+	exportGTFS                            string
+	set                                   string
+	allowUnmatched                        bool
 	cover                                 float64
 }
 
@@ -296,14 +308,14 @@ valid --corridors input.
 and stops: a quick check that an OSM extract is usable, with no map.`,
 	groups: []flagGroup{
 		{"inputs", []string{"gtfs", "rail", "corridors", "corridor-nodes", "streets", "stops"}},
-		{"window and projection", []string{"bbox", "anchor"}},
-		{"output", []string{"out", "format", "band"}},
-		{"curation", []string{"style-dir", "city", "style", "line-agencies"}},
+		{"window and projection", []string{"bbox", "exclude-bbox", "anchor"}},
+		{"output", []string{"out", "format", "band", "export-gtfs", "set", "allow-unmatched"}},
+		{"curation", []string{"style-dir", "feed", "style", "line-agencies"}},
 		{"service", []string{"scenario", "cover"}},
 	},
 	example: []string{
 		"portolan chart --gtfs nyc.zip --rail nyc-rail.geojson --out nyc.geojson",
-		"portolan chart --gtfs nyc.zip --rail nyc-rail.geojson --style-dir style --city nyc --out nyc.geojson",
+		"portolan chart --gtfs mta.zip --rail nyc-rail.geojson --style-dir style --feed mta-subway --out mta-subway.geojson",
 		"portolan chart --gtfs feed.zip --corridors build.geojson.trackcenter.geojson \\",
 		"    --corridor-nodes build.geojson.nodes.geojson --out rebuilt.geojson",
 		"portolan chart --gtfs nyc.zip --rail nyc-rail.geojson --format bin --band 15 --out nyc15.bin",
@@ -318,15 +330,19 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 		fs.StringVar(&c.streets, "streets", "", "OSM street extract (GeoJSON) — enables bus routes")
 		fs.StringVar(&c.stops, "stops", "", "OSM transit-stop extract (GeoJSON) — station names and ids")
 		fs.StringVar(&c.bbox, "bbox", "", "clip to a window: w,s,e,n (LONGITUDE first)")
+		fs.StringVar(&c.excludeBBox, "exclude-bbox", "", "cut these windows OUT: w,s,e,n[;w,s,e,n...] — territory a group build draws")
 		fs.StringVar(&c.anchor, "anchor", "", "pin the projection origin: lat,lon (LATITUDE first)")
 		fs.StringVar(&c.out, "out", "", "output path (default build.geojson, or build.bin with --format bin)")
 		fs.StringVar(&c.format, "format", "geojson", "geojson | bin — see docs/CLI.md for the binary layout")
 		fs.StringVar(&c.band, "band", "", "emit one zoom band: 15 | 14 | 13 | 0 (default: all four)")
 		fs.StringVar(&c.styleDir, "style-dir", style.DefaultDir, "curation directory: <dir>/_default.json + <dir>/<city>.json")
-		fs.StringVar(&c.city, "city", "", "city id — selects <style-dir>/<city>.json")
+		fs.StringVar(&c.city, "feed", "", "feed key — selects <style-dir>/<feed>.json curation")
 		fs.StringVar(&c.stylePath, "style", "", "one pre-merged curation document (overrides --style-dir)")
 		fs.StringVar(&c.lineAgency, "line-agencies", "", "comma list: regional agencies keeping per-line colours")
 		fs.StringVar(&c.scenario, "scenario", "", "build one service scenario (see `portolan scenarios`)")
+		fs.StringVar(&c.exportGTFS, "export-gtfs", "", "directory: write the source feeds back out with matched shapes.txt")
+		fs.StringVar(&c.set, "set", "", "tuning overrides: key=val[,key=val] over the defaults (keys as in the atlas tuning panel, e.g. join_tol=120)")
+		fs.BoolVar(&c.allowUnmatched, "allow-unmatched", false, "ship rail patterns that failed to path-match (default: the build fails)")
 		fs.Float64Var(&c.cover, "cover", 0.99, "pattern trip-coverage fraction")
 		return c
 	},
@@ -334,6 +350,22 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 }
 
 func runChart(c *chartFlags) {
+	// PORTOLAN_HEAPPROF=<path>: overwrite a heap profile there every 3 s
+	// (forcing a GC first, so it shows LIVE bytes). The last write before
+	// an OOM kill names the allocation site — how the continental-scale
+	// memory blowups were pinned. Debug family, like PORTOLAN_DBG*.
+	if hp := os.Getenv("PORTOLAN_HEAPPROF"); hp != "" {
+		go func() {
+			for {
+				time.Sleep(3 * time.Second)
+				if f, err := os.Create(hp); err == nil {
+					runtime.GC()
+					pprof.WriteHeapProfile(f)
+					f.Close()
+				}
+			}
+		}()
+	}
 	// Every input is checked BEFORE the build starts. A typo in --format
 	// used to surface at the emit, after a full NYC build had already
 	// run: fifteen seconds to be told about a misspelt word.
@@ -392,6 +424,26 @@ func runChart(c *chartFlags) {
 			fail("--bbox wants four numbers, w,s,e,n — got %d", len(bbox))
 		}
 	}
+	var exclude [][]float64
+	if c.excludeBBox != "" {
+		for _, win := range strings.Split(c.excludeBBox, ";") {
+			if strings.TrimSpace(win) == "" {
+				continue
+			}
+			var b []float64
+			for _, p := range strings.Split(win, ",") {
+				v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+				if err != nil {
+					fail("bad --exclude-bbox window %q: want w,s,e,n as numbers", win)
+				}
+				b = append(b, v)
+			}
+			if len(b) != 4 {
+				fail("--exclude-bbox window wants four numbers, w,s,e,n — got %d in %q", len(b), win)
+			}
+			exclude = append(exclude, b)
+		}
+	}
 	var anchorLL *geo.LL
 	if c.anchor != "" {
 		parts := strings.Split(c.anchor, ",")
@@ -421,7 +473,9 @@ func runChart(c *chartFlags) {
 			las = d.LineAgencies()
 		}
 	} else {
-		set, dirLas, err := style.LoadDir(c.styleDir, c.city)
+		// --feed takes a comma list for group builds: members in gtfs
+		// order, the group's own document last
+		set, dirLas, err := style.LoadDir(c.styleDir, strings.Split(c.city, ",")...)
 		die(err)
 		sty = set
 		if len(las) == 0 {
@@ -430,10 +484,31 @@ func runChart(c *chartFlags) {
 	}
 	d := pipeline.DefaultDials()
 	d.Cover = c.cover
+	// --set rides through the same flat-json keys the atlas tuning panel
+	// uses, so the two surfaces cannot disagree about a dial's name
+	if c.set != "" {
+		raw, _ := json.Marshal(d)
+		m := map[string]float64{}
+		die(json.Unmarshal(raw, &m))
+		for _, kv := range strings.Split(c.set, ",") {
+			k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+			if !ok {
+				fail("--set wants key=val[,key=val]\ntry: portolan help chart")
+			}
+			if _, known := m[k]; !known {
+				fail("--set: unknown dial " + k + "\ntry: portolan help chart")
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			die(err)
+			m[k] = f
+		}
+		raw, _ = json.Marshal(m)
+		die(json.Unmarshal(raw, &d))
+	}
 	die(pipeline.Chart(pipeline.ChartOpts{
-		GTFS: c.gtfs, Rail: c.rail, Streets: c.streets, Stops: c.stops, BBox: bbox,
+		GTFS: c.gtfs, Rail: c.rail, Streets: c.streets, Stops: c.stops, BBox: bbox, Exclude: exclude,
 		Corridors: c.corridors, CorridorNodes: c.corridorNodes, Anchor: anchorLL,
-		LineAgencies: las, Scenario: c.scenario, Style: sty,
+		LineAgencies: las, Scenario: c.scenario, Style: sty, ExportGTFS: c.exportGTFS, AllowUnmatched: c.allowUnmatched,
 		Out: out, Format: c.format, Band: bandPtr, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }))
 }
@@ -602,7 +677,7 @@ docs/CLI.md for the request body and the endpoints in full.`,
 	flags: func(fs *flag.FlagSet) any {
 		s := &serveFlags{}
 		fs.StringVar(&s.addr, "addr", "127.0.0.1:0", "listen address (:0 picks a free port)")
-		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory for requests that name a city")
+		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory for requests that name a feed")
 		fs.StringVar(&s.token, "token", "", "require `Authorization: Bearer <token>` on every request")
 		return s
 	},
@@ -612,5 +687,55 @@ docs/CLI.md for the request body and the endpoints in full.`,
 		srv.Version = releaseVersion()
 		srv.Token = s.token
 		die(srv.ListenAndServe(s.addr))
+	},
+}
+
+// ------------------------------------------------------------ tiles
+
+type tilesFlags struct {
+	build   string
+	out     string
+	name    string
+	maxzoom int
+}
+
+var tilesCmd = &command{
+	name:    "tiles",
+	summary: "slice a build into a z/x/y vector-tile pyramid",
+	usage:   []string{"tiles --build <build.geojson> --out <dir>"},
+	about: `Slices the output fan of a chart run into Mapbox Vector Tiles, the
+delivery format for region- and world-scale maps: the viewer streams
+only the tiles under its viewport instead of holding the whole document.
+
+The geometry is still solved as one graph — tiling happens after the
+fact, so there are no seams. Each zoom level carries exactly the FAIR
+band the viewer would draw there (band 0 fills z0-12, then 13, 14, and
+15 which overzooms upward). The .stations.geojson sibling is picked up
+automatically; stations and bundle markers enter at z11, caterpillar
+bullets at z12, matching the viewer's own symbol floors. A tiles.json
+(TileJSON 3.0) is written beside the pyramid.`,
+	example: []string{
+		"portolan tiles --build build/northeast.geojson --out build/tiles/northeast --name northeast",
+	},
+	flags: func(fs *flag.FlagSet) any {
+		t := &tilesFlags{}
+		fs.StringVar(&t.build, "build", "", "ribbon GeoJSON from chart (stations sibling auto-detected)")
+		fs.StringVar(&t.out, "out", "", "output directory for {z}/{x}/{y}.mvt and tiles.json")
+		fs.StringVar(&t.name, "name", "", "tileset name for tiles.json (defaults to the build's basename)")
+		fs.IntVar(&t.maxzoom, "maxzoom", 15, "top of the pyramid; the renderer overzooms beyond it")
+		return t
+	},
+	run: func(fs *flag.FlagSet, cfg any) {
+		t := cfg.(*tilesFlags)
+		if t.build == "" || t.out == "" {
+			fail("tiles needs --build and --out\ntry: portolan help tiles")
+		}
+		if t.name == "" {
+			t.name = strings.TrimSuffix(filepath.Base(t.build), ".geojson")
+		}
+		st, err := tiles.Build(tiles.Opts{Build: t.build, Out: t.out, MaxZoom: t.maxzoom, Name: t.name})
+		die(err)
+		fmt.Printf("%d tiles written (%.1f MB), %d unchanged, %d pruned → %s\n",
+			st.Tiles, float64(st.Bytes)/1e6, st.Unchanged, st.Removed, t.out)
 	},
 }
