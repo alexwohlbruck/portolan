@@ -1,59 +1,59 @@
 [
  [
   "franklin",
-  "Franklin Av 2·3·4·5 / S",
+  "Franklin Av 2\u00b73\u00b74\u00b75 / S",
   40.67078,
   -73.95852,
-  "5"
+  "mta-subway"
  ],
  [
   "schermerhorn",
-  "Hoyt–Schermerhorn (kink)",
+  "Hoyt\u2013Schermerhorn (kink)",
   40.6897,
   -73.98801,
-  "5"
+  "mta-subway"
  ],
  [
   "times_sq",
-  "Times Sq — 1·2·3 spur to S shuttle",
+  "Times Sq \u2014 1\u00b72\u00b73 spur to S shuttle",
   40.75544,
   -73.98686,
-  "5"
+  "mta-subway"
  ],
  [
   "borough_hall",
-  "Borough Hall (2·3 × 4·5 × R + A/C S-kink)",
+  "Borough Hall (2\u00b73 \u00d7 4\u00b75 \u00d7 R + A/C S-kink)",
   40.6921,
   -73.9888,
-  "5"
+  "mta-subway"
  ],
  [
   "bway_junction",
   "Broadway Junction (J/Z bends into L)",
   40.678808,
   -73.903309,
-  "5"
+  "mta-subway"
  ],
  [
   "canal_ace",
-  "Canal St A·C·E (tight bend, keep it)",
+  "Canal St A\u00b7C\u00b7E (tight bend, keep it)",
   40.72272,
   -74.00529,
-  "5"
+  "mta-subway"
  ],
  [
   "grand_army",
   "Grand Army Plaza / Flatbush run (B/Q split, 2/3-4/5 weave)",
   40.67332,
   -73.96981,
-  "5"
+  "mta-subway"
  ],
  [
   "essex",
-  "Essex · Bowery · 2 Av",
+  "Essex \u00b7 Bowery \u00b7 2 Av",
   40.7217558587372,
   -73.98948408682836,
-  "5",
+  "mta-subway",
   [
    -73.993258455425,
    40.71885837524878,
@@ -63,10 +63,10 @@
  ],
  [
   "rector",
-  "Rector St (1 × 4·5 kiss)",
+  "Rector St (1 \u00d7 4\u00b75 kiss)",
   40.70646326385028,
   -74.01402377011803,
-  "5",
+  "mta-subway",
   [
    -74.01620642729706,
    40.70478751866776,
@@ -76,10 +76,10 @@
  ],
  [
   "park_place",
-  "Park Place 1·2·3 (turn attaches wrong way)",
+  "Park Place 1\u00b72\u00b73 (turn attaches wrong way)",
   40.713870779035105,
   -74.01038533774049,
-  "5",
+  "mta-subway",
   [
    -74.01194293405773,
    40.712377018007345,
@@ -89,10 +89,10 @@
  ],
  [
   "fulton_cityhall",
-  "4·5 Fulton ↔ City Hall",
+  "4\u00b75 Fulton \u2194 City Hall",
   40.7116066157773,
   -74.0080682069044,
-  "5",
+  "mta-subway",
   [
    -74.01073787781728,
    40.70958837524878,
@@ -102,10 +102,10 @@
  ],
  [
   "bklyn_bridge",
-  "Bklyn Bridge–City Hall (J/Z × 4·5·6 weave)",
+  "Bklyn Bridge\u2013City Hall (J/Z \u00d7 4\u00b75\u00b76 weave)",
   40.71324209063012,
   -74.0041594580934,
-  "5",
+  "mta-subway",
   [
    -74.00690612396599,
    40.71112631045057,
@@ -115,10 +115,10 @@
  ],
  [
   "delancey",
-  "Delancey · Chrystie (J/Z × B/D)",
+  "Delancey \u00b7 Chrystie (J/Z \u00d7 B/D)",
   40.71950631221847,
   -73.99239825913062,
-  "5",
+  "mta-subway",
   [
    -73.99609432984359,
    40.71775867501782,
@@ -128,10 +128,10 @@
  ],
  [
   "eighth_53",
-  "8 Av · 53 St",
+  "8 Av \u00b7 53 St",
   40.764278502756085,
   -73.98443065001587,
-  "5",
+  "mta-subway",
   [
    -73.9866822108816,
    40.762615481467066,
@@ -141,10 +141,10 @@
  ],
  [
   "sixth_53",
-  "6 Av · 53 St",
+  "6 Av \u00b7 53 St",
   40.761479564212124,
   -73.97909910759651,
-  "5",
+  "mta-subway",
   [
    -73.98174725061077,
    40.75951608649805,
@@ -154,10 +154,10 @@
  ],
  [
   "seventh_57",
-  "7 Av · 57 St (low-zoom wrong-way attach)",
+  "7 Av \u00b7 57 St (low-zoom wrong-way attach)",
   40.766709030057456,
   -73.97884755306089,
-  "5",
+  "mta-subway",
   [
    -73.98128354685973,
    40.765058721977454,
@@ -167,10 +167,10 @@
  ],
  [
   "gc149",
-  "149 St–Grand Concourse",
+  "149 St\u2013Grand Concourse",
   40.81821956423039,
   -73.92748742308785,
-  "5",
+  "mta-subway",
   [
    -73.93068580433534,
    40.81625608649853,
@@ -180,10 +180,10 @@
  ],
  [
   "myrtle_bway",
-  "Myrtle Av · Broadway (M leaves J/Z)",
+  "Myrtle Av \u00b7 Broadway (M leaves J/Z)",
   40.696905365169286,
   -73.93448930699499,
-  "5",
+  "mta-subway",
   [
    -73.93726883019286,
    40.695326968581384,
@@ -196,7 +196,7 @@
   "Chicago Loop",
   41.881578458489884,
   -87.6300325224955,
-  "29",
+  "chicago-cta",
   [
    -87.63515841129868,
    41.876030060166755,
@@ -209,7 +209,7 @@
   "Chicago Loop NW (Lake/Wells 4-way)",
   41.88586929635545,
   -87.63369181203134,
-  "29",
+  "chicago-cta",
   [
    -87.63514691595547,
    41.88485794331859,
@@ -222,7 +222,7 @@
   "chi_blue_multilevel",
   41.88552394476312,
   -87.63111938155146,
-  "29",
+  "chicago-cta",
   [
    -87.63365029840924,
    41.88451205011336,
@@ -235,7 +235,7 @@
   "chi_loop_se",
   41.87693042750105,
   -87.62630875164433,
-  "29",
+  "chicago-cta",
   [
    -87.62752850474735,
    41.87602471150089,
@@ -248,7 +248,7 @@
   "chi_ohare",
   41.97993058756772,
   -87.89975641588063,
-  "29",
+  "chicago-cta",
   [
    -87.9050061672708,
    41.97668154033914,
@@ -261,7 +261,7 @@
   "bwling_green_loop",
   40.70307522738973,
   -74.01439142567045,
-  "5",
+  "mta-subway",
   [
    -74.01625951724945,
    40.701034782802026,
@@ -274,7 +274,7 @@
   "Flatbush Av Ext throat (B/Q confetti, R loop)",
   40.68413735211797,
   -73.9775908794492,
-  "5",
+  "mta-subway",
   [
    -73.98195757464126,
    40.678538959836004,
@@ -284,10 +284,10 @@
  ],
  [
   "dekalb",
-  "DeKalb · Atlantic Av",
+  "DeKalb \u00b7 Atlantic Av",
   40.687813640745915,
   -73.98017929456365,
-  "5",
+  "mta-subway",
   [
    -73.98472771373065,
    40.68563497193074,
@@ -300,7 +300,7 @@
   "blue_orange_converge",
   40.73130932958725,
   -74.0005278637368,
-  "5",
+  "mta-subway",
   [
    -74.00383576558282,
    40.7279089977838,
@@ -313,7 +313,7 @@
   "dekalb_jitter",
   40.68854376633503,
   -73.9798629125512,
-  "5",
+  "mta-subway",
   [
    -73.98102468817603,
    40.68780323872667,
@@ -326,7 +326,7 @@
   "AC/G-bundle",
   40.687975997443374,
   -73.98231523970148,
-  "5",
+  "mta-subway",
   [
    -73.9898978604823,
    40.6860951171943,
@@ -339,7 +339,7 @@
   "forest-hills-71",
   40.72012853150056,
   -73.84280280359876,
-  "5",
+  "mta-subway",
   [
    -73.85450071765128,
    40.71390353095967,
@@ -352,7 +352,7 @@
   "queens_plaza",
   40.7503112780533,
   -73.93793931111429,
-  "5",
+  "mta-subway",
   [
    -73.94427869540604,
    40.74691199670099,
@@ -365,7 +365,7 @@
   "chi_loop_sw",
   41.877051407880614,
   -87.63350170578279,
-  "29",
+  "chicago-cta",
   [
    -87.63422212833427,
    41.87656657442463,
@@ -378,7 +378,7 @@
   "chi_loop_ne",
   41.88566178005844,
   -87.6264560741082,
-  "29",
+  "chicago-cta",
   [
    -87.62701155869186,
    41.88530511549527,
@@ -391,7 +391,7 @@
   "yellow line terminus",
   42.019488705279315,
   -87.67339616358814,
-  "29",
+  "chicago-cta",
   [
    -87.67720566848159,
    42.01702178601411,
@@ -404,7 +404,7 @@
   "cta_blue_loop_join",
   41.88464131271148,
   -87.62991306984821,
-  "29",
+  "chicago-cta",
   [
    -87.63087099484373,
    41.883291919600964,
@@ -440,7 +440,7 @@
  ],
  [
   "clt_uptown",
-  "Uptown CTC/Arena (Blue × Gold streetcar)",
+  "Uptown CTC/Arena (Blue \u00d7 Gold streetcar)",
   35.2265,
   -80.841,
   "charlotte",
@@ -466,10 +466,10 @@
  ],
  [
   "la_7th_metro",
-  "7th St/Metro Center (A·B·D·E stack)",
+  "7th St/Metro Center (A\u00b7B\u00b7D\u00b7E stack)",
   34.0486,
   -118.2586,
-  "la",
+  "la-metro-rail",
   [
    -118.2664,
    34.04485,
@@ -479,10 +479,10 @@
  ],
  [
   "la_union_station",
-  "Union Station throat (B/D × A/L)",
+  "Union Station throat (B/D \u00d7 A/L)",
   34.056,
   -118.234,
-  "la",
+  "la-metro-rail",
   [
    -118.2419,
    34.05225,
@@ -505,7 +505,7 @@
  ],
  [
   "ldn_baker_st",
-  "Baker St (Met/Circle/H\u0026C × Bakerloo/Jubilee)",
+  "Baker St (Met/Circle/H&C \u00d7 Bakerloo/Jubilee)",
   51.5226,
   -0.1571,
   "london",
@@ -518,7 +518,7 @@
  ],
  [
   "par_chatelet",
-  "Châtelet–Les Halles (RER A·B·D × M1·4·7·11·14)",
+  "Ch\u00e2telet\u2013Les Halles (RER A\u00b7B\u00b7D \u00d7 M1\u00b74\u00b77\u00b711\u00b714)",
   48.862,
   2.347,
   "paris",
@@ -531,7 +531,7 @@
  ],
  [
   "par_gare_nord",
-  "Gare du Nord (RER B/D × M4·5)",
+  "Gare du Nord (RER B/D \u00d7 M4\u00b75)",
   48.8809,
   2.3553,
   "paris",
@@ -544,7 +544,7 @@
  ],
  [
   "ber_alexanderplatz",
-  "Alexanderplatz (U2·5·8 under the S-Bahn viaduct)",
+  "Alexanderplatz (U2\u00b75\u00b78 under the S-Bahn viaduct)",
   52.5219,
   13.4132,
   "berlin",
@@ -557,7 +557,7 @@
  ],
  [
   "ber_friedrichstrasse",
-  "Friedrichstraße (S-Bahn × U6, Stadtbahn)",
+  "Friedrichstra\u00dfe (S-Bahn \u00d7 U6, Stadtbahn)",
   52.52,
   13.387,
   "berlin",
@@ -570,10 +570,10 @@
  ],
  [
   "tky_otemachi",
-  "Ōtemachi–Tokyo (five subway lines under JR)",
+  "\u014ctemachi\u2013Tokyo (five subway lines under JR)",
   35.6847,
   139.7663,
-  "tokyo",
+  "tokyo-metro",
   [
    139.7581,
    35.68095,
@@ -583,10 +583,10 @@
  ],
  [
   "tky_shinjuku",
-  "Shinjuku (JR bundle × Marunouchi/Ōedo)",
+  "Shinjuku (JR bundle \u00d7 Marunouchi/\u014cedo)",
   35.6896,
   139.7006,
-  "tokyo",
+  "tokyo-metro",
   [
    139.6924,
    35.68585,
@@ -687,10 +687,10 @@
  ],
  [
   "ref_whitehall_ferry",
-  "Apple ref: Whitehall ferry terminal (ferry × subway)",
+  "Apple ref: Whitehall ferry terminal (ferry \u00d7 subway)",
   40.7013,
   -74.0134,
-  "5",
+  "mta-subway",
   [
    -74.0214,
    40.6973,
@@ -700,10 +700,10 @@
  ],
  [
   "ref_penn_station",
-  "Apple ref: Penn Station (commuter × subway weight)",
+  "Apple ref: Penn Station (commuter \u00d7 subway weight)",
   40.7506,
   -73.9935,
-  "5",
+  "mta-subway",
   [
    -74.0015,
    40.7466,
@@ -716,7 +716,7 @@
   "Apple ref: Fordham Rd (bus corridor density)",
   40.862,
   -73.901,
-  "5",
+  "mta-subway",
   [
    -73.909,
    40.858,
@@ -729,7 +729,7 @@
   "Apple ref: G Line BRT at Van Nuys (BRT promotion)",
   34.1866,
   -118.4487,
-  "la",
+  "la-metro-rail",
   [
    -118.4577,
    34.1826,
@@ -739,7 +739,7 @@
  ],
  [
   "ref_canary_wharf",
-  "Apple ref: Canary Wharf (DLR × river bus × Tube)",
+  "Apple ref: Canary Wharf (DLR \u00d7 river bus \u00d7 Tube)",
   51.5054,
   -0.0235,
   "london",
@@ -1015,7 +1015,7 @@
   "flatbush_willoughby",
   40.69181888759154,
   -73.98261850306734,
-  "5",
+  "mta-subway",
   [
    -73.98356107810179,
    40.691079662752344,
@@ -1028,7 +1028,7 @@
   "lirr_woodside_bend",
   40.750651373927965,
   -73.91218401889843,
-  "5",
+  "mta-subway",
   [
    -73.91549693850072,
    40.74965532590505,
@@ -1038,28 +1038,28 @@
  ],
  [
   "dc_lenfant",
-  "L'Enfant Plaza (B·O·S × G·Y)",
+  "L'Enfant Plaza (B\u00b7O\u00b7S \u00d7 G\u00b7Y)",
   38.8848,
   -77.0219,
-  "dc"
+  "wmata"
  ],
  [
   "dc_rosslyn",
-  "Rosslyn (B·O·S split under the Potomac)",
+  "Rosslyn (B\u00b7O\u00b7S split under the Potomac)",
   38.8963,
   -77.0715,
-  "dc"
+  "wmata"
  ],
  [
   "mex_pantitlan",
-  "Pantitlán (1·5·9·A, four-line interchange)",
+  "Pantitl\u00e1n (1\u00b75\u00b79\u00b7A, four-line interchange)",
   19.4156,
   -99.0722,
   "mexico"
  ],
  [
   "mex_cablebus",
-  "Indios Verdes (Cablebús L1 meets Metro 3)",
+  "Indios Verdes (Cableb\u00fas L1 meets Metro 3)",
   19.4956,
   -99.1197,
   "mexico"
@@ -1080,49 +1080,49 @@
  ],
  [
   "bcn_catalunya",
-  "Plaça Catalunya (L1 × L3 × FGC)",
+  "Pla\u00e7a Catalunya (L1 \u00d7 L3 \u00d7 FGC)",
   41.387,
   2.1701,
-  "barcelona"
+  "barcelona-tmb"
  ],
  [
   "bcn_diagonal",
-  "Diagonal / Provença (L3·L5 × FGC L6·L7)",
+  "Diagonal / Proven\u00e7a (L3\u00b7L5 \u00d7 FGC L6\u00b7L7)",
   41.3935,
   2.1614,
-  "barcelona"
+  "barcelona-tmb"
  ],
  [
   "bos_boylston",
-  "Boylston (Green Line B·C·D·E in one tunnel)",
+  "Boylston (Green Line B\u00b7C\u00b7D\u00b7E in one tunnel)",
   42.352,
   -71.0745,
   "boston"
  ],
  [
   "bos_kenmore",
-  "Kenmore (B·C split from D)",
+  "Kenmore (B\u00b7C split from D)",
   42.3489,
   -71.0954,
   "boston"
  ],
  [
   "tor_queen_spadina",
-  "Queen × Spadina (501 × 510 streetcars)",
+  "Queen \u00d7 Spadina (501 \u00d7 510 streetcars)",
   43.6485,
   -79.3963,
   "toronto"
  ],
  [
   "tor_bloor_yonge",
-  "Bloor–Yonge (Line 1 × Line 2)",
+  "Bloor\u2013Yonge (Line 1 \u00d7 Line 2)",
   43.671,
   -79.3857,
   "toronto"
  ],
  [
   "vie_karlsplatz",
-  "Karlsplatz (U1·U2·U4 + tram trunk)",
+  "Karlsplatz (U1\u00b7U2\u00b7U4 + tram trunk)",
   48.2005,
   16.3696,
   "vienna"
@@ -1136,14 +1136,14 @@
  ],
  [
   "scl_los_heroes",
-  "Los Héroes (L1 × L2)",
+  "Los H\u00e9roes (L1 \u00d7 L2)",
   -33.4447,
   -70.6608,
   "santiago"
  ],
  [
   "scl_baquedano",
-  "Baquedano (L1 × L5)",
+  "Baquedano (L1 \u00d7 L5)",
   -33.437,
   -70.6345,
   "santiago"
@@ -1153,7 +1153,7 @@
   "bar_commuter_nonsense",
   41.39044562371063,
   2.1626165954668437,
-  "barcelona",
+  "barcelona-tmb",
   [
    2.1447780941227563,
    41.38024417819844,
@@ -1166,7 +1166,7 @@
   "bar_commuter_nonsense_2",
   41.35399337591542,
   2.1149053200399806,
-  "barcelona",
+  "barcelona-tmb",
   [
    2.101703937510706,
    41.343548977671446,
@@ -1179,7 +1179,7 @@
   "bar_commuter_nonsense_3",
   41.34916612413092,
   2.0541072449329647,
-  "barcelona",
+  "barcelona-tmb",
   [
    2.046381435839322,
    41.34342268677403,
@@ -1192,7 +1192,7 @@
   "bar_t2_zig",
   41.3655754891023,
   2.0628079646583757,
-  "barcelona",
+  "barcelona-tmb",
   [
    2.0598839175374906,
    41.3628067737705,
@@ -1231,7 +1231,7 @@
   "chi_sw_loop_corner_disconnected_ribbon_lines",
   41.87721334889375,
   -87.63341578244213,
-  "29",
+  "chicago-cta",
   [
    -87.63418508771848,
    41.87653547069172,
@@ -1257,7 +1257,7 @@
   "lirr_fork",
   40.696369562213135,
   -73.82110972563262,
-  "5",
+  "mta-subway",
   [
    -73.82326993405118,
    40.695321840769225,
@@ -1270,7 +1270,7 @@
   "lirr_jamaica_terminal",
   40.69978957374147,
   -73.8072272097651,
-  "5",
+  "mta-subway",
   [
    -73.81453379706358,
    40.69703191979613,

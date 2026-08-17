@@ -10,6 +10,16 @@ import json
 import sys
 
 TAGS = ("railway", "aerialway", "route", "service", "bridge", "tunnel", "layer")
+
+def resolve_lifecycle(tags):
+    """railway=disused/construction hides the class the matcher needs —
+    the real one lives in disused:railway / construction:railway. Resolve
+    it so a suspended tramway still matches as a tramway."""
+    rw = tags.get("railway")
+    if rw in ("disused", "construction"):
+        tags = dict(tags)
+        tags["railway"] = tags.get(rw + ":railway") or "rail"
+    return tags
 if "--streets" in sys.argv:
     TAGS = ("highway", "service", "bridge", "tunnel", "layer", "oneway")
 
@@ -61,7 +71,7 @@ for el in data.get("elements", []):
     coords = [[p["lon"], p["lat"]] for p in geom if "lon" in p and "lat" in p]
     if len(coords) < 2:
         continue  # a way clipped to a single node at the bbox edge
-    tags = el.get("tags") or {}
+    tags = resolve_lifecycle(el.get("tags") or {})
     feats.append({
         "type": "Feature",
         "id": "way/%s" % el["id"],
