@@ -9,7 +9,9 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
+	"github.com/alexwohlbruck/portolan/internal/mode"
 	"github.com/alexwohlbruck/portolan/internal/stages"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // Caterpillars: inline route bullets riding the drawn ribbons (Apple's
@@ -247,8 +249,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			continue
 		}
 		switch s.Mode {
-		case "bus", "regional", "ferry":
-			continue // a commuter branch's identity is its agency, not a word pill
+		case "bus", "ferry":
+			continue // no word pills off the rails
 		}
 		groups[gkey{s.BandMin, sig(s.Line)}] = append(groups[gkey{s.BandMin, sig(s.Line)}], i)
 	}
@@ -282,6 +284,23 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			lat                                  float64
 			text                                 bool
 		}
+		// operatorEntry is a ribbon-level word label: the agency naming the
+		// whole trunked line, set in the trunk's own drawn hue.
+		operatorEntry := func(s *stages.Segment, aid string, lat float64) (bullet, bool) {
+			name := mode.AgencyName(aid)
+			if sty := style.Active(); sty.AnyName() {
+				if n, ok := sty.AgencyName(aid, name); ok {
+					name = n
+				}
+			}
+			name = strings.ReplaceAll(strings.TrimSpace(name), ",", " ")
+			if name == "" || len([]rune(name)) > 32 {
+				return bullet{}, false
+			}
+			return bullet{route: "agency:" + aid, label: name, hex: s.Color,
+				mode: s.Mode, lat: lat, text: true}, true
+		}
+		lowBand := k.band == 0 || k.band == 13
 		var roster []bullet
 		labelSet := map[string]bool{}
 		for _, mi := range members {
@@ -291,6 +310,8 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 			if rev {
 				lat = -lat
 			}
+			var entries []bullet
+			allText := true
 			for ri, rid := range s.Routes {
 				rt, ok := routes[rid]
 				if !ok {
@@ -321,10 +342,69 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 				if m, ok := gtfs.ParseMask168(acts); ok && m.Empty() {
 					continue
 				}
-				roster = append(roster, bullet{route: rid, label: label, hex: routeHex(rt),
+				allText = allText && asText
+				// a WORD label rides its ribbon and must match the ink it
+				// sits on — the segment's drawn hue, which is the trunk's
+				// colour when the route is trunked or overridden (Crescent
+				// rides the intercity blue, not its own silver). Bullets
+				// keep the route's own colour: the bullet IS the route.
+				hex := routeHex(rt)
+				if asText && s.Color != "" {
+					hex = s.Color
+				}
+				entries = append(entries, bullet{route: rid, label: label, hex: hex,
 					acts: acts, mode: s.Mode, lat: lat, text: asText, shape: shp,
 					textHex: textHexOf(rt), font: fontOf(rt), bordered: borderedOf(rt)})
-				labelSet[label] = true
+			}
+			// Trunked-service naming, the way a road map treats a numbered
+			// highway: far out (bands 0/13) the line is named by its
+			// OPERATOR — one label when a single agency owns it, none when
+			// several share it — and up close (bands 14/15) by the SERVICES
+			// riding it, or by each operator where several share the steel.
+			// Applies to every regional/intercity ribbon and to any trunk
+			// whose services are word-labelled; a bullet trunk (A·C·E)
+			// keeps its bullets at every zoom.
+			if s.Mode == "regional" || s.Mode == "intercity" ||
+				(len(s.Routes) > 1 && allText && len(entries) > 0) {
+				// operators dedup by display NAME, not id — in a multi-feed
+				// build the same railroad arrives as "Amtrak" and
+				// "f2:Amtrak", and that is one operator, not two
+				var ags []string
+				seenAg := map[string]bool{}
+				for _, rid := range s.Routes {
+					rt, ok := routes[rid]
+					if !ok {
+						continue
+					}
+					nk := strings.ToLower(mode.AgencyName(rt.Agency))
+					if nk == "" {
+						nk = strings.ToLower(rt.Agency)
+					}
+					if !seenAg[nk] {
+						seenAg[nk] = true
+						ags = append(ags, rt.Agency)
+					}
+				}
+				switch {
+				case lowBand && len(ags) == 1:
+					// an unusable operator name falls back to the services
+					if b, ok := operatorEntry(s, ags[0], lat); ok {
+						entries = []bullet{b}
+					}
+				case lowBand && len(ags) > 1:
+					entries = nil // no single operator owns the line
+				case !lowBand && len(ags) > 1:
+					entries = nil
+					for _, aid := range ags {
+						if b, ok := operatorEntry(s, aid, lat); ok {
+							entries = append(entries, b)
+						}
+					}
+				}
+			}
+			for _, b := range entries {
+				roster = append(roster, b)
+				labelSet[b.label] = true
 			}
 		}
 		// fold express variants the set already shows (FX beside F), and
