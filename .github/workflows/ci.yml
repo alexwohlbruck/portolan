@@ -52,6 +52,16 @@ jobs:
       - name: Install
         working-directory: clients/npm
         run: npm install --no-audit --no-fund
+      # packaging.test.js asserts the publish guard passes on a good tree, and
+      # a good tree is one whose platforms/ has been staged — it is a build
+      # output, so a fresh checkout has none and the guard correctly refuses.
+      # CI has to do what the runbook does before it can test what the runbook
+      # produces; this is also the exact order release.yml publishes in.
+      - name: Stage the platform packages
+        run: |
+          make dist
+          node clients/npm/scripts/build-platform-packages.mjs
+
       - name: Typecheck and test
         working-directory: clients/npm
         # the tests build the real engine and drive it — a mock would
