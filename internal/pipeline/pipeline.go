@@ -52,6 +52,8 @@ type Dials struct {
 	SplitMergeRun    float64 `json:"split_merge_run"`
 	SplitCoMergeDist float64 `json:"split_co_merge_dist"`
 
+	OrderSep float64 `json:"order_sep"`
+
 	FairCutBase float64 `json:"fair_cut_base"`
 	FairGapPx   float64 `json:"fair_gap_px"`
 	FairMaxTurn float64 `json:"fair_max_turn"`
@@ -66,6 +68,7 @@ func DefaultDials() Dials {
 		MatchGapCost: 75, MatchGapFree: 45,
 		SplitMinRefine: 40, SplitMaxRefine: 250_000, SplitMateMax: 12, SplitMateRun: 60,
 		SplitMergeDist: 12, SplitMergeRun: 60, SplitCoMergeDist: 4,
+		OrderSep: 8,
 		FairCutBase: 60, FairGapPx: 6, FairMaxTurn: 30, FairFilletR: 30,
 	}
 }
