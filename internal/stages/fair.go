@@ -1231,71 +1231,6 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, connLayer string) 
 	return append(pre, out...), math.Max(0, tl.Len()-qa), math.Max(0, qb)
 }
 
-// trackParallelCorner finds a track (from the level index — every loaded
-// track) passing the corner parallel to both arms and returns its curve
-// between the arm projections, offset laterally by the drawn line's
-// distance from it. Nil when no suitable track exists.
-func trackParallelCorner(a, b, apex geo.Pt) []geo.Pt {
-	if lvlGrid == nil {
-		return nil
-	}
-	best := -1
-	bestSpread := 10.0
-	var bestOff float64
-	lvlGrid.Near(apex, 25, func(ti int) {
-		t := lvlLines[ti]
-		if wayRailClass[lvlWays[ti]] == "street" || wayRailClass[lvlWays[ti]] == "seaway" {
-			return // streets/seaways are foreign layers; rail never borrows either
-		}
-		da := t.DistTo(a)
-		db := t.DistTo(b)
-		dx := t.DistTo(apex)
-		if da > 25 || db > 25 || dx > 25 {
-			return
-		}
-		// parallel means the offsets agree along the whole window
-		spread := math.Max(da, math.Max(db, dx)) - math.Min(da, math.Min(db, dx))
-		if spread < bestSpread {
-			bestSpread = spread
-			best = ti
-			bestOff = (da + db) / 2
-		}
-	})
-	if best < 0 {
-		return nil
-	}
-	t := lvlLines[best]
-	sa, _ := t.ProjectArc(a)
-	sb, _ := t.ProjectArc(b)
-	if math.Abs(sb-sa) < 10 || math.Abs(sb-sa) > 400 {
-		return nil
-	}
-	sub := bundle.SubLine(t, math.Min(sa, sb), math.Max(sa, sb))
-	pts := sub.Pts
-	if sb < sa {
-		pts = reversedPts(pts)
-	}
-	// signed offset: which side of the track is the drawn line on?
-	arcA, _ := t.ProjectArc(a)
-	tanA := t.TangentAtArc(arcA, 10)
-	side := 1.0
-	if tanA.Cross(a.Sub(t.AtArc(arcA))) < 0 {
-		side = -1
-	}
-	if sb < sa {
-		side = -side
-	}
-	o := side * bestOff
-	l := geo.NewLine(pts)
-	var out []geo.Pt
-	step := 4.0
-	for arc := 0.0; arc <= l.Len(); arc += step {
-		q := l.AtArc(arc)
-		nrm := l.TangentAtArc(arc, 8).Perp()
-		out = append(out, q.Add(nrm.Scale(o)))
-	}
-	return out
-}
 
 // maxTurn12: worst turn at uniform 12 m sampling — the scale the eye
 // (and the jaggedness gate) sees; dense vertices hide nothing here.
@@ -1576,6 +1511,7 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 		orig := append(append([]geo.Pt{a}, pts[lo:hi+1]...), b)
 		var best []geo.Pt
 		bestScore := maxTurn12(geo.NewLine(orig))
+		arcOutright := false
 		// classical street-corner fillet: the arms are the ENTRY and EXIT
 		// LINES (the segments crossing the window boundary — the streets
 		// themselves, not chords across the curved cluster). The arc is
@@ -1638,16 +1574,42 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 					}
 				}
 				cand := append(append([]geo.Pt{a}, arc...), b)
-				if sc := maxTurn12(geo.NewLine(cand)); sc < bestScore {
+				candLine := geo.NewLine(cand)
+				// An arc that stays ON the window's own geometry wins
+				// OUTRIGHT — a chamfered corner and its tangent arc trace
+				// the same tangent points, so the arc lands within metres
+				// of the chamfer while drawing the radius the corner
+				// implies (the SW Loop solves to R≈25, the track's own
+				// curve). It must not compete on maxTurn12 there: a true
+				// R25 arc turns ~27° per 12 m and every chamfer smear
+				// scores "smoother" while drawing a diagonal no train
+				// rides. But the arc may only STAND IN for the window,
+				// never redraw it (the transitions' Bézier law): on a
+				// genuinely swept curve the tangent arc is a V with a
+				// rounded tip metres off the real geometry (South Ferry's
+				// loop approaches) — those keep the scored contest.
+				devMax := 0.0
+				for k := lo; k <= hi; k++ {
+					if d := candLine.DistTo(pts[k]); d > devMax {
+						devMax = d
+					}
+				}
+				if devMax <= 10 {
+					best = arc
+					bestScore = maxTurn12(candLine)
+					arcOutright = true
+					break
+				}
+				if sc := maxTurn12(candLine); sc < bestScore {
 					bestScore = sc
 					best = arc
 				}
 			}
 		}
 		// fallback candidate: local corner cutting of the original
-		// window — when no arc fits (curved arms), this still beats the
-		// raw elbow
-		{
+		// window — when the arc did not win on the window's own geometry,
+		// this still competes by smoothness (and beats the raw elbow)
+		if !arcOutright {
 			cc := append([]geo.Pt(nil), orig...)
 			for round := 0; round < 3; round++ {
 				if len(cc) < 3 {
@@ -1675,18 +1637,6 @@ func filletCorners(pts []geo.Pt, r, minVertex, minTotal float64) []geo.Pt {
 		}
 		_ = i
 		_ = j
-		// TRACK-PARALLEL candidate: the corner the steel actually makes.
-		// Find a ridden track running parallel to both arms, take its
-		// curve through the corner, and offset it laterally by the drawn
-		// line's distance from it — the drawn corner then matches the
-		// real track curve exactly.
-		if tp := trackParallelCorner(a, b, pts[apex]); tp != nil {
-			cand := append(append([]geo.Pt{a}, tp...), b)
-			if sc := maxTurn12(geo.NewLine(cand)); sc < bestScore {
-				bestScore = sc
-				best = tp
-			}
-		}
 		if best != nil {
 			if os.Getenv("PORTOLAN_DBGF") != "" {
 				span := pts[hi+1].Dist(pts[lo-1])
