@@ -59,6 +59,16 @@ var fairBands = []struct {
 	{0, 13, 4, 0.5},
 }
 
+// nodeSidePt: the endpoint of l on the junction side — atEnd true means
+// the node sits at the line's last vertex (an edge traveled storage-
+// forward into the node), false at its first.
+func nodeSidePt(l *geo.Line, atEnd bool) geo.Pt {
+	if atEnd {
+		return l.Pts[len(l.Pts)-1]
+	}
+	return l.Pts[0]
+}
+
 // Fair draws the junction connections with smooth curvature between slot
 // positions (circular arcs preserve parallelism) and cuts zoom bands.
 var dbg3Pt geo.Pt
@@ -709,8 +719,20 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 			cA, cB := cut[c.a][endA], cut[c.cur][endB]
 			short := 1.5 * p.MinShortCut * band.scale
 			if c.bend < straightBend {
-				cA = math.Min(cA, short)
-				cB = math.Min(cB, short)
+				// the ease window is measured from the JUNCTION, not the
+				// edge end: welded edges stop short of the node (the
+				// interior span belongs to no edge), so a fixed tail cut
+				// stacked on the interior stretched the slot swing to
+				// ~92 m at Tower 18 where the hand draws ~60. Budget the
+				// whole window (halfWin per side of the node) and let the
+				// interior spend it first; the cap keeps every seam at
+				// least as tight as before.
+				halfWin := 2.5 * p.MinShortCut * band.scale
+				interior := nodeSidePt(lines[c.a], c.aAtTo).
+					Dist(nodeSidePt(lines[c.cur], !c.bAtFrom))
+				cw := math.Max(2, halfWin-interior/2)
+				cA = math.Min(cA, math.Min(short, cw))
+				cB = math.Min(cB, math.Min(short, cw))
 			} else if c.bend > 40 {
 				// a steel-traced turn needs only the span its connector
 				// occupies — the full turning cut exists for SYNTHETIC
@@ -781,8 +803,22 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 				}
 				continue
 			}
-			tail := endPiece(lines[a], c.aAtTo, cutFor(a, boolIdx(c.aAtTo), colorIdx(a, c.color)))
-			head := startPiece(lines[cur], c.bAtFrom, cutFor(cur, boolIdx(!c.bAtFrom), colorIdx(cur, c.color)))
+			cutA := cutFor(a, boolIdx(c.aAtTo), colorIdx(a, c.color))
+			cutB := cutFor(cur, boolIdx(!c.bAtFrom), colorIdx(cur, c.color))
+			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+				for _, e := range []int{a, cur} {
+					pts2 := n.Edges[e].Pts
+					if len(pts2) > 0 && (pts2[len(pts2)-1].Dist(dbg3Pt) < 100 || pts2[0].Dist(dbg3Pt) < 100) {
+						vA, okA := effCut[[3]int{a, boolIdx(c.aAtTo), colorIdx(a, c.color)}]
+						vB, okB := effCut[[3]int{cur, boolIdx(!c.bAtFrom), colorIdx(cur, c.color)}]
+						fmt.Printf("CUT3 %s a=e%d cutA=%.0f(eff %v %.0f) cur=e%d cutB=%.0f(eff %v %.0f) bend=%.0f\n",
+							c.color, a, cutA, okA, vA, cur, cutB, okB, vB, c.bend)
+						break
+					}
+				}
+			}
+			tail := endPiece(lines[a], c.aAtTo, cutA)
+			head := startPiece(lines[cur], c.bAtFrom, cutB)
 			chain := chainPts(tail, c.mid)
 			chain = chainPts(chain, head)
 			if len(chain) < 2 {
