@@ -37,7 +37,7 @@ type fairParams struct {
 func defaultFairParams() fairParams {
 	return fairParams{
 		CutBase:     dial("fair_cut_base", 60),
-		GapPx:       dial("fair_gap_px", 5),
+		GapPx:       dial("fair_gap_px", 4),
 		MaxTurn:     dial("fair_max_turn", 30),
 		FilletR:     dial("fair_fillet_r", 30),
 		MinShortCut: 12,

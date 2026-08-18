@@ -69,7 +69,10 @@ func DefaultDials() Dials {
 		SplitMinRefine: 40, SplitMaxRefine: 250_000, SplitMateMax: 12, SplitMateRun: 60,
 		SplitMergeDist: 12, SplitMergeRun: 60, SplitCoMergeDist: 4,
 		OrderSep: 8,
-		FairCutBase: 60, FairGapPx: 6, FairMaxTurn: 30, FairFilletR: 30,
+		// FairGapPx 4: slot pitch. The ribbon line is 3 px at z15 (metro
+		// weight 1.0), so pitch 4 draws a 1 px visible gap between mates
+		// — the owner's Apple-tight bundle read (was 6 = a 3 px gap).
+		FairCutBase: 60, FairGapPx: 4, FairMaxTurn: 30, FairFilletR: 30,
 	}
 }
 
