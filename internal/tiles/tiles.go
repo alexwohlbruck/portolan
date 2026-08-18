@@ -128,6 +128,15 @@ func Build(o Opts) (Stats, error) {
 		}
 		scale := float64(int(1) << z)
 		pad := buffer / extent / scale // buffer in world units at this zoom
+		// simplification keeps the LOW-zoom tiles from bloating; the TOP
+		// zoom serves every overzoom level above it, where one extent
+		// unit (~0.3 m at z15) is pixels wide — a corner arc simplified
+		// there redraws as 13°-per-vertex chords at z18 (the SW Loop).
+		// Top-zoom tiles keep full vertex density; collinear drops only.
+		simpTol := 1.0
+		if z == o.MaxZoom {
+			simpTol = 0
+		}
 
 		for i := range lines {
 			ln := &lines[i]
@@ -154,7 +163,7 @@ func Build(o Opts) (Stats, error) {
 					l := layer(tk{tx, ty}, "ribbons")
 					f := mvtFeature{typ: 2, id: ln.id}
 					for _, p := range parts {
-						ip := roundPart(simplify(p, 1))
+						ip := roundPart(simplify(p, simpTol))
 						if len(ip) > 1 {
 							f.lines = append(f.lines, ip)
 						}
