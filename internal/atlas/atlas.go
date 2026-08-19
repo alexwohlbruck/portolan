@@ -387,6 +387,13 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
+		// no-store like every other workbench endpoint: without it these
+		// are the ONLY responses the browser caches heuristically (no
+		// Cache-Control, so it invents a freshness window from
+		// Last-Modified), and a rebuilt pyramid kept redrawing the old
+		// geometry through a page reload — the console lagging the atlas
+		// for reasons that look like a geometry bug.
+		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, r, p)
 	})
 	mux.HandleFunc("/api/locations", s.locationsAPI)
