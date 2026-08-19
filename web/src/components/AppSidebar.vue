@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Map, MapPin, Hammer, Clock, Palette, Crosshair, Compass, PenTool, SlidersHorizontal, Sun, Moon, Monitor, Globe } from 'lucide-vue-next'
+import { Map, MapPin, Hammer, Clock, Palette, Crosshair, Compass, PenTool, SlidersHorizontal, Sun, Moon, Monitor } from 'lucide-vue-next'
 import Badge from './ui/Badge.vue'
-import Select from './ui/Select.vue'
+import FeedPicker from './FeedPicker.vue'
 import Spinner from './ui/Spinner.vue'
-import { feeds, feed, run, GLOBAL } from '@/lib/store'
+import { run } from '@/lib/store'
 import { theme, THEMES, type Theme } from '@/lib/theme'
 
 const route = useRoute()
@@ -22,12 +21,6 @@ const config = [
   { to: '/areas', label: 'Problem areas', icon: Crosshair },
 ]
 const isActive = (to: string) => route.path === to || route.path.startsWith(`${to}/`)
-// Global rides pinned above the feeds: it is a context, not a feed, and
-// selecting it is an ordinary feed switch — every view reacts the same way.
-const options = computed(() => [
-  { value: GLOBAL, label: 'Global', icon: Globe, pinned: true },
-  ...feeds.value.map((c) => ({ value: c.id, label: c.name || c.id })),
-])
 
 const themeIcon: Record<Theme, any> = { light: Sun, system: Monitor, dark: Moon }
 </script>
@@ -48,7 +41,7 @@ const themeIcon: Record<Theme, any> = { light: Sun, system: Monitor, dark: Moon 
          is about one feed, and re-picking it on each page was the old
          workbench's most-repeated click. -->
     <div class="px-3 pb-3">
-      <Select v-model="feed" :options="options" placeholder="Pick a feed…" />
+      <FeedPicker />
     </div>
 
     <nav class="flex flex-1 flex-col gap-1 overflow-y-auto px-3 py-2">

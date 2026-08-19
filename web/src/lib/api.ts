@@ -61,6 +61,9 @@ export interface Feed {
   bbox?: BBox
   line_agencies?: string[]
   stops?: string
+  /** a GROUP build: the feed keys charted together as one graph, so their
+   *  routes bundle on shared track. Present only on metro-area entries. */
+  members?: string[]
   /** server-computed: which inputs actually exist on disk */
   status?: FeedStatus
 }
