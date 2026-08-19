@@ -11,16 +11,22 @@ import (
 // Pt is a point in the local metric frame (meters).
 type Pt struct{ X, Y float64 }
 
-func (a Pt) Sub(b Pt) Pt          { return Pt{a.X - b.X, a.Y - b.Y} }
-func (a Pt) Add(b Pt) Pt          { return Pt{a.X + b.X, a.Y + b.Y} }
-func (a Pt) Scale(s float64) Pt   { return Pt{a.X * s, a.Y * s} }
-func (a Pt) Dot(b Pt) float64     { return a.X*b.X + a.Y*b.Y }
-func (a Pt) Cross(b Pt) float64   { return a.X*b.Y - a.Y*b.X }
-func (a Pt) Dist(b Pt) float64    { return math.Hypot(a.X-b.X, a.Y-b.Y) }
-func (a Pt) Norm() float64        { return math.Hypot(a.X, a.Y) }
-func (a Pt) Unit() Pt             { n := a.Norm(); if n < 1e-12 { return Pt{1, 0} }; return Pt{a.X / n, a.Y / n} }
-func (a Pt) Perp() Pt             { return Pt{-a.Y, a.X} } // left normal
-func Lerp(a, b Pt, t float64) Pt  { return Pt{a.X + (b.X-a.X)*t, a.Y + (b.Y-a.Y)*t} }
+func (a Pt) Sub(b Pt) Pt        { return Pt{a.X - b.X, a.Y - b.Y} }
+func (a Pt) Add(b Pt) Pt        { return Pt{a.X + b.X, a.Y + b.Y} }
+func (a Pt) Scale(s float64) Pt { return Pt{a.X * s, a.Y * s} }
+func (a Pt) Dot(b Pt) float64   { return a.X*b.X + a.Y*b.Y }
+func (a Pt) Cross(b Pt) float64 { return a.X*b.Y - a.Y*b.X }
+func (a Pt) Dist(b Pt) float64  { return math.Hypot(a.X-b.X, a.Y-b.Y) }
+func (a Pt) Norm() float64      { return math.Hypot(a.X, a.Y) }
+func (a Pt) Unit() Pt {
+	n := a.Norm()
+	if n < 1e-12 {
+		return Pt{1, 0}
+	}
+	return Pt{a.X / n, a.Y / n}
+}
+func (a Pt) Perp() Pt            { return Pt{-a.Y, a.X} } // left normal
+func Lerp(a, b Pt, t float64) Pt { return Pt{a.X + (b.X-a.X)*t, a.Y + (b.Y-a.Y)*t} }
 
 // LL is a WGS84 coordinate.
 type LL struct{ Lon, Lat float64 }
@@ -271,6 +277,153 @@ func TurnDeg(a, b, c Pt) float64 {
 	d := v1.Dot(v2) / (n1 * n2)
 	d = math.Max(-1, math.Min(1, d))
 	return math.Acos(d) * 180 / math.Pi
+}
+
+// SmoothTurning low-passes a polyline in the TURNING-ANGLE domain: it
+// smooths the sequence of segment headings over arc length and rebuilds
+// the line from the smoothed headings, keeping every segment's length.
+//
+// This is the shape-preserving counterpart to GaussianArc. Smoothing
+// POSITIONS is curvature-biased — it pulls every apex toward its chord
+// at ~sigma²/2R per pass, so an R17 street corner visibly loses its
+// radius while a straight line is untouched. Smoothing HEADINGS has no
+// such bias: a straight run is a constant heading and a circular arc is
+// a LINEAR heading ramp, and a Gaussian reproduces both exactly (it is
+// normalized and symmetric). What it does remove is what it should — a
+// kink is a step in the heading series, and a step is what a low-pass
+// rounds off.
+//
+// Both endpoints are pinned: the reintegrated line is closed back onto
+// the original end by distributing the residual along arc, the standard
+// traverse-closure adjustment. The correction is tiny (it is only the
+// second-order effect of the heading changes) and spread over the whole
+// line rather than concentrated at a vertex.
+func SmoothTurning(pts []Pt, sigma float64) []Pt {
+	n := len(pts)
+	if n < 4 || sigma <= 0 {
+		return pts
+	}
+	m := n - 1 // segments
+	seg := make([]float64, m)
+	th := make([]float64, m)
+	for i := 0; i < m; i++ {
+		d := pts[i+1].Sub(pts[i])
+		seg[i] = d.Norm()
+		th[i] = math.Atan2(d.Y, d.X)
+	}
+	// unwrap so the series is continuous across the ±π branch cut
+	for i := 1; i < m; i++ {
+		for th[i]-th[i-1] > math.Pi {
+			th[i] -= 2 * math.Pi
+		}
+		for th[i]-th[i-1] < -math.Pi {
+			th[i] += 2 * math.Pi
+		}
+	}
+	// arc position of each segment's midpoint
+	mid := make([]float64, m)
+	run := 0.0
+	for i := 0; i < m; i++ {
+		mid[i] = run + seg[i]/2
+		run += seg[i]
+	}
+	total := run
+	if total <= 0 {
+		return pts
+	}
+	// Per-sample sigma, capped by the local feature scale. Heading
+	// smoothing is unbiased for a LONG arc (a linear heading ramp is
+	// reproduced exactly), but a short one — an R17 street corner is only
+	// ~27 m of arc — is a ramp shorter than the window, so a fixed sigma
+	// spreads its turn over the neighbouring straights and walks the apex
+	// inward. That erosion is what deadlocked refinement: the votes push
+	// the median out toward the track pair by ~1.9 m and the finish pass
+	// pulled it back the same 1.9 m, iteration after iteration, so the
+	// line simply sat on the inner rail. Cap sigma at a quarter of the
+	// arc the local turn is spread over (turn rate -> radius -> arc for a
+	// quarter circle), leaving straight track — where welds live and the
+	// radius is huge — at the full sigma.
+	sig := make([]float64, m)
+	for i := 0; i < m; i++ {
+		sig[i] = sigma
+		// local turn rate over a +-3 segment window
+		lo, hi := i-3, i+3
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > m-1 {
+			hi = m - 1
+		}
+		if hi <= lo {
+			continue
+		}
+		dth := math.Abs(th[hi] - th[lo])
+		ds := mid[hi] - mid[lo]
+		if dth > 1e-9 && ds > 1e-9 {
+			r := ds / dth                                    // local radius (m per radian)
+			if lim := 0.25 * r * math.Pi / 2; lim < sig[i] { // quarter-circle arc
+				sig[i] = lim
+			}
+		}
+	}
+	sm := make([]float64, m)
+	for i := 0; i < m; i++ {
+		s := sig[i]
+		if s <= 0 {
+			sm[i] = th[i]
+			continue
+		}
+		win := 3 * s
+		var sw, sv float64
+		for j := i; j >= 0 && mid[i]-mid[j] <= win; j-- {
+			w := math.Exp(-sq(mid[i]-mid[j]) / (2 * s * s))
+			sv += th[j] * w
+			sw += w
+		}
+		for j := i + 1; j < m && mid[j]-mid[i] <= win; j++ {
+			w := math.Exp(-sq(mid[j]-mid[i]) / (2 * s * s))
+			sv += th[j] * w
+			sw += w
+		}
+		if sw > 0 {
+			sm[i] = sv / sw
+		} else {
+			sm[i] = th[i]
+		}
+	}
+	out := make([]Pt, n)
+	out[0] = pts[0]
+	for i := 0; i < m; i++ {
+		out[i+1] = Pt{
+			X: out[i].X + seg[i]*math.Cos(sm[i]),
+			Y: out[i].Y + seg[i]*math.Sin(sm[i]),
+		}
+	}
+	// Closure: reintegrated headings do not land exactly on the original
+	// end (up to ~0.15% of length here), and that residual must NOT be
+	// spread along arc as a shear — a shear moves mid-line points
+	// laterally by up to half the residual, which on a 4 km edge is ~3 m
+	// and dragged refined centerlines back off the track pair between
+	// iterations (they never converged). Close with a SIMILARITY
+	// transform about the start instead — rotate and uniformly scale so
+	// the end lands exactly — which pins both ends while preserving
+	// shape: circles stay circles, and the correction is ~0.1 deg and
+	// ~1.001x here.
+	u := out[n-1].Sub(out[0])
+	v := pts[n-1].Sub(out[0])
+	un, vn := u.Norm(), v.Norm()
+	if un > 1e-9 && vn > 1e-9 {
+		c := (u.X*v.X + u.Y*v.Y) / (un * un)  // scale * cos(rot)
+		sn := (u.X*v.Y - u.Y*v.X) / (un * un) // scale * sin(rot)
+		for i := 1; i < n; i++ {
+			d := out[i].Sub(out[0])
+			out[i] = Pt{
+				X: out[0].X + c*d.X - sn*d.Y,
+				Y: out[0].Y + sn*d.X + c*d.Y,
+			}
+		}
+	}
+	return out
 }
 
 // GaussianArc low-passes a polyline along its arc (endpoints pinned). Light

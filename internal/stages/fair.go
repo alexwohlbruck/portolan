@@ -854,6 +854,21 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 			// radii, while a straight-through weave has no excuse.
 			bend := c.bend
 			allow := 25 + 20*math.Min(1, bend/90)
+			// ...but never below the curvature of the STEEL THIS CONNECTOR
+			// JOINS. The gate exists to reject synthetic garbage (weld
+			// tents, chains that drag junction-interior geometry), not real
+			// track: a junction sitting on a tight curve genuinely turns
+			// that fast, and its connector cannot be smoother than the
+			// steadies at either end without leaving the rails. The fixed
+			// allowance was calibrated when the finish smoothing was still
+			// eroding real curves; once centerlines kept their radius it
+			// started rejecting honest geometry by a degree or two and
+			// dropped the transition entirely (A/C at Hoyt-Schermerhorn,
+			// 33°/12 m against a 32 cap — a ~21 m radius, which is simply
+			// what that curve is).
+			if steel := math.Max(maxTurn12(tl), maxTurn12(hl)); steel+4 > allow {
+				allow = steel + 4
+			}
 			// a TURNING movement follows the steel: the junction's
 			// connector track is in the data — trace it between the cut
 			// points instead of sweeping a synthetic curve wide of it

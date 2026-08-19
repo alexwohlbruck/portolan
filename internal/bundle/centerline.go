@@ -60,7 +60,16 @@ func DefaultParams() Params {
 		Damp:        0.8,
 		Step:        6.0,
 		OffsetSigma: 5.0,
-		FinishSigma: 8.0,
+		// 2.0, not the old 8.0: the finish pass now smooths HEADINGS
+		// (geo.SmoothTurning), which targets a weld kink directly — a
+		// kink is a step in the heading series — instead of dragging
+		// every position toward its chord. It needs a quarter the sigma
+		// to do the same job, and the erosion that sigma still causes
+		// scales with its square, so an R17 corner loses ~0.1 m where 8.0
+		// in the position domain lost ~1.9 m and deadlocked refinement.
+		// Measured: NYC jaggedness spikes 1 -> 0, wobble p90 4.9 -> 4.8 m,
+		// Chicago SW corner centering error 2.63 -> 0.30 m.
+		FinishSigma: 2.0,
 		MinParallel: 0.82, // ~35°
 		SlopeMax:    0.08, // max lateral-offset slope (m per m of arc)
 	}
@@ -330,6 +339,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				offs = (*v.(*[]strandVote))[:0]
 			}
 			dbgHere := dbgCPt != nil && pts[i].Dist(*dbgCPt) < 40 && it == 0
+			var mine []float64 // this member's crossings, before per-track collapse
 			for mi, m := range members {
 				mr := reachAt(mi, arcOf[i])
 				if !m.Within(pts[i], mr) {
@@ -406,10 +416,43 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						continue
 					}
 					if near(qa) && near(qb) {
-						offs = append(offs, strandVote{off: c.Offset, ln: m.Len()})
+						mine = append(mine, c.Offset)
 					} else if dbgHere {
 						fmt.Printf("REFC3 i=%d member %d SKIP per-pass qa=%v qb=%v off=%.1f\n", i, mi, near(qa), near(qb), c.Offset)
 					}
+				}
+				// ONE VOTE PER MEMBER PER TRACK. A straight cross-section
+				// through a curving track crosses it more than once (and a
+				// polyline that wobbles across the section does too), so a
+				// single physical track cast 2-3 votes and outweighed its
+				// neighbours: the SW Loop corner read {-4.4, 0, 0} and
+				// centred at -1.5 — a third of the way across the pair,
+				// hugging one rail — where the true midpoint is -2.2. The
+				// duplicates are also what made the strand count flicker
+				// (2 -> 1 -> 2) as the measured gap crossed StrandGap.
+				// Cluster this member's own crossings and cast one vote
+				// per cluster: duplicates collapse, while a genuine second
+				// pass (a balloon limb, the far leg of a loop) sits far
+				// beyond StrandGap and still votes separately. With the
+				// duplicates gone, a merged pair's mean IS its midpoint,
+				// so the residual count flicker no longer moves the line.
+				if len(mine) > 0 {
+					sort.Float64s(mine)
+					sum, n := 0.0, 0
+					prev := math.Inf(-1)
+					for _, o := range mine {
+						if n > 0 && o-prev > p.StrandGap {
+							offs = append(offs, strandVote{off: sum / float64(n), ln: m.Len()})
+							sum, n = 0, 0
+						}
+						sum += o
+						n++
+						prev = o
+					}
+					if n > 0 {
+						offs = append(offs, strandVote{off: sum / float64(n), ln: m.Len()})
+					}
+					mine = mine[:0]
 				}
 			}
 			if len(offs) == 0 {
@@ -619,103 +662,20 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			out[i] = pts[i].Add(nrm.Scale(o))
 		}
-		// This Gaussian is curvature-biased — it erodes a tight apex by
-		// ~sigma²/2R per pass, and five passes at the metro sigma pulled
-		// the SW Loop's R17 street corner ~8 m inside the steel (the
-		// chamfer every stage downstream then inherited). But the erosion
-		// is also the weld eraser, so the two jobs are split by what
-		// distinguishes them: a REAL curve is SUSTAINED same-sign
-		// curvature (an R20 corner turns ~17° per 6 m vertex for many
-		// consecutive vertices), a weld kink is an ISOLATED vertex whose
-		// window carries little total turn beyond itself. Where the
-		// pre-smooth line holds sustained curvature, blend the smoothed
-		// line back toward it and the corner keeps its radius across
-		// every pass; kinks never qualify and keep being erased. (The
-		// earlier delta-smoothing attempt fixed corners but un-erased
-		// welds precisely because it compensated EVERYWHERE.)
-		cur = geo.NewLine(blendSustainedCurves(out, geo.GaussianArc(out, p.FinishSigma)))
+		// Finish smoothing runs in the TURNING-ANGLE domain
+		// (geo.SmoothTurning): smoothing POSITIONS is curvature-biased
+		// and pulled ~8 m off the SW Loop's R17 corner over five passes,
+		// which is the chamfer every stage downstream inherited. Heading
+		// smoothing has no such bias — a straight run is a constant
+		// heading and an arc is a linear ramp, both reproduced exactly —
+		// while a weld kink is a STEP in the series, which is precisely
+		// what a low-pass rounds off. Same job, no erosion.
+		cur = geo.NewLine(geo.SmoothTurning(out, p.FinishSigma))
 		if moved < 0.3 {
 			break
 		}
 	}
 	return cur
-}
-
-// blendSustainedCurves returns sm with samples pulled back toward raw
-// where raw carries SUSTAINED same-sign curvature — the signature of a
-// real curve (per-vertex turns accumulate; an R20 corner sums well over
-// 100° across a ±24 m window) that an isolated weld kink cannot fake
-// (its window total barely exceeds its own single turn). Weight ramps
-// with the windowed sum so the boundary between regimes stays smooth.
-func blendSustainedCurves(raw, sm []geo.Pt) []geo.Pt {
-	n := len(raw)
-	if n < 5 || len(sm) != n {
-		return sm
-	}
-	arc := make([]float64, n)
-	for i := 1; i < n; i++ {
-		arc[i] = arc[i-1] + raw[i].Dist(raw[i-1])
-	}
-	turn := make([]float64, n) // signed, degrees
-	for i := 1; i < n-1; i++ {
-		v1 := raw[i].Sub(raw[i-1])
-		v2 := raw[i+1].Sub(raw[i])
-		l1, l2 := v1.Norm(), v2.Norm()
-		if l1 < 1e-9 || l2 < 1e-9 {
-			continue
-		}
-		d := math.Max(-1, math.Min(1, v1.Dot(v2)/(l1*l2)))
-		a := math.Acos(d) * 180 / math.Pi
-		if v1.Cross(v2) < 0 {
-			a = -a
-		}
-		turn[i] = a
-	}
-	const win = 24.0 // window half-span (m): a couple of curve vertices past any one kink
-	out := make([]geo.Pt, n)
-	copy(out, sm)
-	lo := 0
-	hi := 0
-	for i := 1; i < n-1; i++ {
-		for arc[i]-arc[lo] > win {
-			lo++
-		}
-		if hi < lo {
-			hi = lo
-		}
-		for hi+1 < n && arc[hi+1]-arc[i] <= win {
-			hi++
-		}
-		sum, peak := 0.0, 0.0
-		for k := lo; k <= hi; k++ {
-			sum += turn[k]
-			if a := math.Abs(turn[k]); a > peak {
-				peak = a
-			}
-		}
-		s := math.Abs(sum)
-		// sustained: meaningful total turn spread past any single vertex,
-		// so a lone kink (s ≈ peak) never qualifies however gentle, and a
-		// sharp vertex disqualifies its window unless it rides ≥2.5× its
-		// own turn of same-sign company — an R17 street corner at 6 m
-		// spacing (~20°/vertex, and past 30° once the Gaussian's along-
-		// arc slide has thinned the apex) qualifies, an isolated 25° weld
-		// cannot. The 40° cap is the backstop for genuinely broken
-		// geometry only; the company ratio is the real kink filter.
-		if s < 20 || s < 2.5*peak || peak > 40 {
-			continue
-		}
-		w := math.Min(1, (s-20)/20)
-		// correct the LATERAL erosion only: the Gaussian also slides
-		// vertices along-arc, and lerping positions between arc-misaligned
-		// polylines with a varying weight reorders vertices into folds
-		// (the first cut of this drew 180° knots across NYC). Project the
-		// correction onto raw's local normal so ordering is untouchable.
-		nrm := raw[min(i+1, n-1)].Sub(raw[max(i-1, 0)]).Unit().Perp()
-		d := raw[i].Sub(sm[i]).Dot(nrm)
-		out[i] = sm[i].Add(nrm.Scale(d * w))
-	}
-	return out
 }
 
 // throughMembers keeps members present along ≥ ThroughFrac of the line —
