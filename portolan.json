@@ -3,7 +3,7 @@
   "feeds": {
     "mta-subway": {
       "name": "MTA Subway",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/5.zip",
+      "gtfs": "data/gtfs/mta-subway.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -18,7 +18,7 @@
     },
     "mta-metro-north": {
       "name": "Metro-North Railroad",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/37.zip",
+      "gtfs": "data/gtfs/mta-metro-north.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -33,7 +33,7 @@
     },
     "mta-lirr": {
       "name": "Long Island Rail Road",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/38.zip",
+      "gtfs": "data/gtfs/mta-lirr.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -48,7 +48,7 @@
     },
     "nyc-ferry": {
       "name": "NYC Ferry",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/917.zip",
+      "gtfs": "data/gtfs/nyc-ferry.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -63,7 +63,7 @@
     },
     "roosevelt-tram": {
       "name": "Roosevelt Island Tram",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/3364.zip",
+      "gtfs": "data/gtfs/roosevelt-tram.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -78,7 +78,7 @@
     },
     "jfk-airtrain": {
       "name": "JFK AirTrain",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/1070.zip",
+      "gtfs": "data/gtfs/jfk-airtrain.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -93,7 +93,7 @@
     },
     "mta-nyct-bus": {
       "name": "MTA NYCT Bus",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/6.zip",
+      "gtfs": "data/gtfs/mta-nyct-bus.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -108,7 +108,7 @@
     },
     "mta-bus": {
       "name": "MTA Bus Company",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/34.zip",
+      "gtfs": "data/gtfs/mta-bus.zip",
       "rail": "testdata/nyc-rail.geojson",
       "stops": "build/nyc-stops.geojson",
       "streets": "build/nyc-streets.geojson",
@@ -310,7 +310,7 @@
     },
     "atlanta": {
       "name": "Atlanta",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/17.zip",
+      "gtfs": "data/gtfs/atlanta.zip",
       "rail": "build/atlanta-rail.geojson",
       "stops": "build/atlanta-stops.geojson",
       "out": "build/atlanta.geojson",
@@ -325,7 +325,7 @@
     },
     "charlotte": {
       "name": "Charlotte",
-      "gtfs": "/Users/alexwohlbruck/Documents/code/barrelman/data/gtfs/886.zip",
+      "gtfs": "data/gtfs/charlotte.zip",
       "rail": "build/charlotte-rail.geojson",
       "stops": "build/charlotte-stops.geojson",
       "out": "build/charlotte.geojson",
