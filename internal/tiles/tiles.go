@@ -40,6 +40,13 @@ const (
 	symbolFloor = 11
 	catFloor    = 12
 	buffer      = 256 // extent units; line-offset reaches ~30 px = 240 units
+	// topExtent is the TOP zoom's coordinate resolution. That level is
+	// overzoomed to z20 by the viewer, and MVT coordinates are integers:
+	// at the default 4096 the grid is ~0.3 m at z15 = 1.4 px at z18, so
+	// a smooth corner arc lands on a visible staircase (the SW Loop read
+	// bumpy in the console while the atlas drew the same build clean).
+	// 32768 puts the floor at ~0.04 m — sub-pixel past z20.
+	topExtent = 32768
 )
 
 type geoFeature struct {
@@ -67,12 +74,12 @@ func world(lon, lat float64) (float64, float64) {
 }
 
 type line struct {
-	pts   [][2]float64 // world coords
-	props map[string]any
-	id    uint64
-	kind  string // steady | transition | bridge
-	zmin  int
-	zmax  int
+	pts                    [][2]float64 // world coords
+	props                  map[string]any
+	id                     uint64
+	kind                   string // steady | transition | bridge
+	zmin                   int
+	zmax                   int
 	minx, miny, maxx, maxy float64
 }
 
@@ -112,6 +119,13 @@ func Build(o Opts) (Stats, error) {
 
 	for z := 0; z <= o.MaxZoom; z++ {
 		type tk [2]int
+		scale := float64(int(1) << z)
+		ext := extent
+		if z == o.MaxZoom {
+			ext = topExtent
+		}
+		buf := buffer * ext / extent               // same on-screen slack at any extent
+		pad := float64(buf) / float64(ext) / scale // buffer in world units
 		tilesAt := map[tk]map[string]*mvtLayer{}
 		layer := func(t tk, name string) *mvtLayer {
 			m, ok := tilesAt[t]
@@ -121,13 +135,11 @@ func Build(o Opts) (Stats, error) {
 			}
 			l, ok := m[name]
 			if !ok {
-				l = newLayer(name)
+				l = newLayer(name, ext)
 				m[name] = l
 			}
 			return l
 		}
-		scale := float64(int(1) << z)
-		pad := buffer / extent / scale // buffer in world units at this zoom
 		// simplification keeps the LOW-zoom tiles from bloating; the TOP
 		// zoom serves every overzoom level above it, where one extent
 		// unit (~0.3 m at z15) is pixels wide — a corner arc simplified
@@ -147,11 +159,11 @@ func Build(o Opts) (Stats, error) {
 			y0, y1 := tileRange(ln.miny-pad, ln.maxy+pad, z)
 			for tx := x0; tx <= x1; tx++ {
 				for ty := y0; ty <= y1; ty++ {
-					local := toLocal(ln.pts, tx, ty, scale)
+					local := toLocal(ln.pts, tx, ty, scale, ext)
 					var parts [][][2]float64
 					if ln.kind == "steady" {
-						parts = clipParts(local)
-					} else if intersects(local) {
+						parts = clipParts(local, ext, buf)
+					} else if intersects(local, ext, buf) {
 						// transitions and gap bridges ride whole: their
 						// offset easing runs over line-progress, and a
 						// clip would re-normalise it mid-curve.
@@ -194,8 +206,8 @@ func Build(o Opts) (Stats, error) {
 						continue // only the owning tile for now: symbols dedupe poorly
 					}
 					l := layer(tk{ax, ay}, pt.layer)
-					px := int32(math.Round((pt.x*scale - float64(ax)) * extent))
-					py := int32(math.Round((pt.y*scale - float64(ay)) * extent))
+					px := int32(math.Round((pt.x*scale - float64(ax)) * float64(ext)))
+					py := int32(math.Round((pt.y*scale - float64(ay)) * float64(ext)))
 					f := mvtFeature{typ: 1, lines: [][][2]int32{{{px, py}}}}
 					tagAll(l, &f, pt.props)
 					l.feats = append(l.feats, f)
@@ -265,10 +277,10 @@ func tileRange(lo, hi float64, z int) (int, int) {
 	return a, b
 }
 
-func toLocal(pts [][2]float64, tx, ty int, scale float64) [][2]float64 {
+func toLocal(pts [][2]float64, tx, ty int, scale float64, ext int) [][2]float64 {
 	out := make([][2]float64, len(pts))
 	for i, p := range pts {
-		out[i] = [2]float64{(p[0]*scale - float64(tx)) * extent, (p[1]*scale - float64(ty)) * extent}
+		out[i] = [2]float64{(p[0]*scale - float64(tx)) * float64(ext), (p[1]*scale - float64(ty)) * float64(ext)}
 	}
 	return out
 }
@@ -290,8 +302,8 @@ func roundPart(p [][2]float64) [][2]int32 {
 // clipParts clips a polyline (tile-local coords) to the buffered tile
 // square, returning the surviving runs. Plain Liang–Barsky per segment,
 // with runs stitched while consecutive segments stay inside.
-func clipParts(pts [][2]float64) [][][2]float64 {
-	const lo, hi = -buffer, extent + buffer
+func clipParts(pts [][2]float64, ext, buf int) [][][2]float64 {
+	lo, hi := float64(-buf), float64(ext+buf)
 	var parts [][][2]float64
 	var cur [][2]float64
 	for i := 0; i+1 < len(pts); i++ {
@@ -348,8 +360,8 @@ func clipSeg(a, b [2]float64, lo, hi float64) ([2]float64, [2]float64, bool) {
 	return [2]float64{a[0] + t0*dx, a[1] + t0*dy}, [2]float64{a[0] + t1*dx, a[1] + t1*dy}, true
 }
 
-func intersects(pts [][2]float64) bool {
-	const lo, hi = -buffer, extent + buffer
+func intersects(pts [][2]float64, ext, buf int) bool {
+	lo, hi := float64(-buf), float64(ext+buf)
 	for i := 0; i+1 < len(pts); i++ {
 		if _, _, ok := clipSeg(pts[i], pts[i+1], lo, hi); ok {
 			return true
