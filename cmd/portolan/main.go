@@ -722,7 +722,7 @@ bullets at z12, matching the viewer's own symbol floors. A tiles.json
 		fs.StringVar(&t.build, "build", "", "ribbon GeoJSON from chart (stations sibling auto-detected)")
 		fs.StringVar(&t.out, "out", "", "output directory for {z}/{x}/{y}.mvt and tiles.json")
 		fs.StringVar(&t.name, "name", "", "tileset name for tiles.json (defaults to the build's basename)")
-		fs.IntVar(&t.maxzoom, "maxzoom", 15, "top of the pyramid; the renderer overzooms beyond it")
+		fs.IntVar(&t.maxzoom, "maxzoom", 18, "top of the pyramid; the renderer overzooms beyond it")
 		return t
 	},
 	run: func(fs *flag.FlagSet, cfg any) {

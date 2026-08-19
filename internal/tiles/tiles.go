@@ -14,7 +14,7 @@ import (
 type Opts struct {
 	Build   string
 	Out     string // tile directory; {z}/{x}/{y}.mvt is created under it
-	MaxZoom int    // top of the pyramid; 15 matches the finest band
+	MaxZoom int    // top of the pyramid; 18 matches a GeoJSON source's own
 	Name    string // tileset name for tiles.json (the feed/region key)
 }
 
@@ -40,13 +40,14 @@ const (
 	symbolFloor = 11
 	catFloor    = 12
 	buffer      = 256 // extent units; line-offset reaches ~30 px = 240 units
-	// topExtent is the TOP zoom's coordinate resolution. That level is
-	// overzoomed to z20 by the viewer, and MVT coordinates are integers:
-	// at the default 4096 the grid is ~0.3 m at z15 = 1.4 px at z18, so
-	// a smooth corner arc lands on a visible staircase (the SW Loop read
-	// bumpy in the console while the atlas drew the same build clean).
-	// 32768 puts the floor at ~0.04 m — sub-pixel past z20.
-	topExtent = 32768
+	// topExtent is the TOP zoom's coordinate resolution. MVT coordinates
+	// are integers, so the grid is the geometry's precision floor and the
+	// top zoom is what every overzoom level redraws. 8192 and no higher:
+	// MapLibre rescales EVERY tile to its own internal EXTENT = 8192
+	// (`scale = EXTENT / feature.extent` then Math.round — the value is
+	// forced by int16 vertex buffers), so a finer source grid is rounded
+	// straight back off and only costs bytes.
+	topExtent = 8192
 )
 
 type geoFeature struct {
@@ -94,7 +95,7 @@ type point struct {
 // Build tiles one build's output fan into Out.
 func Build(o Opts) (Stats, error) {
 	if o.MaxZoom == 0 {
-		o.MaxZoom = 15
+		o.MaxZoom = 18
 	}
 	lines, err := loadRibbons(o.Build, o.MaxZoom)
 	if err != nil {
