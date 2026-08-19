@@ -619,22 +619,103 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			out[i] = pts[i].Add(nrm.Scale(o))
 		}
-		// NOTE: this Gaussian is curvature-biased — it erodes a tight apex
-		// by ~sigma²/2R per pass. At the metro-tuned sigma that is
-		// invisible on metro radii but erased the Atlanta streetcar's
-		// street corners; street-running edges pass a small FinishSigma
-		// instead (erosion scales with sigma², so 2.5 m is ~0.1 m of pull).
-		// A delta-smoothing variant (subtracting the base line's own
-		// erosion) fixed corners AND cut the D82233 dup 34.8→21.7, but
-		// reintroduced junction weld kinks the full Gaussian had been
-		// erasing — a curvature-aware split of the two jobs is a tuning
-		// session of its own, not a drive-by.
-		cur = geo.NewLine(geo.GaussianArc(out, p.FinishSigma))
+		// This Gaussian is curvature-biased — it erodes a tight apex by
+		// ~sigma²/2R per pass, and five passes at the metro sigma pulled
+		// the SW Loop's R17 street corner ~8 m inside the steel (the
+		// chamfer every stage downstream then inherited). But the erosion
+		// is also the weld eraser, so the two jobs are split by what
+		// distinguishes them: a REAL curve is SUSTAINED same-sign
+		// curvature (an R20 corner turns ~17° per 6 m vertex for many
+		// consecutive vertices), a weld kink is an ISOLATED vertex whose
+		// window carries little total turn beyond itself. Where the
+		// pre-smooth line holds sustained curvature, blend the smoothed
+		// line back toward it and the corner keeps its radius across
+		// every pass; kinks never qualify and keep being erased. (The
+		// earlier delta-smoothing attempt fixed corners but un-erased
+		// welds precisely because it compensated EVERYWHERE.)
+		cur = geo.NewLine(blendSustainedCurves(out, geo.GaussianArc(out, p.FinishSigma)))
 		if moved < 0.3 {
 			break
 		}
 	}
 	return cur
+}
+
+// blendSustainedCurves returns sm with samples pulled back toward raw
+// where raw carries SUSTAINED same-sign curvature — the signature of a
+// real curve (per-vertex turns accumulate; an R20 corner sums well over
+// 100° across a ±24 m window) that an isolated weld kink cannot fake
+// (its window total barely exceeds its own single turn). Weight ramps
+// with the windowed sum so the boundary between regimes stays smooth.
+func blendSustainedCurves(raw, sm []geo.Pt) []geo.Pt {
+	n := len(raw)
+	if n < 5 || len(sm) != n {
+		return sm
+	}
+	arc := make([]float64, n)
+	for i := 1; i < n; i++ {
+		arc[i] = arc[i-1] + raw[i].Dist(raw[i-1])
+	}
+	turn := make([]float64, n) // signed, degrees
+	for i := 1; i < n-1; i++ {
+		v1 := raw[i].Sub(raw[i-1])
+		v2 := raw[i+1].Sub(raw[i])
+		l1, l2 := v1.Norm(), v2.Norm()
+		if l1 < 1e-9 || l2 < 1e-9 {
+			continue
+		}
+		d := math.Max(-1, math.Min(1, v1.Dot(v2)/(l1*l2)))
+		a := math.Acos(d) * 180 / math.Pi
+		if v1.Cross(v2) < 0 {
+			a = -a
+		}
+		turn[i] = a
+	}
+	const win = 24.0 // window half-span (m): a couple of curve vertices past any one kink
+	out := make([]geo.Pt, n)
+	copy(out, sm)
+	lo := 0
+	hi := 0
+	for i := 1; i < n-1; i++ {
+		for arc[i]-arc[lo] > win {
+			lo++
+		}
+		if hi < lo {
+			hi = lo
+		}
+		for hi+1 < n && arc[hi+1]-arc[i] <= win {
+			hi++
+		}
+		sum, peak := 0.0, 0.0
+		for k := lo; k <= hi; k++ {
+			sum += turn[k]
+			if a := math.Abs(turn[k]); a > peak {
+				peak = a
+			}
+		}
+		s := math.Abs(sum)
+		// sustained: meaningful total turn spread past any single vertex,
+		// so a lone kink (s ≈ peak) never qualifies however gentle, and a
+		// sharp vertex disqualifies its window unless it rides ≥2.5× its
+		// own turn of same-sign company — an R17 street corner at 6 m
+		// spacing (~20°/vertex, and past 30° once the Gaussian's along-
+		// arc slide has thinned the apex) qualifies, an isolated 25° weld
+		// cannot. The 40° cap is the backstop for genuinely broken
+		// geometry only; the company ratio is the real kink filter.
+		if s < 20 || s < 2.5*peak || peak > 40 {
+			continue
+		}
+		w := math.Min(1, (s-20)/20)
+		// correct the LATERAL erosion only: the Gaussian also slides
+		// vertices along-arc, and lerping positions between arc-misaligned
+		// polylines with a varying weight reorders vertices into folds
+		// (the first cut of this drew 180° knots across NYC). Project the
+		// correction onto raw's local normal so ordering is untouchable.
+		nrm := raw[min(i+1, n-1)].Sub(raw[max(i-1, 0)]).Unit().Perp()
+		d := raw[i].Sub(sm[i]).Dot(nrm)
+		out[i] = sm[i].Add(nrm.Scale(d * w))
+	}
+	return out
 }
 
 // throughMembers keeps members present along ≥ ThroughFrac of the line —
