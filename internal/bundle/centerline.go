@@ -693,13 +693,36 @@ func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
 		return members
 	}
 	need := p.ThroughFrac * math.Min(float64(len(base)), corridorScaleM/12.0)
+	// A SUSTAINED CONTIGUOUS RUN alongside is corridor membership too,
+	// whatever fraction of the edge it covers. Edges get chained into
+	// megachains (Chicago's Blue line is ONE 44 km edge), and against
+	// that length the opposite track — a 2.9 km strand co-running for
+	// ~530 m before the chaining takes the two apart — cleared neither
+	// the 1.2 km global bar nor the 90%-of-own-length one. It was culled
+	// before it could vote, leaving a SINGLE member, and a lone member
+	// means offset 0 at every cross-section: the median sat exactly on
+	// that one rail. This is the "centerline hugs one track" case.
+	// Divergence is still handled where it belongs — per sample, by the
+	// SpanProbe persistence guard — so a fork ramp that parallels
+	// briefly and peels away still cannot drag the median.
+	const runM = 250.0
 	var through []*geo.Line
 	for _, m := range members {
-		near := 0
+		near, run, bestRun := 0, 0, 0
 		for _, q := range base {
 			if m.Within(q, p.Reach) {
 				near++
+				run++
+				if run > bestRun {
+					bestRun = run
+				}
+			} else {
+				run = 0
 			}
+		}
+		if float64(bestRun)*12.0 >= runM {
+			through = append(through, m)
+			continue
 		}
 		if float64(near) >= need {
 			through = append(through, m)
