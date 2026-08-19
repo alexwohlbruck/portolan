@@ -48,6 +48,39 @@ func statOf(path string) fileStat {
 	return f
 }
 
+// dirIndex — one listing per directory, reused across a whole roster
+// sweep. filepath.Glob rescans the entire directory on every call, so
+// counting each feed's scenario siblings that way cost one sweep of a
+// 12k-entry build/ per feed: /api/feeds took 11 s to answer for a 1499
+// feed roster, which is what made the console's feed picker feel broken.
+type dirIndex map[string][]string
+
+func (d dirIndex) names(dir string) []string {
+	if v, ok := d[dir]; ok {
+		return v
+	}
+	ents, _ := os.ReadDir(dir)
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	d[dir] = names
+	return names
+}
+
+// scenCount — how many "<out>.scen-<id>.geojson" layouts sit beside the
+// union build.
+func (d dirIndex) scenCount(out string) int {
+	base := filepath.Base(strings.TrimSuffix(out, ".geojson")) + ".scen-"
+	n := 0
+	for _, name := range d.names(filepath.Dir(out)) {
+		if strings.HasPrefix(name, base) && strings.HasSuffix(name, ".geojson") {
+			n++
+		}
+	}
+	return n
+}
+
 type cityStatus struct {
 	GTFS           []fileStat `json:"gtfs"`
 	Rail           fileStat   `json:"rail"`
@@ -57,22 +90,27 @@ type cityStatus struct {
 }
 
 type cityJSON struct {
-	ID      string      `json:"id"`
-	Name    string      `json:"name"`
-	GTFS    string      `json:"gtfs"`
-	Rail    string      `json:"rail"`
-	Streets string      `json:"streets,omitempty"`
-	Stops   string      `json:"stops,omitempty"`
-	Out     string      `json:"out"`
-	Network string      `json:"network,omitempty"`
-	BBox    []float64   `json:"bbox,omitempty"`
+	ID      string    `json:"id"`
+	Name    string    `json:"name"`
+	GTFS    string    `json:"gtfs"`
+	Rail    string    `json:"rail"`
+	Streets string    `json:"streets,omitempty"`
+	Stops   string    `json:"stops,omitempty"`
+	Out     string    `json:"out"`
+	Network string    `json:"network,omitempty"`
+	BBox    []float64 `json:"bbox,omitempty"`
+	// Members marks a GROUP build — several feeds charted as one graph so
+	// their routes bundle on shared track. The console lists these apart
+	// from ordinary feeds; they are metro areas, not agencies.
+	Members []string    `json:"members,omitempty"`
 	Status  *cityStatus `json:"status,omitempty"`
 }
 
-func (s *Server) cityJSONOf(id string, fc FeedCfg) cityJSON {
+func (s *Server) cityJSONOf(id string, fc FeedCfg, dirs dirIndex) cityJSON {
 	c := cityJSON{
 		ID: id, Name: fc.Name, GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
 		Stops: fc.Stops, Out: fc.Out, Network: fc.Network, BBox: fc.BBox,
+		Members: fc.Members,
 	}
 	st := &cityStatus{Rail: statOf(fc.Rail)}
 	for _, p := range strings.Split(fc.GTFS, ",") {
@@ -90,10 +128,7 @@ func (s *Server) cityJSONOf(id string, fc FeedCfg) cityJSON {
 		// scenario layouts sit beside the union build as
 		// "<out>.scen-<id>.geojson"; count them rather than deriving
 		// scenarios here (that costs a stop_times sweep).
-		base := strings.TrimSuffix(fc.Out, ".geojson")
-		if matches, err := filepath.Glob(base + ".scen-*.geojson"); err == nil {
-			st.ScenariosBuilt = len(matches)
-		}
+		st.ScenariosBuilt = dirs.scenCount(fc.Out)
 	}
 	c.Status = st
 	return c
@@ -107,9 +142,10 @@ func (s *Server) citiesAPI(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	dirs := dirIndex{}
 	out := make([]cityJSON, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, s.cityJSONOf(id, cfg.Feeds[id]))
+		out = append(out, s.cityJSONOf(id, cfg.Feeds[id], dirs))
 	}
 	json.NewEncoder(w).Encode(out)
 }
@@ -129,7 +165,7 @@ func (s *Server) cityAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unknown city", 404)
 			return
 		}
-		json.NewEncoder(w).Encode(s.cityJSONOf(id, fc))
+		json.NewEncoder(w).Encode(s.cityJSONOf(id, fc, dirIndex{}))
 	case http.MethodPost:
 		var in cityJSON
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -166,7 +202,7 @@ func (s *Server) cityAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fc := s.config().Feeds[id]
-		json.NewEncoder(w).Encode(s.cityJSONOf(id, fc))
+		json.NewEncoder(w).Encode(s.cityJSONOf(id, fc, dirIndex{}))
 	case http.MethodDelete:
 		err := s.editConfig(func(raw map[string]any) error {
 			feeds, _ := raw["feeds"].(map[string]any)

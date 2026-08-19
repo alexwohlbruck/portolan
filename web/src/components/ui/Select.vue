@@ -27,7 +27,11 @@ defineEmits<{ (e: 'update:modelValue', v: string): void }>()
         :side-offset="4"
         class="relative z-50 min-w-[8rem] overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
       >
-        <SelectViewport class="p-1 w-[var(--reka-select-trigger-width)]">
+        <!-- cap to the popper's available height so a long feed roster
+             scrolls instead of running off screen -->
+        <SelectViewport
+          class="p-1 w-[var(--reka-select-trigger-width)] overflow-y-auto max-h-[min(70vh,calc(var(--reka-select-content-available-height)-8px))]"
+        >
           <SelectItem
             v-for="o in props.options"
             :key="o.value"

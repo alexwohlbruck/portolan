@@ -14,11 +14,11 @@ import "math"
 
 // mvtValue is one entry of a layer's value table.
 type mvtValue struct {
-	s      string
-	f      float64
-	i      int64
-	b      bool
-	kind   byte // 's', 'f', 'i', 'b'
+	s    string
+	f    float64
+	i    int64
+	b    bool
+	kind byte // 's', 'f', 'i', 'b'
 }
 
 // mvtFeature is one feature in tile-local integer coordinates. Lines is a
@@ -38,10 +38,16 @@ type mvtLayer struct {
 	keyIdx map[string]uint32
 	vals   []mvtValue
 	valIdx map[mvtValue]uint32
+	// ext is the layer's declared coordinate resolution. Coordinates are
+	// INTEGERS on this grid, so the grid is the geometry's precision
+	// floor: at the default 4096 one unit is ~0.3 m at z15, which is
+	// 1.4 px once the top zoom is overzoomed to z18 — a smooth arc
+	// renders as a visible staircase. The top zoom raises it.
+	ext int
 }
 
-func newLayer(name string) *mvtLayer {
-	return &mvtLayer{name: name, keyIdx: map[string]uint32{}, valIdx: map[mvtValue]uint32{}}
+func newLayer(name string, ext int) *mvtLayer {
+	return &mvtLayer{name: name, keyIdx: map[string]uint32{}, valIdx: map[mvtValue]uint32{}, ext: ext}
 }
 
 func (l *mvtLayer) key(k string) uint32 {
@@ -205,7 +211,7 @@ func (l *mvtLayer) encode() []byte {
 		b = lenField(b, 4, v.encode())
 	}
 	b = tagBytes(b, 5, 0)
-	b = varint(b, extent)
+	b = varint(b, uint64(l.ext))
 	return b
 }
 

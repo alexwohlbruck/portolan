@@ -1330,6 +1330,26 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool
 	runs := map[int]int{}
 	bests := map[int]int{}  // longest consecutive run (street rule)
 	counts := map[int]int{} // total in-gauge samples (tuned metro rule)
+	// GAUGE-STABLE twinning, for metro pairs wider than the adjacent-bore
+	// constant. Chicago's Dearborn subway runs its two tracks 6.8 m apart
+	// — 0.8 m outside the 6.0 m gate — so the second track was never a
+	// twin, never a member, and every cross-section saw ONE crossing at
+	// offset 0: the drawn line sat exactly on one rail for the whole
+	// corridor. Widening the constant is what the note above warns
+	// against (it swept in unridden mainlines running beside subways), so
+	// widen the SEARCH and qualify on behaviour instead: a directional
+	// twin holds its gauge, a neighbouring corridor's gap drifts. Accept
+	// only a long run that holds the spacing inside a 1.0 m band — a
+	// directional twin keeps gauge to well under a metre, and looser
+	// bands let a throat or a neighbouring corridor in and kinked the
+	// median (NYC jaggedness 45 deg at a 2.5 m band).
+	const stabWide, stabRun, stabBand = 12.0, 600.0, 1.0
+	type stab struct {
+		n      int
+		lo, hi float64
+	}
+	cur := map[int]*stab{}
+	stable := map[int]bool{}
 	for _, q := range samples {
 		here := map[int]bool{}
 		tgrid.Near(q, twinMax, func(si int) {
@@ -1337,6 +1357,51 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool
 				here[si] = true
 			}
 		})
+		if !street {
+			seen := map[int]bool{}
+			cand := 0
+			tgrid.Near(q, stabWide, func(si int) {
+				if twinLines[si].Within(q, stabWide) {
+					cand++
+				}
+			})
+			// YARD GUARD (owner's rule: many parallel tracks beside the one
+			// under inspection means a yard or terminal throat). The pair
+			// notion only holds where there IS a pair — with several
+			// candidates alongside, "the twin" is ambiguous and admitting
+			// one drags the median into the ladder (the 9 Av/West End
+			// 4-to-7-track structure kinked 45 deg). Those sites need the
+			// yard rule, not a twin; until then the corridor keeps its
+			// tuned behaviour there.
+			if cand > 1 {
+				clear(cur)
+				cand = 0
+			}
+			tgrid.Near(q, stabWide, func(si int) {
+				if cand == 0 {
+					return
+				}
+				if d, ok := twinLines[si].DistToCapped(q, stabWide); ok {
+					seen[si] = true
+					s := cur[si]
+					if s == nil {
+						s = &stab{lo: d, hi: d}
+						cur[si] = s
+					}
+					s.n++
+					s.lo = math.Min(s.lo, d)
+					s.hi = math.Max(s.hi, d)
+					if float64(s.n)*ds >= stabRun && s.hi-s.lo <= stabBand {
+						stable[si] = true
+					}
+				}
+			})
+			for si := range cur {
+				if !seen[si] {
+					delete(cur, si)
+				}
+			}
+		}
 		for si := range runs {
 			if !here[si] {
 				delete(runs, si)
@@ -1362,8 +1427,22 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool
 		if need < 3 {
 			need = 3
 		}
+		added := map[int]bool{}
 		for si, c := range counts {
 			if c >= need {
+				out = append(out, twinLines[si])
+				added[si] = true
+			}
+		}
+		// a gauge-stable twin is never inside twinMax, so it has no entry
+		// in counts at all — take the union, not the counts loop
+		sis := make([]int, 0, len(stable))
+		for si := range stable {
+			sis = append(sis, si)
+		}
+		sort.Ints(sis) // deterministic member order
+		for _, si := range sis {
+			if !added[si] {
 				out = append(out, twinLines[si])
 			}
 		}

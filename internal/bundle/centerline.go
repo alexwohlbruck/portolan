@@ -60,7 +60,16 @@ func DefaultParams() Params {
 		Damp:        0.8,
 		Step:        6.0,
 		OffsetSigma: 5.0,
-		FinishSigma: 8.0,
+		// 2.0, not the old 8.0: the finish pass now smooths HEADINGS
+		// (geo.SmoothTurning), which targets a weld kink directly — a
+		// kink is a step in the heading series — instead of dragging
+		// every position toward its chord. It needs a quarter the sigma
+		// to do the same job, and the erosion that sigma still causes
+		// scales with its square, so an R17 corner loses ~0.1 m where 8.0
+		// in the position domain lost ~1.9 m and deadlocked refinement.
+		// Measured: NYC jaggedness spikes 1 -> 0, wobble p90 4.9 -> 4.8 m,
+		// Chicago SW corner centering error 2.63 -> 0.30 m.
+		FinishSigma: 2.0,
 		MinParallel: 0.82, // ~35°
 		SlopeMax:    0.08, // max lateral-offset slope (m per m of arc)
 	}
@@ -330,6 +339,7 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				offs = (*v.(*[]strandVote))[:0]
 			}
 			dbgHere := dbgCPt != nil && pts[i].Dist(*dbgCPt) < 40 && it == 0
+			var mine []float64 // this member's crossings, before per-track collapse
 			for mi, m := range members {
 				mr := reachAt(mi, arcOf[i])
 				if !m.Within(pts[i], mr) {
@@ -406,10 +416,43 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 						continue
 					}
 					if near(qa) && near(qb) {
-						offs = append(offs, strandVote{off: c.Offset, ln: m.Len()})
+						mine = append(mine, c.Offset)
 					} else if dbgHere {
 						fmt.Printf("REFC3 i=%d member %d SKIP per-pass qa=%v qb=%v off=%.1f\n", i, mi, near(qa), near(qb), c.Offset)
 					}
+				}
+				// ONE VOTE PER MEMBER PER TRACK. A straight cross-section
+				// through a curving track crosses it more than once (and a
+				// polyline that wobbles across the section does too), so a
+				// single physical track cast 2-3 votes and outweighed its
+				// neighbours: the SW Loop corner read {-4.4, 0, 0} and
+				// centred at -1.5 — a third of the way across the pair,
+				// hugging one rail — where the true midpoint is -2.2. The
+				// duplicates are also what made the strand count flicker
+				// (2 -> 1 -> 2) as the measured gap crossed StrandGap.
+				// Cluster this member's own crossings and cast one vote
+				// per cluster: duplicates collapse, while a genuine second
+				// pass (a balloon limb, the far leg of a loop) sits far
+				// beyond StrandGap and still votes separately. With the
+				// duplicates gone, a merged pair's mean IS its midpoint,
+				// so the residual count flicker no longer moves the line.
+				if len(mine) > 0 {
+					sort.Float64s(mine)
+					sum, n := 0.0, 0
+					prev := math.Inf(-1)
+					for _, o := range mine {
+						if n > 0 && o-prev > p.StrandGap {
+							offs = append(offs, strandVote{off: sum / float64(n), ln: m.Len()})
+							sum, n = 0, 0
+						}
+						sum += o
+						n++
+						prev = o
+					}
+					if n > 0 {
+						offs = append(offs, strandVote{off: sum / float64(n), ln: m.Len()})
+					}
+					mine = mine[:0]
 				}
 			}
 			if len(offs) == 0 {
@@ -619,17 +662,15 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			out[i] = pts[i].Add(nrm.Scale(o))
 		}
-		// NOTE: this Gaussian is curvature-biased — it erodes a tight apex
-		// by ~sigma²/2R per pass. At the metro-tuned sigma that is
-		// invisible on metro radii but erased the Atlanta streetcar's
-		// street corners; street-running edges pass a small FinishSigma
-		// instead (erosion scales with sigma², so 2.5 m is ~0.1 m of pull).
-		// A delta-smoothing variant (subtracting the base line's own
-		// erosion) fixed corners AND cut the D82233 dup 34.8→21.7, but
-		// reintroduced junction weld kinks the full Gaussian had been
-		// erasing — a curvature-aware split of the two jobs is a tuning
-		// session of its own, not a drive-by.
-		cur = geo.NewLine(geo.GaussianArc(out, p.FinishSigma))
+		// Finish smoothing runs in the TURNING-ANGLE domain
+		// (geo.SmoothTurning): smoothing POSITIONS is curvature-biased
+		// and pulled ~8 m off the SW Loop's R17 corner over five passes,
+		// which is the chamfer every stage downstream inherited. Heading
+		// smoothing has no such bias — a straight run is a constant
+		// heading and an arc is a linear ramp, both reproduced exactly —
+		// while a weld kink is a STEP in the series, which is precisely
+		// what a low-pass rounds off. Same job, no erosion.
+		cur = geo.NewLine(geo.SmoothTurning(out, p.FinishSigma))
 		if moved < 0.3 {
 			break
 		}
@@ -652,13 +693,36 @@ func throughMembers(cl *geo.Line, members []*geo.Line, p Params) []*geo.Line {
 		return members
 	}
 	need := p.ThroughFrac * math.Min(float64(len(base)), corridorScaleM/12.0)
+	// A SUSTAINED CONTIGUOUS RUN alongside is corridor membership too,
+	// whatever fraction of the edge it covers. Edges get chained into
+	// megachains (Chicago's Blue line is ONE 44 km edge), and against
+	// that length the opposite track — a 2.9 km strand co-running for
+	// ~530 m before the chaining takes the two apart — cleared neither
+	// the 1.2 km global bar nor the 90%-of-own-length one. It was culled
+	// before it could vote, leaving a SINGLE member, and a lone member
+	// means offset 0 at every cross-section: the median sat exactly on
+	// that one rail. This is the "centerline hugs one track" case.
+	// Divergence is still handled where it belongs — per sample, by the
+	// SpanProbe persistence guard — so a fork ramp that parallels
+	// briefly and peels away still cannot drag the median.
+	const runM = 250.0
 	var through []*geo.Line
 	for _, m := range members {
-		near := 0
+		near, run, bestRun := 0, 0, 0
 		for _, q := range base {
 			if m.Within(q, p.Reach) {
 				near++
+				run++
+				if run > bestRun {
+					bestRun = run
+				}
+			} else {
+				run = 0
 			}
+		}
+		if float64(bestRun)*12.0 >= runM {
+			through = append(through, m)
+			continue
 		}
 		if float64(near) >= need {
 			through = append(through, m)

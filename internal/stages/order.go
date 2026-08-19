@@ -203,6 +203,7 @@ func OrderCtx(ctx context.Context, n *Network, routes map[string]gtfs.Route) (ma
 				// the continuing group holds its order (owner's rule). Only
 				// pairs involving a changed color have a join/leave curve to
 				// absorb the crossing.
+				sepW := int(dial("order_sep", 8))
 				for x := 0; x < len(shared); x++ {
 					for y := x + 1; y < len(shared); y++ {
 						da := pos(a, shared[x], aStorage) - pos(a, shared[y], aStorage)
@@ -217,6 +218,19 @@ func OrderCtx(ctx context.Context, n *Network, routes map[string]gtfs.Route) (ma
 							default:
 								total += 8
 							}
+						}
+						// SEPARATION (LOOM wS||): partners riding both edges
+						// that are adjacent on one side but split apart on the
+						// other. Inversions alone leave this free, so an
+						// entrant could slot INSIDE a same-steel pair (Purple/
+						// Brown wedged between Lake's Green and Pink at Tower
+						// 18) — Apple appends entrants at the bundle edge and
+						// keeps trunk-mates glued. Weighted like a gratuitous
+						// flip: it must beat the couple of side-crossings the
+						// outer slot costs the entrant, and a genuinely
+						// cheaper continuing order still wins at equal cost.
+						if (abs(da) == 1) != (abs(db) == 1) {
+							total += sepW
 						}
 					}
 				}
@@ -656,6 +670,154 @@ func OrderCtx(ctx context.Context, n *Network, routes map[string]gtfs.Route) (ma
 		}
 	}
 
+	// Glue pass. Slide-to-edge only tries the two EXTREMES, and single-
+	// edge climbing cannot carry a color across two residents at once —
+	// so a trunk-mate pair split by entrants stays split (Purple/Brown
+	// wedged between Lake's Green and Pink at Tower 18: Pink-beside-Green
+	// means jumping Pink over Purple AND Brown on every Loop edge in one
+	// move, and every intermediate costs more than either endpoint). For
+	// each color, try re-slotting it directly beside its top-affinity
+	// companions across the PAIR's shared subgraph — the move the hand
+	// makes (trunk-mates ride glued; the separation term is what it
+	// wins). The subgraph is edges carrying BOTH colors: a single color's
+	// component is not orientable when the color rides an edge both ways
+	// (the Loop circulators fan at Tower 18, so one stored orientation
+	// cannot serve both visits and the BFS parity breaks mid-cycle), but
+	// where the PAIR rides together the eye follows one joint ribbon and
+	// side-of-companion is well-defined. Edges the companion does not
+	// ride keep the color where it was. Strict improvement only.
+	for _, c := range colorList {
+		type comAff struct {
+			d   string
+			aff float64
+		}
+		var coms []comAff
+		for _, d := range colorList {
+			if d == c {
+				continue
+			}
+			if v := affinity[pairKey(c, d)]; v > 0 {
+				coms = append(coms, comAff{d, v})
+			}
+		}
+		sort.Slice(coms, func(i, j int) bool {
+			if coms[i].aff != coms[j].aff {
+				return coms[i].aff > coms[j].aff
+			}
+			return coms[i].d < coms[j].d
+		})
+		if len(coms) > 3 {
+			coms = coms[:3]
+		}
+		for _, ca := range coms {
+			inComp := map[int]bool{}
+			for ei := range n.Edges {
+				if hasColor(ei, c) && hasColor(ei, ca.d) {
+					inComp[ei] = true
+				}
+			}
+			visited := map[int]bool{}
+			seeds := make([]int, 0, len(inComp))
+			for seed := range inComp {
+				seeds = append(seeds, seed)
+			}
+			sort.Ints(seeds)
+			for _, seed := range seeds {
+				if visited[seed] {
+					continue
+				}
+				orient := map[int]bool{seed: true}
+				queue := []int{seed}
+				visited[seed] = true
+				var comp []int
+				for len(queue) > 0 {
+					cur := queue[0]
+					queue = queue[1:]
+					comp = append(comp, cur)
+					for _, ni := range []int{n.Edges[cur].From, n.Edges[cur].To} {
+						curAtTo := n.Edges[cur].To == ni
+						for _, nx := range n.Nodes[ni].Adj {
+							if nx == cur || !inComp[nx] || visited[nx] {
+								continue
+							}
+							nxAtFrom := n.Edges[nx].From == ni
+							aligned := curAtTo == nxAtFrom
+							orient[nx] = orient[cur] == aligned
+							visited[nx] = true
+							queue = append(queue, nx)
+						}
+					}
+				}
+				// cost scope: every node a comp edge touches sees the
+				// re-slot, including seams onto non-comp edges
+				nodes := map[int]bool{}
+				for _, ei := range comp {
+					nodes[n.Edges[ei].From] = true
+					nodes[n.Edges[ei].To] = true
+				}
+				saved := map[int][]string{}
+				for _, ei := range comp {
+					saved[ei] = append([]string(nil), perm[ei]...)
+				}
+				before := totalCost(nodes)
+				bestGlue := before
+				var bestPerms map[int][]string
+				for side := 0; side < 2; side++ {
+					changed := false
+					for _, ei := range comp {
+						rest := removeC(saved[ei], c)
+						di := -1
+						for i, x := range rest {
+							if x == ca.d {
+								di = i
+							}
+						}
+						after := side == 1
+						if !orient[ei] {
+							after = !after
+						}
+						at := di
+						if after {
+							at = di + 1
+						}
+						np := make([]string, 0, len(rest)+1)
+						np = append(np, rest[:at]...)
+						np = append(np, c)
+						np = append(np, rest[at:]...)
+						perm[ei] = np
+						if permKey(np) != permKey(saved[ei]) {
+							changed = true
+						}
+					}
+					if !changed {
+						continue
+					}
+					t := totalCost(nodes)
+					if os.Getenv("PORTOLAN_DBGO") == c {
+						fmt.Printf("GLUE3 %s beside %s side=%d cost=%d (before %d) comp=%d\n",
+							c, ca.d, side, t, before, len(comp))
+					}
+					if t < bestGlue {
+						bestGlue = t
+						bestPerms = map[int][]string{}
+						for _, ei := range comp {
+							bestPerms[ei] = append([]string(nil), perm[ei]...)
+						}
+					}
+				}
+				if bestPerms != nil {
+					for _, ei := range comp {
+						perm[ei] = append([]string(nil), bestPerms[ei]...)
+					}
+				} else {
+					for _, ei := range comp {
+						perm[ei] = append([]string(nil), saved[ei]...)
+					}
+				}
+			}
+		}
+	}
+
 	if cancelled {
 		// a half-descended layout is not a cheaper map, it is a wrong
 		// one — the caller gets the error, never partial slots
@@ -666,6 +828,13 @@ func OrderCtx(ctx context.Context, n *Network, routes map[string]gtfs.Route) (ma
 		slots[ei] = perm[ei]
 	}
 	return slots, nil
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // permute calls fn with every permutation of v (v is scratch space; fn must
