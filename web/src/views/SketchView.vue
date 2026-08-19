@@ -10,7 +10,7 @@ import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import GlobalNotice from '@/components/GlobalNotice.vue'
 import { feed, currentFeed, isGlobal } from '@/lib/store'
-import { basemapTiles, isDark } from '@/lib/theme'
+import { basemap, BASEMAP_PROVIDERS, currentBasemap, isDark, PROVIDER_ORDER, providerTiles } from '@/lib/theme'
 import { toast } from '@/lib/toast'
 import {
   History, bake, bakeAll, deleteAnchor, displayColor, handlesOf, insertAnchor, isCorner,
@@ -596,11 +596,23 @@ function fitFeed() {
 // than the map view's — but the light tiles still need more of it than
 // the dark ones to be legible at all (lib/theme.ts).
 const rasterOpacity = () => (isDark.value ? 0.5 : 0.9)
-watch(isDark, () => {
+const providerOpacity = (id: any) => (BASEMAP_PROVIDERS[id as 'carto'].fade ? rasterOpacity() : 1)
+
+// The basemap choice is global (lib/theme.ts), so picking one on the map
+// page holds here too — tracing against blank or against the real track
+// alignment is the same want in both places.
+function applyBasemap() {
   if (!map) return
-  map.getSource('osm')?.setTiles([basemapTiles()])
-  map.setPaintProperty('osm', 'raster-opacity', rasterOpacity())
-})
+  const show = currentBasemap().show
+  for (const id of PROVIDER_ORDER) {
+    if (!map.getLayer(`bm-${id}`)) continue
+    map.getSource(`bm-${id}`)?.setTiles([providerTiles(id)])
+    map.setLayoutProperty(`bm-${id}`, 'visibility', show.includes(id) ? 'visible' : 'none')
+    map.setPaintProperty(`bm-${id}`, 'raster-opacity', providerOpacity(id))
+  }
+}
+watch(isDark, applyBasemap)
+watch(basemap, applyBasemap)
 
 onMounted(() => {
   if (typeof maplibregl === 'undefined') {
@@ -615,15 +627,24 @@ onMounted(() => {
     doubleClickZoom: false,
     style: {
       version: 8,
-      sources: {
-        osm: {
-          type: 'raster',
-          tiles: [basemapTiles()],
-          tileSize: 256,
-          attribution: '© OpenStreetMap © CARTO',
-        },
-      },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': rasterOpacity() } }],
+      sources: Object.fromEntries(
+        PROVIDER_ORDER.map((id) => [
+          `bm-${id}`,
+          {
+            type: 'raster',
+            tiles: [providerTiles(id)],
+            tileSize: 256,
+            attribution: BASEMAP_PROVIDERS[id].attribution,
+          },
+        ]),
+      ),
+      layers: PROVIDER_ORDER.map((id) => ({
+        id: `bm-${id}`,
+        type: 'raster',
+        source: `bm-${id}`,
+        layout: { visibility: currentBasemap().show.includes(id) ? 'visible' : 'none' },
+        paint: { 'raster-opacity': providerOpacity(id) },
+      })),
     },
   })
   ro = new ResizeObserver(() => map?.resize())

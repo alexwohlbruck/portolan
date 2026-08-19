@@ -5,10 +5,11 @@ import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
 import Spinner from '@/components/ui/Spinner.vue'
+import Select from '@/components/ui/Select.vue'
 import { api, fetchBuild, type Scenario, type StyleSet } from '@/lib/api'
 import { applyDynamic, activePredicate, activeRouteIdx, bulletIdsOf, markerIconAt, maskActive, stationVisible, type BundleRow } from '@/lib/dynamic'
 import { feed, currentFeed, isGlobal, run } from '@/lib/store'
-import { basemapTiles, isDark } from '@/lib/theme'
+import { basemap, BASEMAPS, BASEMAP_PROVIDERS, currentBasemap, isDark, PROVIDER_ORDER, providerTiles } from '@/lib/theme'
 import { toast } from '@/lib/toast'
 
 // MapLibre comes from the FORK the server exposes at /vendor — it carries
@@ -48,7 +49,25 @@ const BANDS = [
 // CARTO's light tiles are already pale enough to sit under the ribbons at
 // full strength; dimming them the way the dark tiles need washes the
 // street grid out entirely.
+const basemapOptions = BASEMAPS.map((b) => ({ value: b.id, label: b.label }))
 const rasterOpacity = () => (isDark.value ? 0.55 : 1)
+// A base recedes so the drawn network reads on top of it; a transparent
+// overlay must not, or it fades to nothing.
+const providerOpacity = (id: any) => (BASEMAP_PROVIDERS[id as 'carto'].fade ? rasterOpacity() : 1)
+
+// Both the theme and the basemap pick land here: tiles follow the theme,
+// visibility follows the basemap, and neither needs the style rebuilt.
+function applyBasemap() {
+  if (!map) return
+  const show = currentBasemap().show
+  for (const id of PROVIDER_ORDER) {
+    if (!map.getLayer(`bm-${id}`)) continue
+    map.getSource(`bm-${id}`)?.setTiles([providerTiles(id)])
+    map.setLayoutProperty(`bm-${id}`, 'visibility', show.includes(id) ? 'visible' : 'none')
+    map.setPaintProperty(`bm-${id}`, 'raster-opacity', providerOpacity(id))
+  }
+}
+watch(basemap, applyBasemap)
 // Station names are drawn OVER coloured ribbons in both themes, so the
 // halo does the separating work and has to invert with the basemap; the
 // text just needs enough contrast against its own halo.
@@ -104,8 +123,7 @@ function syncView() {
 // theme-dependent fill would need every cached image evicted.
 watch(isDark, () => {
   if (!map) return
-  map.getSource('osm')?.setTiles([basemapTiles()])
-  map.setPaintProperty('osm', 'raster-opacity', rasterOpacity())
+  applyBasemap()
   const p = labelPaint()
   if (map.getLayer('cat-text')) {
     map.setPaintProperty('cat-text', 'text-halo-color',
@@ -1792,15 +1810,26 @@ onMounted(async () => {
       // labels are text: the style needs a glyph endpoint (ribbons never
       // did). CARTO's fonts pair with the CARTO raster basemap.
       glyphs: 'https://tiles.basemaps.cartocdn.com/fonts/{fontstack}/{range}.pbf',
-      sources: {
-        osm: {
-          type: 'raster',
-          tiles: [basemapTiles()],
-          tileSize: 256,
-          attribution: '© OpenStreetMap © CARTO',
-        },
-      },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': rasterOpacity() } }],
+      sources: Object.fromEntries(
+        PROVIDER_ORDER.map((id) => [
+          `bm-${id}`,
+          {
+            type: 'raster',
+            tiles: [providerTiles(id)],
+            tileSize: 256,
+            attribution: BASEMAP_PROVIDERS[id].attribution,
+          },
+        ]),
+      ),
+      // all three are added, only the chosen ones are visible — the
+      // order here is the draw order, so an overlay lands over its base
+      layers: PROVIDER_ORDER.map((id) => ({
+        id: `bm-${id}`,
+        type: 'raster',
+        source: `bm-${id}`,
+        layout: { visibility: currentBasemap().show.includes(id) ? 'visible' : 'none' },
+        paint: { 'raster-opacity': providerOpacity(id) },
+      })),
     },
   })
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
@@ -1958,6 +1987,15 @@ watch(feed, async () => {
       <div class="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         <Layers class="size-3.5" /> Layers
       </div>
+      <!-- the basemap is what the drawn network is read against, so it
+           sits above the class toggles: blank to judge geometry alone,
+           OpenRailwayMap to check a ribbon against the real alignment -->
+      <Select
+        :model-value="basemap"
+        :options="basemapOptions"
+        class="mb-3 h-8"
+        @update:model-value="(v) => (basemap = v)"
+      />
       <!-- class toggles work everywhere too — tile-mode ribbons gate on
            their scalar mode via layer filters, symbols through
            stationVisible; they park only with nothing on screen -->

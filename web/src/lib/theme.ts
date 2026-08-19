@@ -56,4 +56,68 @@ export const BASEMAP_TILES = {
   dark: 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
   light: 'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
 }
-export const basemapTiles = () => (isDark.value ? BASEMAP_TILES.dark : BASEMAP_TILES.light)
+
+// Providers are the raster stacks a basemap can draw from; a basemap is a
+// choice of which of them are visible, in this fixed bottom-to-top order.
+// Keeping them as three standing sources rather than one whose URL swaps
+// means each keeps its own attribution, and switching is a visibility
+// flip with no tile refetch of the layer you came back to.
+export type ProviderId = 'carto' | 'osm' | 'orm'
+
+export const BASEMAP_PROVIDERS: Record<ProviderId, {
+  light: string
+  dark: string
+  /** false for a transparent overlay: fading it the way a base is faded
+   *  leaves nothing on screen at all. */
+  fade: boolean
+  attribution: string
+}> = {
+  carto: {
+    dark: BASEMAP_TILES.dark,
+    light: BASEMAP_TILES.light,
+    fade: true,
+    attribution: '© OpenStreetMap © CARTO',
+  },
+  osm: {
+    dark: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    light: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    fade: true,
+    attribution: '© OpenStreetMap',
+  },
+  // OpenRailwayMap ships transparent tiles meant to composite over a base,
+  // which is how openrailwaymap.org itself draws them.
+  orm: {
+    dark: 'https://a.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
+    light: 'https://a.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
+    fade: false,
+    attribution: '© OpenStreetMap © OpenRailwayMap',
+  },
+}
+
+/** Bottom to top. Every map adds its raster layers in this order. */
+export const PROVIDER_ORDER: ProviderId[] = ['carto', 'osm', 'orm']
+
+export type Basemap = { id: string; label: string; show: ProviderId[] }
+
+export const BASEMAPS: Basemap[] = [
+  { id: 'carto', label: 'CARTO', show: ['carto'] },
+  { id: 'osm', label: 'OpenStreetMap', show: ['osm'] },
+  { id: 'orm', label: 'OpenRailwayMap', show: ['carto', 'orm'] },
+  { id: 'orm-only', label: 'OpenRailwayMap only', show: ['orm'] },
+  // Blank is not a cosmetic choice: it is the only way to judge drawn
+  // geometry with nothing underneath to read alignment against.
+  { id: 'blank', label: 'Blank', show: [] },
+]
+
+const BKEY = 'portolan.basemap'
+const storedBasemap = localStorage.getItem(BKEY)
+export const basemap = ref<string>(
+  BASEMAPS.some((b) => b.id === storedBasemap) ? (storedBasemap as string) : 'carto',
+)
+watch(basemap, (v) => localStorage.setItem(BKEY, v))
+
+export const currentBasemap = () =>
+  BASEMAPS.find((b) => b.id === basemap.value) ?? BASEMAPS[0]
+
+export const providerTiles = (id: ProviderId) =>
+  isDark.value ? BASEMAP_PROVIDERS[id].dark : BASEMAP_PROVIDERS[id].light
