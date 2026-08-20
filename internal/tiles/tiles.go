@@ -117,6 +117,23 @@ func Build(o Opts) (Stats, error) {
 	if len(lines) == 0 {
 		return Stats{}, fmt.Errorf("tiles: no line features in %s", o.Build)
 	}
+	// EXTENT CAP. The work in a pyramid grows with the feed's SPAN, not
+	// its ink: Amtrak's 53 degrees of longitude is 39,000 tiles wide at
+	// z18, so the top level alone walks millions of empty tiles. Left at
+	// 18 those runs take hours or die under the harness timeout, and a
+	// timed-out run leaves a partial pyramid with no manifest — which
+	// reads downstream as a real tileset. Continental feeds do not need
+	// z18 anyway: the renderer overzooms past the top, and the cap still
+	// leaves ~9 m per pixel there, finer than any drawn corridor.
+	// This used to be a --maxzoom the operator had to remember per feed;
+	// a global rebuild that forgot it re-broke the same five feeds every
+	// time, so the geometry decides now.
+	if z := extentZoom(maxx-minx, maxy-miny, o.MaxZoom); z < o.MaxZoom {
+		fmt.Fprintf(os.Stderr, "tiles: %s spans %.0f tiles at z%d — capping the pyramid at z%d\n",
+			o.Name, math.Max(maxx-minx, maxy-miny)*float64(int(1)<<o.MaxZoom), o.MaxZoom, z)
+		o.MaxZoom = z
+		clampZooms(lines, points, z)
+	}
 
 	for z := 0; z <= o.MaxZoom; z++ {
 		type tk [2]int
@@ -612,6 +629,48 @@ func widenForHydration(zmin, zmax, maxZoom int) (int, int) {
 		zmax++
 	}
 	return zmin, zmax
+}
+
+// maxTilesAcross is the widest a pyramid's top zoom may be, in tiles.
+const maxTilesAcross = 8192
+
+// extentZoom: the highest zoom at or below want whose top level stays
+// under maxTilesAcross on both axes. Never drops below the caterpillar
+// floor — a pyramid that could not reach z12 would carry no bullets at
+// all, and a feed that wide does not exist.
+func extentZoom(dx, dy float64, want int) int {
+	span := math.Max(dx, dy)
+	if span <= 0 {
+		return want
+	}
+	z := want
+	for z > catFloor && span*float64(int(1)<<z) > maxTilesAcross {
+		z--
+	}
+	return z
+}
+
+// clampZooms lowers every feature's zoom range onto a capped pyramid
+// top. Equivalent to having loaded the fan at the capped zoom in the
+// first place: every band range is already clamped upward against the
+// top, so pulling the top down clamps the same way.
+func clampZooms(lines []line, points []point, maxZoom int) {
+	for i := range lines {
+		if lines[i].zmax > maxZoom {
+			lines[i].zmax = maxZoom
+		}
+		if lines[i].zmin > maxZoom {
+			lines[i].zmin = maxZoom
+		}
+	}
+	for i := range points {
+		if points[i].zmax > maxZoom {
+			points[i].zmax = maxZoom
+		}
+		if points[i].zmin > maxZoom {
+			points[i].zmin = maxZoom
+		}
+	}
 }
 
 // bandZooms maps a ribbon's half-open [band_min, band_max) onto tile
