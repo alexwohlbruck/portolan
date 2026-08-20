@@ -109,6 +109,50 @@ for path in sys.argv[1:]:
         canon[(cx, cy)] = pt
         return pt
 
+    # THE RETURN TRIP IS NOT A SECOND RAILWAY. An out-and-back route ships
+    # two shapes over one line, and the canonical snap above cannot weld
+    # them: DP keeps different vertices on the way back, and out on the
+    # prairies — where one chord runs 20 km — the return's vertices land
+    # mid-chord with no canonical vertex inside 45 m. The two copies enter
+    # the graph as near-parallel ISLANDS, MATCH anchors some stops on one
+    # and some on the other, and the walk between them has no path: the
+    # Canadian came out 29% GAP, 1280 km of Toronto-Vancouver drawn as
+    # crow-flies chord.
+    #
+    # So a shape whose whole length already lies under a kept one is
+    # dropped, whichever way round it runs. Occupancy is sampled ALONG the
+    # line rather than at its vertices, because vertex spacing is exactly
+    # what the two copies disagree about. Threshold is deliberately near
+    # 1: shapes that share a trunk and then diverge (Toronto-Montreal vs
+    # Toronto-Ottawa) must both survive.
+    CELL = 150 / 111320
+    occupied = set()
+
+    def walk(line, step):
+        """the line's points at ~step spacing, vertices included"""
+        for a, b in zip(line, line[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            n = max(1, int(math.hypot(dx, dy) / step))
+            for i in range(n):
+                yield (a[0] + dx * i / n, a[1] + dy * i / n)
+        yield line[-1]
+
+    def occupy(line):
+        for x, y in walk(line, CELL / 2):
+            occupied.add((int(x / CELL), int(y / CELL)))
+
+    def covered(line):
+        if not occupied:
+            return False
+        hit = tot = 0
+        for x, y in walk(line, CELL):
+            tot += 1
+            cx, cy = int(x / CELL), int(y / CELL)
+            if any((cx + dx, cy + dy) in occupied
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                hit += 1
+        return tot > 0 and hit / tot >= 0.98
+
     order = sorted(shapes.items(),
                    key=lambda kv: -sum(1 for _ in kv[1]))
     for sid, pts in order:
@@ -127,7 +171,10 @@ for path in sys.argv[1:]:
         key = hash(tuple(line))
         if key in seen:
             continue
+        if covered(line):
+            continue
         seen.add(key)
+        occupy(line)
         feats.append({
             "type": "Feature", "id": f"shape/{sid}",
             "properties": {"railway": "rail", "aerialway": None, "route": None,
