@@ -619,6 +619,26 @@
       ],
       "stops": "build/hartford-line-stops.geojson"
     },
+    "dallas": {
+      "name": "Dallas\u2013Fort Worth",
+      "gtfs": "data/gtfs/dallasarearapidtransit.zip,data/gtfs/fortworthtransportationauthority.zip,data/gtfs/dentoncountytransportationauthority.zip,data/gtfs/mckinney-avenue-transit-authority.zip,data/gtfs/amtrak.zip",
+      "rail": "build/dallas-rail.geojson",
+      "stops": "build/dallas-stops.geojson",
+      "out": "build/dallas.geojson",
+      "bbox": [
+        -97.45,
+        32.58,
+        -96.45,
+        33.3
+      ],
+      "members": [
+        "dallasarearapidtransit",
+        "fortworthtransportationauthority",
+        "dentoncountytransportationauthority",
+        "mckinney-avenue-transit-authority"
+      ],
+      "chart_args": "--set match_gap_cost=150"
+    },
     "washington": {
       "name": "Washington\u2013Baltimore",
       "gtfs": "data/gtfs/dc.zip,data/gtfs/vre.zip,data/gtfs/marc.zip,data/gtfs/dc-streetcar.zip,data/gtfs/amtrak.zip",
