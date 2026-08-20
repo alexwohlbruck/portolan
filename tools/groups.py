@@ -332,6 +332,12 @@ def write(cfg, groups, length):
             "bbox": [round(w - MARGIN, 4), round(s_ - MARGIN, 4),
                      round(e + MARGIN, 4), round(n + MARGIN, 4)],
             "members": g["members"],
+            # the corridor feeds charted into this window. Not members —
+            # they keep their own tileset everywhere else — but their
+            # CURATION has to ride in, or Amtrak arrives with its raw GTFS
+            # route colours while its own build draws it trunked intercity
+            # blue, and one railroad changes colour at the group's edge.
+            "overlays": g["overlays"],
             "derived": True,
         })
         # --allow-unmatched is not laxity, it is the clip. The match gate

@@ -550,6 +550,20 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	}
 	segs = stages.CutSegmentsAtTerminals(segs, in.rail, terms)
 	logf("terminal cuts: %d segments → %d (%.1fs)", nb, len(segs), time.Since(t0).Seconds())
+	if len(o.BBox) == 4 || len(o.Exclude) > 0 {
+		nb = len(segs)
+		var before float64
+		for _, sg := range segs {
+			before += sg.Line.Len()
+		}
+		segs = trimToWindows(segs, frame, o.BBox, o.Exclude)
+		var after float64
+		for _, sg := range segs {
+			after += sg.Line.Len()
+		}
+		logf("window trim: %d segments → %d, %.1f km of overshoot cut",
+			nb, len(segs), (before-after)/1000)
+	}
 	if len(in.bus) > 0 {
 		bsegs := stages.DirectSegments(in.bus)
 		logf("direct: %d paths → %d deduped segments", len(in.bus), len(bsegs))
@@ -1168,6 +1182,74 @@ func excludePatterns(pats []gtfs.Pattern, windows [][]float64) []gtfs.Pattern {
 			np.ShapeID = fmt.Sprintf("%s#exc%d", pat.ShapeID, ri)
 			out = append(out, np)
 		}
+	}
+	return out
+}
+
+// trimToWindows cuts the DRAWN geometry back to the same margin line the
+// shapes were cut at. clipPatterns and excludePatterns are exact inverses
+// on shape vertices, so a group and the feed it borrows from meet cleanly
+// — but neither draws its shapes. Both draw the MATCH walk, and a walk
+// runs to the end of the OSM way it is standing on, which is past the
+// last shape vertex by however long that way happens to be. Both sides
+// overshoot, so both draw the same rails through the seam: at Kimmswick
+// the Texas Eagle came out as two parallel lines, the group's and
+// Amtrak's own, for the width of the margin band.
+//
+// The window is the authority. Inside it the group draws; outside it the
+// feed's own build does. A steady or a bridge is cut at the line — its
+// offset is constant along its length, so a cut leaves both halves
+// truthful. A transition is kept or dropped whole: its offset eases over
+// line-progress and half an ease is not a shorter ease, it is a wrong one.
+func trimToWindows(segs []stages.Segment, frame geo.Frame, bbox []float64, exclude [][]float64) []stages.Segment {
+	const margin = 0.02 // the same ~2 km line clipPatterns cuts at
+	in := func(b []float64, ll geo.LL) bool {
+		return ll.Lon >= b[0]-margin && ll.Lon <= b[2]+margin &&
+			ll.Lat >= b[1]-margin && ll.Lat <= b[3]+margin
+	}
+	keep := func(p geo.Pt) bool {
+		ll := frame.ToLL(p)
+		if len(bbox) == 4 && !in(bbox, ll) {
+			return false
+		}
+		for _, w := range exclude {
+			if in(w, ll) {
+				return false
+			}
+		}
+		return true
+	}
+	out := segs[:0:0]
+	for _, sg := range segs {
+		pts := sg.Line.Pts
+		if len(pts) < 2 {
+			continue
+		}
+		if sg.Kind == "transition" {
+			if keep(pts[len(pts)/2]) {
+				out = append(out, sg)
+			}
+			continue
+		}
+		var run []geo.Pt
+		flush := func() {
+			if len(run) > 1 {
+				ns := sg
+				ns.Line = geo.NewLine(run)
+				if ns.Line.Len() >= 1 {
+					out = append(out, ns)
+				}
+			}
+			run = nil
+		}
+		for _, p := range pts {
+			if keep(p) {
+				run = append(run, p)
+			} else {
+				flush()
+			}
+		}
+		flush()
 	}
 	return out
 }

@@ -638,7 +638,10 @@
         "mckinney-avenue-transit-authority"
       ],
       "chart_args": "--set match_gap_cost=150 --allow-unmatched",
-      "derived": true
+      "derived": true,
+      "overlays": [
+        "amtrak"
+      ]
     },
     "washington": {
       "name": "Washington\u2013Baltimore",
@@ -659,7 +662,10 @@
         "wmata"
       ],
       "chart_args": "--set match_gap_cost=150 --allow-unmatched",
-      "derived": true
+      "derived": true,
+      "overlays": [
+        "amtrak"
+      ]
     },
     "chicago": {
       "name": "Chicago",
@@ -681,7 +687,10 @@
       ],
       "chart_args": "--set match_gap_cost=150 --allow-unmatched",
       "derived": true,
-      "streets": "build/chi-streets.geojson"
+      "streets": "build/chi-streets.geojson",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "thebus": {
       "name": "thebus",
@@ -22548,7 +22557,11 @@
       ],
       "derived": true,
       "chart_args": "--set match_gap_cost=150 --allow-unmatched",
-      "streets": "build/nyc-streets.geojson"
+      "streets": "build/nyc-streets.geojson",
+      "overlays": [
+        "amtrak",
+        "viarail"
+      ]
     },
     "montreal": {
       "name": "Montr\u00e9al",
@@ -22568,7 +22581,11 @@
         "socitdetransportdemontral"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak",
+        "viarail"
+      ]
     },
     "barcelona": {
       "name": "Barcelona",
@@ -22588,7 +22605,8 @@
         "barcelona-tmb"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": []
     },
     "san-diego": {
       "name": "San Diego",
@@ -22607,7 +22625,10 @@
         "northcountytransitdistrict"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "golden-horseshoe": {
       "name": "Golden Horseshoe",
@@ -22626,7 +22647,11 @@
         "upexpress"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak",
+        "viarail"
+      ]
     },
     "tokyo": {
       "name": "Tokyo",
@@ -22645,7 +22670,8 @@
         "tokyo-metro"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": []
     },
     "south-florida": {
       "name": "South Florida",
@@ -22664,7 +22690,10 @@
         "tri-rail"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "st-louis": {
       "name": "St. Louis",
@@ -22682,7 +22711,10 @@
         "metrostlouis"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "vancouver": {
       "name": "Vancouver",
@@ -22700,7 +22732,11 @@
         "nstranslinkca"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak",
+        "viarail"
+      ]
     },
     "puget-sound": {
       "name": "Puget Sound",
@@ -22718,7 +22754,10 @@
         "soundtransit"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "wasatch-front": {
       "name": "Wasatch Front",
@@ -22736,7 +22775,10 @@
         "uta"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "cleveland": {
       "name": "Cleveland",
@@ -22754,7 +22796,10 @@
         "rta"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "portland": {
       "name": "Portland",
@@ -22772,7 +22817,10 @@
         "trimet"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "atlanta-region": {
       "name": "Atlanta",
@@ -22791,7 +22839,10 @@
       ],
       "derived": true,
       "chart_args": "--set match_gap_cost=150 --allow-unmatched",
-      "streets": "build/atlanta-streets.geojson"
+      "streets": "build/atlanta-streets.geojson",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "denver": {
       "name": "Denver",
@@ -22809,7 +22860,10 @@
         "rtd"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "central-florida": {
       "name": "Central Florida",
@@ -22827,7 +22881,10 @@
         "floridadepartmentoftransportation"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "greater-boston": {
       "name": "Greater Boston",
@@ -22845,7 +22902,10 @@
         "boston"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "rio-grande": {
       "name": "Rio Grande",
@@ -22863,7 +22923,10 @@
         "riometroregionaltransitdistrict"
       ],
       "derived": true,
-      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "overlays": [
+        "amtrak"
+      ]
     },
     "charlotte-region": {
       "name": "Charlotte",
@@ -22882,7 +22945,10 @@
       ],
       "derived": true,
       "chart_args": "--set match_gap_cost=150 --allow-unmatched",
-      "streets": "build/charlotte-streets.geojson"
+      "streets": "build/charlotte-streets.geojson",
+      "overlays": [
+        "amtrak"
+      ]
     }
   }
 }

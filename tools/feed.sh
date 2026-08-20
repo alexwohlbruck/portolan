@@ -205,8 +205,12 @@ build() { # $1 = feed key
   # and style/<city>.json itself, so both paths cannot disagree.
   # A GROUP entry (members: [...]) layers each member's document under
   # its own, so member curation rides into the group build.
+  # A GROUP layers its members' documents AND its overlays' under its own:
+  # a corridor feed charted into the window must arrive with the same
+  # trunk and colours its own build gives it, or the railroad changes
+  # colour at the seam (Amtrak went light blue in St Louis and Buffalo).
   local members stylefeed
-  members=$(jq -r --arg f "$feed" '.feeds[$f].members // [] | join(",")' "$CFG")
+  members=$(jq -r --arg f "$feed" '(((.feeds[$f].members // []) + (.feeds[$f].overlays // [])) | join(","))' "$CFG")
   stylefeed="$feed"
   [ -n "$members" ] && stylefeed="$members,$feed"
   set -- "$@" --style-dir style --feed "$stylefeed"
