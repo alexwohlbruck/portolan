@@ -619,6 +619,26 @@
       ],
       "stops": "build/hartford-line-stops.geojson"
     },
+    "washington": {
+      "name": "Washington\u2013Baltimore",
+      "gtfs": "data/gtfs/dc.zip,data/gtfs/vre.zip,data/gtfs/marc.zip,data/gtfs/dc-streetcar.zip,data/gtfs/amtrak.zip",
+      "rail": "build/washington-rail.geojson",
+      "stops": "build/washington-stops.geojson",
+      "out": "build/washington.geojson",
+      "bbox": [
+        -78.05,
+        38.15,
+        -76.0,
+        39.63
+      ],
+      "members": [
+        "wmata",
+        "vre",
+        "marc",
+        "dc-streetcar"
+      ],
+      "chart_args": "--set match_gap_cost=150"
+    },
     "chicago": {
       "name": "Chicago",
       "gtfs": "data/gtfs/chicago-cta.zip,data/gtfs/metra.zip,data/gtfs/amtrak.zip",
