@@ -33,7 +33,8 @@ const newColor = ref('D82233')
 const newLabel = ref('')
 const addLabel = ref('')
 const addHex = ref('')
-const panelOpen = ref(true)
+// open where it can sit beside the canvas, closed where it would cover it
+const panelOpen = ref(window.matchMedia('(min-width: 1280px)').matches)
 
 let map: any = null
 let ro: ResizeObserver | null = null
@@ -756,7 +757,7 @@ watch(selId, () => nextTick(render))
     <div class="relative min-w-0 flex-1">
       <div ref="el" class="h-full w-full" :class="tool === 'draw' ? 'cursor-crosshair' : ''" />
 
-      <div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-4">
+      <div class="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-start justify-between gap-2 p-2 sm:gap-3 sm:p-4">
         <div class="pointer-events-auto flex items-center gap-2 rounded-xl border border-border bg-card/90 px-3 py-2 shadow-sm backdrop-blur">
           <span class="text-sm font-medium">{{ currentFeed?.name || 'No feed' }}</span>
           <Badge v-if="loading" variant="info"><Spinner class="size-3" /> loading</Badge>
@@ -788,7 +789,7 @@ watch(selId, () => nextTick(render))
 
     <aside
       v-show="panelOpen"
-      class="absolute right-0 top-0 z-20 flex h-full w-80 flex-col overflow-y-auto border-l border-border bg-card shadow-xl xl:static xl:z-auto xl:bg-card/40 xl:shadow-none"
+      class="absolute right-0 top-0 z-20 flex h-full w-80 max-w-[85vw] flex-col overflow-y-auto border-l border-border bg-card shadow-xl xl:static xl:z-auto xl:bg-card/40 xl:shadow-none"
     >
       <div class="border-b border-border p-4">
         <div class="mb-2 flex items-center justify-between">

@@ -127,7 +127,7 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
     </template>
   </PageHeader>
 
-  <div class="p-8">
+  <div class="p-4 sm:p-8">
     <div v-if="feedsLoading && !feeds.length" class="flex justify-center py-16"><Spinner class="size-6" /></div>
 
     <div v-else-if="!feeds.length" class="rounded-xl border border-dashed border-border py-16 text-center">
@@ -198,7 +198,7 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
     @update:open="(v) => !v && (editing = null)"
   >
     <div v-if="editing" class="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1">
-      <div class="grid grid-cols-2 gap-4">
+      <div class="grid gap-4 sm:grid-cols-2">
         <div class="flex flex-col gap-1.5">
           <Label for="cid">Feed id</Label>
           <Input id="cid" v-model="editing.id" :disabled="!isNew" placeholder="bvg" @blur="autofill" />
@@ -218,7 +218,7 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
         </p>
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
+      <div class="grid gap-4 sm:grid-cols-2">
         <div class="flex flex-col gap-1.5">
           <Label for="crail">Rail extract</Label>
           <Input id="crail" v-model="editing.rail" placeholder="build/bvg-rail.geojson" />
@@ -239,7 +239,7 @@ const mb = (n?: number) => (n ? `${(n / 1e6).toFixed(1)} MB` : '')
         </p>
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
+      <div class="grid gap-4 sm:grid-cols-2">
         <div class="flex flex-col gap-1.5">
           <Label for="cout">Build output</Label>
           <Input id="cout" v-model="editing.out" placeholder="build/bvg.geojson" />

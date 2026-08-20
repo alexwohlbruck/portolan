@@ -136,7 +136,7 @@ async function buildWith() {
   </PageHeader>
 
   <GlobalNotice v-if="isGlobal" title="Tuning" />
-  <div v-else class="space-y-6 p-8">
+  <div v-else class="space-y-6 p-4 sm:p-8">
     <div class="flex gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
       <Info class="mt-0.5 size-3.5 shrink-0" />
       <span>

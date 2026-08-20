@@ -10,7 +10,7 @@ defineProps<{ title: string }>()
 </script>
 
 <template>
-  <div class="p-8">
+  <div class="p-4 sm:p-8">
     <div class="mx-auto max-w-2xl rounded-xl border border-dashed border-border py-16 text-center">
       <div class="mx-auto flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
         <Globe class="size-6" />

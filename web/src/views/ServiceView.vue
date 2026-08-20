@@ -91,7 +91,7 @@ watch(
   />
 
   <GlobalNotice v-if="isGlobal" title="Service" />
-  <div v-else class="space-y-6 p-8">
+  <div v-else class="space-y-6 p-4 sm:p-8">
     <div v-if="loading" class="flex justify-center py-16"><Spinner class="size-6" /></div>
 
     <Card v-else-if="error">

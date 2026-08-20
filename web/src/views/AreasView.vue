@@ -86,7 +86,7 @@ async function remove(a: Area) {
     </template>
   </PageHeader>
 
-  <div class="space-y-4 p-8">
+  <div class="space-y-4 p-4 sm:p-8">
     <Input v-model="query" placeholder="Search areas" class="max-w-sm" />
 
     <div v-if="loading" class="flex justify-center py-16"><Spinner class="size-6" /></div>

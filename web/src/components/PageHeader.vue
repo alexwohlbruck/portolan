@@ -3,7 +3,7 @@ defineProps<{ title: string; subtitle?: string }>()
 </script>
 
 <template>
-  <header class="sticky top-0 z-20 border-b border-border bg-background/80 px-8 py-5 backdrop-blur">
+  <header class="sticky top-0 z-20 border-b border-border bg-background/80 px-4 py-4 backdrop-blur sm:px-8 sm:py-5">
     <div class="flex items-center justify-between gap-4">
       <div class="min-w-0">
         <h1 class="text-xl font-semibold tracking-tight">{{ title }}</h1>
