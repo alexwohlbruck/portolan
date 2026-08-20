@@ -1431,6 +1431,7 @@ function syncTileLayers() {
   // undo itself) must come off, or a stretched band's transition twin
   // would double-draw against another band's canonical range.
   heldAs = ''
+  clearHeldTransitions() // these sources belong to the outgoing regions
   for (const b of BANDS) {
     for (const id of bandLayers.get(b.key) ?? []) {
       if (map.getLayer(id)) {
@@ -1584,6 +1585,58 @@ function applyTileFilters() {
   }
 }
 
+type HeldFeat = { feat: any; box: [number, number, number, number]; fp: string }
+
+/** What has been hydrated, per band, and what each band's source was
+ *  last SET to. Both exist for the same reason: querySourceFeatures only
+ *  sees the tiles that are renderable at this instant, and a zoom churns
+ *  that set — the old level's tiles go as the new level's arrive, and in
+ *  global every region source fires its own load event, so one zoom used
+ *  to run the whole cross-source sweep dozens of times over. Rebuilding
+ *  the twins' data from scratch on each sweep blinked a junction's ramps
+ *  out whenever one landed mid-churn; the steady ribbons beside them
+ *  never blinked, because they come straight off the vector source with
+ *  no round trip through a worker to lose.
+ *
+ *  The whole-document viewer never drops a feature it has loaded, and
+ *  these are the tiled equivalent. A sweep that comes up short can only
+ *  fail to REFRESH a transition now, never erase it — what is hydrated
+ *  is held until it scrolls a viewport away — and a sweep that finds
+ *  exactly what is already drawn does not touch the source at all. */
+const heldTransitions = new Map<number, Map<string, HeldFeat>>(
+  BANDS.map((b) => [b.key, new Map<string, HeldFeat>()]),
+)
+const hydratedSig = new Map<number, string>()
+
+function clearHeldTransitions() {
+  for (const m of heldTransitions.values()) m.clear()
+  hydratedSig.clear()
+}
+
+/** lon/lat bounds of a hydrated line, and a cheap fingerprint standing in
+ *  for its geometry: vertex count plus the two endpoints. Two copies of
+ *  one transition off different zoom levels differ in both. */
+function heldShape(g: any): { box: [number, number, number, number]; fp: string } {
+  const parts: any[] = g?.type === 'MultiLineString' ? g.coordinates : [g?.coordinates ?? []]
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity
+  let count = 0
+  let first: any = null
+  let last: any = null
+  for (const part of parts) {
+    for (const c of part) {
+      count++
+      if (!first) first = c
+      last = c
+      if (c[0] < w) w = c[0]
+      if (c[0] > e) e = c[0]
+      if (c[1] < s) s = c[1]
+      if (c[1] > n) n = c[1]
+    }
+  }
+  const at = (c: any) => (c ? `${c[0].toFixed(6)},${c[1].toFixed(6)}` : '')
+  return { box: [w, s, e, n], fp: `${count}:${at(first)}:${at(last)}` }
+}
+
 /** Junction transitions cannot render straight off the vector source
  *  either: their line-offset eases over line-progress, and MapLibre only
  *  computes line-progress for GeoJSON sources with lineMetrics — never
@@ -1600,8 +1653,7 @@ function applyTileFilters() {
  *  the JSON decode cats do. */
 function hydrateTransitions() {
   if (!map || !tileMode.value) return
-  const seen = new Set<string>()
-  const byBand = new Map<number, any[]>(BANDS.map((b) => [b.key, []]))
+  const fresh = new Set<string>()
   for (const sid of tileSourceIds) {
     if (!map.getSource(sid)) continue
     const modes = styleForFeed(sid.slice('tiles-'.length))?.modes
@@ -1612,8 +1664,10 @@ function hydrateTransitions() {
       // pyramid, so the source id keys regions apart; band_min + routes
       // guard against seg reuse inside a feed
       const key = `${sid}|${p.seg}|${p.band_min}|${p.routes}`
-      if (seen.has(key)) continue
-      seen.add(key)
+      if (fresh.has(key)) continue
+      fresh.add(key)
+      const held = heldTransitions.get(+p.band_min)
+      if (!held) continue
       const props: any = { ...p }
       // the twins are shared across feeds, so the owning feed's resolved
       // class width/opacity rides ON the feature — the twin paint
@@ -1623,14 +1677,53 @@ function hydrateTransitions() {
         props._w = m.width
         props._o = m.opacity
       }
-      byBand.get(+p.band_min)?.push({ type: 'Feature', properties: props, geometry: f.geometry })
+      // last write wins: the same transition rides every tile it touches
+      // AND the zoom either side of its band, so a later sweep is the one
+      // that carries the current level's vertex density
+      const { box, fp } = heldShape(f.geometry)
+      held.set(key, { feat: { type: 'Feature', properties: props, geometry: f.geometry }, box, fp })
     }
   }
-  // set every band, matches or none: a band whose transitions scrolled
-  // out of the loaded tiles must drop them, exactly like stations
-  for (const [band, feats] of byBand) {
-    map.getSource(`build-${band}`)?.setData({ type: 'FeatureCollection', features: feats })
+  // Eviction is by POSITION, not by absence from this sweep. One viewport
+  // of slack in every direction, so a transition just off screen survives
+  // the pan that is about to bring it back.
+  const b = map.getBounds()
+  const w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth()
+  const dx = e - w, dy = n - s
+  // a wrapped or world-wide viewport has no meaningful outside; keep all
+  const bounded = dx > 0 && dx < 120 && dy > 0
+  for (const [band, held] of heldTransitions) {
+    if (bounded) {
+      for (const [key, h] of held) {
+        if (fresh.has(key)) continue
+        if (h.box[2] < w - dx || h.box[0] > e + dx || h.box[3] < s - dy || h.box[1] > n + dy) {
+          held.delete(key)
+        }
+      }
+    }
+    const keys = [...held.keys()].sort()
+    const sig = keys.map((k) => `${k}@${held.get(k)!.fp}`).join(';')
+    if (hydratedSig.get(band) === sig) continue
+    hydratedSig.set(band, sig)
+    map.getSource(`build-${band}`)?.setData({
+      type: 'FeatureCollection',
+      features: keys.map((k) => held.get(k)!.feat),
+    })
   }
+}
+
+/** One sweep per frame, never one per event. Every region source fires
+ *  its own load event and every one of them used to run the full
+ *  cross-source sweep — in global that is dozens of sweeps for a single
+ *  zoom, each one re-tiling four GeoJSON sources in the worker. */
+let hydrateQueued = 0
+function requestHydrate() {
+  if (!map || !tileMode.value || hydrateQueued) return
+  hydrateQueued = requestAnimationFrame(() => {
+    hydrateQueued = 0
+    hydrateSymbols()
+    hydrateTransitions()
+  })
 }
 
 /** ONE hydration for every tiled symbol kind. Symbols cannot render
@@ -1874,12 +1967,10 @@ onMounted(async () => {
     // tile mode: symbols and junction transitions re-materialize as
     // tiles come and go (the handlers no-op outside it, and both
     // hydrators dedupe)
-    map.on('moveend', hydrateSymbols)
-    map.on('moveend', hydrateTransitions)
+    map.on('moveend', requestHydrate)
     map.on('sourcedata', (e: any) => {
       if (typeof e.sourceId === 'string' && e.sourceId.startsWith('tiles-') && e.isSourceLoaded) {
-        hydrateSymbols()
-        hydrateTransitions()
+        requestHydrate()
       }
     })
     syncView()
