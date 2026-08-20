@@ -156,10 +156,9 @@ func Build(o Opts) (Stats, error) {
 			if z < ln.zmin || z > ln.zmax {
 				continue
 			}
-			x0, x1 := tileRange(ln.minx-pad, ln.maxx+pad, z)
-			y0, y1 := tileRange(ln.miny-pad, ln.maxy+pad, z)
-			for tx := x0; tx <= x1; tx++ {
-				for ty := y0; ty <= y1; ty++ {
+			for _, t := range spanTiles(ln, pad, z) {
+				{
+					tx, ty := t[0], t[1]
 					local := toLocal(ln.pts, tx, ty, scale, ext)
 					var parts [][][2]float64
 					if ln.kind == "steady" {
@@ -263,6 +262,55 @@ func Build(o Opts) (Stats, error) {
 	}
 
 	return st, writeTileJSON(o, minx, miny, maxx, maxy)
+}
+
+// spanTiles lists the tiles a line can reach at this zoom. Walking the
+// line's whole bounding RECTANGLE costs O(bbox area), which is fine for a
+// city and ruinous for a sparse continental network: Amtrak's box is the
+// United States, so at z18 it is 1.7 billion tiles to visit for a route
+// that touches a thin diagonal of them. Union the per-SEGMENT boxes
+// instead — every segment lies inside its own box, so this is still a
+// superset of what the line touches and the clip below decides the rest.
+// Same tiles out, minus the empty ocean between them.
+func spanTiles(ln *line, pad float64, z int) [][2]int {
+	if len(ln.pts) == 0 {
+		return nil
+	}
+	seen := make(map[[2]int]bool)
+	out := make([][2]int, 0, 16)
+	add := func(ax, bx, ay, by int) {
+		for tx := ax; tx <= bx; tx++ {
+			for ty := ay; ty <= by; ty++ {
+				k := [2]int{tx, ty}
+				if !seen[k] {
+					seen[k] = true
+					out = append(out, k)
+				}
+			}
+		}
+	}
+	if len(ln.pts) == 1 {
+		p := ln.pts[0]
+		x0, x1 := tileRange(p[0]-pad, p[0]+pad, z)
+		y0, y1 := tileRange(p[1]-pad, p[1]+pad, z)
+		add(x0, x1, y0, y1)
+		return out
+	}
+	for i := 1; i < len(ln.pts); i++ {
+		a, b := ln.pts[i-1], ln.pts[i]
+		lox, hix := a[0], b[0]
+		if lox > hix {
+			lox, hix = hix, lox
+		}
+		loy, hiy := a[1], b[1]
+		if loy > hiy {
+			loy, hiy = hiy, loy
+		}
+		x0, x1 := tileRange(lox-pad, hix+pad, z)
+		y0, y1 := tileRange(loy-pad, hiy+pad, z)
+		add(x0, x1, y0, y1)
+	}
+	return out
 }
 
 func tileRange(lo, hi float64, z int) (int, int) {
