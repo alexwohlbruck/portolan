@@ -120,6 +120,19 @@ func edgeFamily(e *Edge) int {
 	return 0
 }
 
+
+func dbgNet(tag string, net *Network) {
+	if os.Getenv("PORTOLAN_DBGNET") == "" {
+		return
+	}
+	var L float64
+	for _, e := range net.Edges {
+		if len(e.Pts) > 1 {
+			L += geo.NewLine(e.Pts).Len()
+		}
+	}
+	fmt.Printf("DBGNET %-14s %3d edges %8.0f m\n", tag, len(net.Edges), L)
+}
 func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	setLevelIndex(tracks)
 	g := buildTrackGraphCached(tracks)
@@ -511,7 +524,9 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		twinTram[i] = tramFamily(st.Ways)
 	}
 	rp := bundle.DefaultParams()
+	dbgNet("pre-refine", net)
 	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
+	dbgNet("refine0", net)
 
 	// ---- law 3: edges sustained-parallel within mate range are ONE visual
 	// corridor — cut at the membership bounds and merge (lollipop sticks,
@@ -525,6 +540,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		if bundleParallelEdges(net) == 0 {
 			break
 		}
+		dbgNet(fmt.Sprintf("bundle%d", i), net)
 		refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	}
 
@@ -534,9 +550,12 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// passes of ONE drawn line: fold it in half onto the midpoint of its
 	// halves, with the tip as a new terminal node. Apple draws exactly
 	// the folded line (the 4/5 around the Battery is a single curve).
+	dbgNet("pre-fold", net)
 	foldRings(net)
+	dbgNet("post-fold", net)
 	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	dropShadowStubs(net)
+	dbgNet("post-shadow", net)
 	// a gap edge whose ENDPOINTS nearly coincide is not missing track —
 	// it is a deviating shape's bulge pinched between two matched anchors
 	// (the O'Hare approach, where the GTFS shape leaves the subway for
@@ -1202,6 +1221,16 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 			continue // seaway ways are already the drawn centerline
 		}
 		if l := geo.NewLine(e.Pts).Len(); l < p.MinRefine || l > p.MaxRefine {
+			continue
+		}
+		// a RING never refines. Refinement votes per cross-section, and a
+		// closed circulator (the Detroit People Mover, the St. Charles
+		// terminal loop) IS its own strand coming back: wherever the loop
+		// passes near itself the vote can land on the return pass, and
+		// each round drags the line toward it — two rounds ate 3.5 of the
+		// DPM's 4.6 km and left a pretzel. The matched walk already lies
+		// on the steel; a ring keeps it.
+		if e.From == e.To || e.Pts[0].Dist(e.Pts[len(e.Pts)-1]) < 60 {
 			continue
 		}
 		wg.Add(1)
