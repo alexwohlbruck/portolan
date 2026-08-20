@@ -621,62 +621,67 @@
     },
     "dallas": {
       "name": "Dallas\u2013Fort Worth",
-      "gtfs": "data/gtfs/dallasarearapidtransit.zip,data/gtfs/fortworthtransportationauthority.zip,data/gtfs/dentoncountytransportationauthority.zip,data/gtfs/mckinney-avenue-transit-authority.zip,data/gtfs/amtrak.zip",
+      "gtfs": "data/gtfs/dallasarearapidtransit.zip,data/gtfs/dentoncountytransportationauthority.zip,data/gtfs/fortworthtransportationauthority.zip,data/gtfs/mckinney-avenue-transit-authority.zip,data/gtfs/amtrak.zip",
       "rail": "build/dallas-rail.geojson",
       "stops": "build/dallas-stops.geojson",
       "out": "build/dallas.geojson",
       "bbox": [
-        -97.45,
-        32.58,
-        -96.45,
-        33.3
+        -97.559,
+        32.479,
+        -96.483,
+        33.333
       ],
       "members": [
         "dallasarearapidtransit",
-        "fortworthtransportationauthority",
         "dentoncountytransportationauthority",
+        "fortworthtransportationauthority",
         "mckinney-avenue-transit-authority"
       ],
-      "chart_args": "--set match_gap_cost=150"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "derived": true
     },
     "washington": {
       "name": "Washington\u2013Baltimore",
-      "gtfs": "data/gtfs/dc.zip,data/gtfs/vre.zip,data/gtfs/marc.zip,data/gtfs/dc-streetcar.zip,data/gtfs/amtrak.zip",
+      "gtfs": "data/gtfs/baltimore-light-rail.zip,data/gtfs/marc.zip,data/gtfs/vre.zip,data/gtfs/dc.zip,data/gtfs/amtrak.zip",
       "rail": "build/washington-rail.geojson",
       "stops": "build/washington-stops.geojson",
       "out": "build/washington.geojson",
       "bbox": [
-        -78.05,
-        38.15,
-        -76.0,
-        39.63
+        -78.041,
+        38.141,
+        -75.994,
+        39.638
       ],
       "members": [
-        "wmata",
-        "vre",
+        "baltimore-light-rail",
         "marc",
-        "dc-streetcar"
+        "vre",
+        "wmata"
       ],
-      "chart_args": "--set match_gap_cost=150"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "derived": true
     },
     "chicago": {
       "name": "Chicago",
-      "gtfs": "data/gtfs/chicago-cta.zip,data/gtfs/metra.zip,data/gtfs/amtrak.zip",
+      "gtfs": "data/gtfs/chicago-cta.zip,data/gtfs/metra.zip,data/gtfs/northern-indiana-commuter-transportation.zip,data/gtfs/amtrak.zip",
       "rail": "build/chicago-rail.geojson",
       "stops": "build/chi-stops.geojson",
       "out": "build/chicago.geojson",
       "network": "sketches/network-chicago.json",
       "bbox": [
-        -87.95,
-        41.7,
-        -87.52,
-        42.08
+        -88.6476,
+        41.3882,
+        -86.231,
+        42.6158
       ],
       "members": [
         "chicago-cta",
-        "metra"
+        "metra",
+        "northern-indiana-commuter-transportation"
       ],
-      "chart_args": "--set match_gap_cost=150"
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "derived": true,
+      "streets": "build/chi-streets.geojson"
     },
     "thebus": {
       "name": "thebus",
@@ -22517,6 +22522,367 @@
         35.586
       ],
       "onestop": "f-zuni~pueblo"
+    },
+    "northeast-corridor": {
+      "name": "Northeast Corridor",
+      "gtfs": "data/gtfs/hartford-line.zip,data/gtfs/mta-lirr.zip,data/gtfs/mta-metro-north.zip,data/gtfs/mta-subway.zip,data/gtfs/nj-transit-rail.zip,data/gtfs/patco.zip,data/gtfs/path.zip,data/gtfs/rioc-nyc.zip,data/gtfs/septa-rail.zip,data/gtfs/amtrak.zip,data/gtfs/viarail.zip",
+      "rail": "build/northeast-corridor-rail.geojson",
+      "stops": "build/northeast-corridor-stops.geojson",
+      "out": "build/northeast-corridor.geojson",
+      "bbox": [
+        -75.844,
+        39.283,
+        -71.9241,
+        42.186
+      ],
+      "members": [
+        "hartford-line",
+        "mta-lirr",
+        "mta-metro-north",
+        "mta-subway",
+        "nj-transit-rail",
+        "patco",
+        "path",
+        "rioc-nyc",
+        "septa-rail"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "streets": "build/nyc-streets.geojson"
+    },
+    "montreal": {
+      "name": "Montr\u00e9al",
+      "gtfs": "data/gtfs/exo-reseaudetransportmetropolitain.zip,data/gtfs/reseau-express-metropolitain.zip,data/gtfs/socitdetransportdemontral.zip,data/gtfs/amtrak.zip,data/gtfs/viarail.zip",
+      "rail": "build/montreal-rail.geojson",
+      "stops": "build/montreal-stops.geojson",
+      "out": "build/montreal.geojson",
+      "bbox": [
+        -74.221,
+        45.281,
+        -73.098,
+        45.853
+      ],
+      "members": [
+        "exo-reseaudetransportmetropolitain",
+        "reseau-express-metropolitain",
+        "socitdetransportdemontral"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "barcelona": {
+      "name": "Barcelona",
+      "gtfs": "data/gtfs/barcelona-tbs.zip,data/gtfs/barcelona-tbx.zip,data/gtfs/barcelona.zip",
+      "rail": "build/barcelona-rail.geojson",
+      "stops": "build/barcelona-stops.geojson",
+      "out": "build/barcelona.geojson",
+      "bbox": [
+        1.93,
+        41.2576,
+        2.35,
+        41.54
+      ],
+      "members": [
+        "barcelona-tbs",
+        "barcelona-tbx",
+        "barcelona-tmb"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "san-diego": {
+      "name": "San Diego",
+      "gtfs": "data/gtfs/mts.zip,data/gtfs/northcountytransitdistrict.zip,data/gtfs/amtrak.zip",
+      "rail": "build/san-diego-rail.geojson",
+      "stops": "build/san-diego-stops.geojson",
+      "out": "build/san-diego.geojson",
+      "bbox": [
+        -117.594,
+        32.463,
+        -116.104,
+        33.474
+      ],
+      "members": [
+        "mts",
+        "northcountytransitdistrict"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "golden-horseshoe": {
+      "name": "Golden Horseshoe",
+      "gtfs": "data/gtfs/gotransit.zip,data/gtfs/upexpress.zip,data/gtfs/amtrak.zip,data/gtfs/viarail.zip",
+      "rail": "build/golden-horseshoe-rail.geojson",
+      "stops": "build/golden-horseshoe-stops.geojson",
+      "out": "build/golden-horseshoe.geojson",
+      "bbox": [
+        -81.056,
+        42.897,
+        -78.207,
+        44.454
+      ],
+      "members": [
+        "gotransit",
+        "upexpress"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "tokyo": {
+      "name": "Tokyo",
+      "gtfs": "data/gtfs/tokyo-toei.zip,data/gtfs/tokyo.zip",
+      "rail": "build/tokyo-rail.geojson",
+      "stops": "build/tokyo-stops.geojson",
+      "out": "build/tokyo.geojson",
+      "bbox": [
+        139.5829,
+        35.5571,
+        139.9888,
+        35.822
+      ],
+      "members": [
+        "toei",
+        "tokyo-metro"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "south-florida": {
+      "name": "South Florida",
+      "gtfs": "data/gtfs/brightline-trails.zip,data/gtfs/tri-rail.zip,data/gtfs/amtrak.zip",
+      "rail": "build/south-florida-rail.geojson",
+      "stops": "build/south-florida-stops.geojson",
+      "out": "build/south-florida.geojson",
+      "bbox": [
+        -81.388,
+        25.7,
+        -79.975,
+        28.492
+      ],
+      "members": [
+        "brightline-trails",
+        "tri-rail"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "st-louis": {
+      "name": "St. Louis",
+      "gtfs": "data/gtfs/metrostlouis.zip,data/gtfs/amtrak.zip",
+      "rail": "build/st-louis-rail.geojson",
+      "stops": "build/st-louis-stops.geojson",
+      "out": "build/st-louis.geojson",
+      "bbox": [
+        -90.742,
+        38.39,
+        -89.795,
+        38.889
+      ],
+      "members": [
+        "metrostlouis"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "vancouver": {
+      "name": "Vancouver",
+      "gtfs": "data/gtfs/nstranslinkca.zip,data/gtfs/amtrak.zip,data/gtfs/viarail.zip",
+      "rail": "build/vancouver-rail.geojson",
+      "stops": "build/vancouver-stops.geojson",
+      "out": "build/vancouver.geojson",
+      "bbox": [
+        -123.503,
+        48.924,
+        -122.224,
+        49.554
+      ],
+      "members": [
+        "nstranslinkca"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "puget-sound": {
+      "name": "Puget Sound",
+      "gtfs": "data/gtfs/soundtransit.zip,data/gtfs/amtrak.zip",
+      "rail": "build/puget-sound-rail.geojson",
+      "stops": "build/puget-sound-stops.geojson",
+      "out": "build/puget-sound.geojson",
+      "bbox": [
+        -122.579,
+        47.073,
+        -122.027,
+        48.055
+      ],
+      "members": [
+        "soundtransit"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "wasatch-front": {
+      "name": "Wasatch Front",
+      "gtfs": "data/gtfs/uta.zip,data/gtfs/amtrak.zip",
+      "rail": "build/wasatch-front-rail.geojson",
+      "stops": "build/wasatch-front-stops.geojson",
+      "out": "build/wasatch-front.geojson",
+      "bbox": [
+        -112.384,
+        39.896,
+        -111.523,
+        41.608
+      ],
+      "members": [
+        "uta"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "cleveland": {
+      "name": "Cleveland",
+      "gtfs": "data/gtfs/rta.zip,data/gtfs/amtrak.zip",
+      "rail": "build/cleveland-rail.geojson",
+      "stops": "build/cleveland-stops.geojson",
+      "out": "build/cleveland.geojson",
+      "bbox": [
+        -82.047,
+        41.203,
+        -81.358,
+        41.717
+      ],
+      "members": [
+        "rta"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "portland": {
+      "name": "Portland",
+      "gtfs": "data/gtfs/trimet.zip,data/gtfs/amtrak.zip",
+      "rail": "build/portland-rail.geojson",
+      "stops": "build/portland-stops.geojson",
+      "out": "build/portland.geojson",
+      "bbox": [
+        -123.195,
+        45.205,
+        -122.253,
+        45.718
+      ],
+      "members": [
+        "trimet"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "atlanta-region": {
+      "name": "Atlanta",
+      "gtfs": "data/gtfs/atlanta.zip,data/gtfs/amtrak.zip",
+      "rail": "build/atlanta-region-rail.geojson",
+      "stops": "build/atlanta-region-stops.geojson",
+      "out": "build/atlanta-region.geojson",
+      "bbox": [
+        -84.58,
+        33.58,
+        -84.17,
+        33.99
+      ],
+      "members": [
+        "atlanta"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "streets": "build/atlanta-streets.geojson"
+    },
+    "denver": {
+      "name": "Denver",
+      "gtfs": "data/gtfs/rtd.zip,data/gtfs/amtrak.zip",
+      "rail": "build/denver-rail.geojson",
+      "stops": "build/denver-stops.geojson",
+      "out": "build/denver.geojson",
+      "bbox": [
+        -105.605,
+        39.377,
+        -104.59,
+        40.287
+      ],
+      "members": [
+        "rtd"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "central-florida": {
+      "name": "Central Florida",
+      "gtfs": "data/gtfs/floridadepartmentoftransportation.zip,data/gtfs/amtrak.zip",
+      "rail": "build/central-florida-rail.geojson",
+      "stops": "build/central-florida-stops.geojson",
+      "out": "build/central-florida.geojson",
+      "bbox": [
+        -81.564,
+        28.179,
+        -81.218,
+        29.098
+      ],
+      "members": [
+        "floridadepartmentoftransportation"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "greater-boston": {
+      "name": "Greater Boston",
+      "gtfs": "data/gtfs/boston.zip,data/gtfs/amtrak.zip",
+      "rail": "build/greater-boston-rail.geojson",
+      "stops": "build/greater-boston-stops.geojson",
+      "out": "build/greater-boston.geojson",
+      "bbox": [
+        -71.8785,
+        41.5503,
+        -70.2269,
+        42.8282
+      ],
+      "members": [
+        "boston"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "rio-grande": {
+      "name": "Rio Grande",
+      "gtfs": "data/gtfs/riometroregionaltransitdistrict.zip,data/gtfs/amtrak.zip",
+      "rail": "build/rio-grande-rail.geojson",
+      "stops": "build/rio-grande-stops.geojson",
+      "out": "build/rio-grande.geojson",
+      "bbox": [
+        -107.042,
+        34.583,
+        -105.867,
+        36.11
+      ],
+      "members": [
+        "riometroregionaltransitdistrict"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched"
+    },
+    "charlotte-region": {
+      "name": "Charlotte",
+      "gtfs": "data/gtfs/charlotte.zip,data/gtfs/amtrak.zip",
+      "rail": "build/charlotte-region-rail.geojson",
+      "stops": "build/charlotte-region-stops.geojson",
+      "out": "build/charlotte-region.geojson",
+      "bbox": [
+        -80.97,
+        35.03,
+        -80.65,
+        35.38
+      ],
+      "members": [
+        "charlotte"
+      ],
+      "derived": true,
+      "chart_args": "--set match_gap_cost=150 --allow-unmatched",
+      "streets": "build/charlotte-streets.geojson"
     }
   }
 }
