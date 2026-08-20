@@ -509,6 +509,9 @@ func loadRibbons(path string, maxZoom int) ([]line, error) {
 		}
 		ln := line{props: gf.Properties, kind: str(gf.Properties["kind"])}
 		ln.zmin, ln.zmax = bandZooms(gf.Properties, maxZoom)
+		if ln.kind == "transition" || ln.kind == "bridge" {
+			ln.zmin, ln.zmax = widenForHydration(ln.zmin, ln.zmax, maxZoom)
+		}
 		if seg, ok := gf.Properties["seg"].(float64); ok {
 			ln.id = uint64(seg) + 1 // MVT ids: 0 is "absent"
 		}
@@ -557,7 +560,11 @@ func loadSymbols(path string, maxZoom int) ([]point, error) {
 		case "cat":
 			p.layer = "cat"
 			if b, ok := gf.Properties["band"].(float64); ok {
-				p.zmin, p.zmax = bandZoomsOf(int(b), maxZoom)
+				// bullets are hydrated out of the tiles exactly like
+				// transitions, and blink at a band boundary for exactly
+				// the same reason — widenForHydration explains it
+				bz0, bz1 := bandZoomsOf(int(b), maxZoom)
+				p.zmin, p.zmax = widenForHydration(bz0, bz1, maxZoom)
 				if p.zmin < catFloor {
 					p.zmin = catFloor
 				}
@@ -570,6 +577,41 @@ func loadSymbols(path string, maxZoom int) ([]point, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// widenForHydration extends a band's zoom range by one level on each
+// side, and only the console's hydrated kinds ask for it.
+//
+// A band decides which tile zooms carry a ribbon, and for STEADY
+// segments that is exactly right: the console draws them straight off
+// the vector source, so a band's copy need only exist where that band
+// is on screen. Transitions and gap bridges cannot be drawn that way —
+// their offset eases over line-progress, which MapLibre computes only
+// for GeoJSON sources — so the console copies them OUT of the loaded
+// tiles into a GeoJSON source and draws them from there.
+//
+// That copy can only carry what a loaded tile already holds, and with
+// a strict band range no tile anywhere holds a band-15 transition
+// while the viewport is at z14. Crossing into band 15 therefore left
+// every junction blank until the z15 tiles arrived AND the copy made
+// its round trip through the worker, while the steady ribbons around
+// them — coming straight off the same tiles — did not wait. Junctions
+// flashed out and back in at each band boundary on the way in; the
+// whole-document viewer, which prefetches the neighbouring bands, has
+// never shown it.
+//
+// One zoom of overlap means the next band's junctions are already in
+// hand before the boundary is crossed. Nothing extra is DRAWN: the
+// band filter and the layer's zoom range still admit one band at a
+// time, and a copy sitting in an off-screen band's source is inert.
+func widenForHydration(zmin, zmax, maxZoom int) (int, int) {
+	if zmin > 0 {
+		zmin--
+	}
+	if zmax < maxZoom {
+		zmax++
+	}
+	return zmin, zmax
 }
 
 // bandZooms maps a ribbon's half-open [band_min, band_max) onto tile
