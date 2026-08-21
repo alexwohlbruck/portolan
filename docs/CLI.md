@@ -485,20 +485,28 @@ portolan sync global --config portolan.json [flags]
 | `--export-gtfs` | Corrected GTFS zips; empty skips export (default `build/export`). |
 | `--state` | State manifest (default `<build>/sync-state.json`). |
 | `--style-dir` | Curation directory (default `style`). |
-| `--jobs` | Parallel feed builds (default NumCPU). |
+| `--jobs` | Parallel feed builds (default min(4, NumCPU) — charts are memory-heavy). |
 | `--dry-run` | Plan only: print what would happen, change nothing. |
 | `--json` | Final stdout line is `RESULT {…}` for a supervising process. |
 
 `check` asks transitland for each registered feed's current version (by
 the registry's `onestop` id, `TRANSITLAND_API_KEY` from the environment),
-diffs against the manifest, and downloads what moved into `--data`. A new
-upstream sha over identical content records the sha and rebuilds nothing.
-`patch` and `global` are not yet implemented; their flags parse, and
-`--dry-run` prints the plan they will execute.
+diffs against the manifest, downloads what moved into `--data`, and runs
+the patch flow on the changed set. A new upstream sha over identical
+content records the sha and rebuilds nothing. `patch` rebuilds exactly
+the builds whose inputs the named feeds touch — shared-steel
+measurement, group re-derivation, registry rewrite, builds (each a
+`portolan chart` child process), the ink-retention verify gate on every
+group, tiling, GTFS export, the static tile index. `global` is the same
+executor with every on-disk feed in the changed set — the oracle a patch
+must match byte for byte; registry entries whose zip was never
+downloaded are reported and skipped.
 
 ```bash
 portolan sync check --dry-run              # what moved upstream?
-portolan sync check --json                 # download it, tell barrelman
+portolan sync check --json                 # download + rebuild it, tell barrelman
+portolan sync patch --feeds mta-subway     # rebuild one feed's closure
+portolan sync global --json                # rebuild the world, report
 ```
 
 ---

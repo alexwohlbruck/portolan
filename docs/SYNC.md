@@ -22,7 +22,7 @@ Common flags:
     --export-gtfs build/export           corrected GTFS zips (empty = skip export)
     --state      <build>/sync-state.json state manifest
     --style-dir  style                    curation documents
-    --jobs       NumCPU                   parallel feed builds
+    --jobs       min(4, NumCPU)           parallel feed builds (charts are memory-heavy)
     --dry-run                             plan only, print what would rebuild
     --json                                final line of stdout is `RESULT {…}`
 
@@ -85,17 +85,27 @@ tiles to `sync global`. That equivalence is a test, not a hope.
           "onestop": "f-dr5r-nyct",
           "sha1": "…",            // transitland feed_version sha at last download
           "content": "…",         // sha256 over sorted *.txt members of the zip
-          "built": "…",           // content hash at last successful build
-          "tiled": "…",           // content hash at last successful tiling
-          "exported": "…"         // content hash at last successful export
+          "built": "…",           // input fingerprint at last successful build
+          "tiled": "…",           // input fingerprint at last successful tiling
+          "exported": "…"         // input fingerprint at last successful export
         }
       }
     }
 
 The content hash is the identity that matters (transitland occasionally
-republishes identical bytes under a new sha). A feed whose `content` equals
-`built`/`tiled`/`exported` is clean. Interrupted runs are safe: the manifest
-is written after each feed completes, so a rerun resumes where it stopped.
+republishes identical bytes under a new sha): `check` diffs it to decide
+what changed. `built`/`tiled`/`exported` hold the executor's **input
+fingerprint**: a hash over the assembled chart request (which folds in
+the registry entry, its window, the ceded exclude windows and the style
+layering) plus the content hash of every input zip. A build whose
+current fingerprint equals its stamps is clean and skips — this is what
+makes an overlay rebuild when only its ceded windows moved, and a group
+(whose row keys the group, not any single zip) rebuild when its
+membership changes. Extract and style-document contents are deliberately
+outside the fingerprint: the manifest covers the feed, by design — a
+curation change wants an explicit rebuild. Interrupted runs are safe:
+the manifest is written after each feed completes, so a rerun resumes
+where it stopped.
 
 ## check
 
@@ -104,25 +114,78 @@ For every feed entry with an `onestop` id, ask transitland for the current
 sequential, honoring a 429 once via Retry-After — the API has no batch
 lookup), diff against the manifest, download changed feeds into `--data` as
 `<feedkey>.zip` (via `download_latest_feed_version`, falling back to
-`urls.static_current`), then run the patch flow on the changed set. A new
-sha over identical content records the sha and changes nothing on disk.
+`urls.static_current`), then run the patch flow on the changed set:
+check → changed set → plan → execute, one command. A new sha over
+identical content records the sha and changes nothing on disk.
 `--dry-run` stops after the diff, touching neither `--data` nor the
 manifest. Feeds without an `onestop` id are reported and skipped. Exit 0
-with `"changed": []` when nothing moved; check's RESULT line carries
-`{"changed":[…],"skipped":[…],"errors":[…]}`.
+with `"changed": []` when nothing moved. A changed feed's zip is on disk
+before planning by construction — check downloaded it — which matters:
+the measurement reads it, and a patch planned over an absent zip would
+read a partial data tree as the railway vanishing.
 
 The `<feedkey>.zip` name is not a new convention: every onestop-bearing
 entry in portolan.json already points its primary gtfs at
 `data/gtfs/<feedkey>.zip`, so a download lands exactly where the feed's
 build reads.
 
-(Phasing: today check ends after download-and-record, and `sync patch
---dry-run` / `sync global --dry-run` print the real plan — measurement,
-group re-derivation, the rebuild closure, and whether the registry would
-be rewritten — without executing it. The executor that walks the plan is
-the next phase. A changed feed's zip must be on disk before planning:
-the measurement reads it, and a patch planned over an absent zip would
-read a partial data tree as the railway vanishing.)
+## Execution
+
+The executor walks a Plan in this order:
+
+1. **Registry.** If the plan rewrote it (groups created, dissolved,
+   windows moved), the new portolan.json is written first, atomically —
+   a crash after this point leaves a registry the next run re-plans
+   from correctly. Pyramids of deleted groups are removed. (Feeds newly
+   absorbed into a group keep their per-feed pyramids: the world index
+   skips grouped members, but the atlas still serves them feed-scoped.)
+2. **Builds**, under `--jobs` bounded parallelism. Every build in the
+   plan — standalone, overlay background, member pyramid, group — is
+   independent of every other (inputs are zips and extracts, never
+   another build's output), so they share one worker pool. Each build
+   runs as a `portolan chart` CHILD PROCESS with the argv
+   `tools/feed.sh build` would have assembled (gtfs list, geometry
+   source, window, ceded windows, style layering, `--onestop` from the
+   registry, `chart_args` word-split — parsed by chart's own flag set,
+   not a second parser); chart configuration is process state, so two
+   in-process builds would read each other's dials, and a child per
+   build also isolates its memory spike. Builds whose input fingerprint
+   already matches their state stamps are skipped.
+3. **Group preflight.** A group's rail extract that is missing or does
+   not cover the window is MERGED from its members' (and overlays')
+   extracts, first-wins on way id (the tools/mergefc.py rule — the same
+   OSM way must not enter the bundler twice); likewise a missing stops
+   extract, and `streets_from` into `streets`. sync never calls
+   Overpass — where groupbuild.sh would fetch, sync merges what the
+   members already have.
+4. **Verify gate**, immediately after each group's build: every
+   member's own band-15 non-transition centerlines, sampled at 25 m,
+   must land ≥90% within 30 m of the group's ink (tools/groupverify.py,
+   ported). A failing group is DELETED from the registry on the spot —
+   its members go straight back into the world index — its pyramid is
+   removed, the failure lands in `errors`, and any member without a
+   current standalone build joins the queue.
+5. **Tiles.** Each successful build is cut into `--tiles/<key>` and the
+   build's resolved style manifest (`<out>.style.json`) is copied into
+   the pyramid as `--tiles/<key>/style.json`. Differ stats aggregate
+   into the RESULT line.
+6. **Export.** With `--export-gtfs`, each feed-OWN build (standalone,
+   overlay background, member pyramid) writes its corrected zips into
+   the export dir. Group builds do not export: their member zips belong
+   to the members' own builds, and two builds writing one zip would
+   race — and which geometry won would depend on scheduling.
+7. **Index.** After all tiling, a static `--tiles/index.json` is
+   written: the same composer the atlas serves `/api/tiles/index.json`
+   from (internal/tiles.Index), over the post-run registry, so the
+   static file and the live endpoint cannot drift.
+8. **State**, stamped and saved after each feed completes — kill the
+   run anywhere and the rerun resumes, skipping what finished.
+
+`sync global` is the same executor with C = every feed whose zip is on
+disk. Registry entries whose zip was never downloaded (most of the
+registry is discovery output) are reported in `skipped`, not failed.
+Sound scoring (`portolan sound`) is not part of sync — it is advisory
+and feed.sh territory.
 
 ## Machine-readable result
 
@@ -131,7 +194,15 @@ With `--json`, the final stdout line is:
     RESULT {"changed":["a"],"affected":["a","b","dallas"],
             "rebuilt":["a","dallas"],"groups_rewritten":false,
             "tiles":{"written":1234,"unchanged":56789,"removed":12},
-            "exported":["a.zip","amtrak.zip"],"errors":[]}
+            "exported":["a.zip","amtrak.zip"],"skipped":[],"errors":[]}
+
+One schema for check, patch and global (check's original `changed`/
+`skipped`/`errors` keys are all present, so a parser built against it
+keeps working). `rebuilt` is the builds that actually ran — clean skips
+excluded; `exported` is exactly the `<feedkey>.zip` names present flat
+under the `--export-gtfs` dir; `skipped` is feeds without an onestop id
+(check) or without a zip on disk (global). `--dry-run` emits the same
+line with the planned rebuild set, zero tiles and exit 0.
 
 Barrelman parses this line; everything above it is human progress output.
 A build failure for one feed does not abort the run — it lands in `errors`
@@ -151,6 +222,19 @@ the station's name, and the label feature is the identity anchor.
 
 By hand the map arrives via `chart --onestop <zip-basename>=<onestop>,…`;
 sync fills it from the registry's `onestop` fields automatically.
+
+Each pyramid `--tiles/<feed>/` additionally carries:
+
+- `style.json` — the build's resolved style manifest (`<out>.style.json`
+  copied in), so the tile consumer fetches `<feed>/style.json` next to
+  the tiles it draws;
+- `tiles.json` — TileJSON with a single RELATIVE `{z}/{x}/{y}.mvt`
+  template, no hosts.
+
+Tiles are raw MVT, uncompressed. `--tiles/index.json` is the static
+world index: `[{feed,name,bounds,maxzoom}]`, the identical schema (and
+composer) the atlas serves at `/api/tiles/index.json`, carrying no URL
+templates.
 
 ## What sync does not do
 

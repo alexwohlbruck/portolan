@@ -20,6 +20,13 @@ type FeedCfg struct {
 	Out     string    `json:"out"`
 	Network string    `json:"network"` // drawn ground truth for scoring
 	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
+	// Corridors: an authored corridor graph — the alternative geometry
+	// source to Rail (docs/CORRIDORS.md); the build passes --corridors
+	// instead of --rail when set.
+	Corridors string `json:"corridors,omitempty"`
+	// StreetsFrom: member street extracts a GROUP merges into Streets
+	// before building (tools/groupbuild.sh; sync does the same merge).
+	StreetsFrom []string `json:"streets_from,omitempty"`
 	// Members marks a GROUP: the feed keys whose networks this entry
 	// builds together (so cross-feed routes bundle on shared track). The
 	// group's tileset REPLACES its members' in the global index — a

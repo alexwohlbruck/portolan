@@ -787,11 +787,12 @@ var syncCmd = &command{
 	},
 	about: `Keeps a fleet of feeds current. check asks transitland which feeds
 moved (by the registry's onestop ids), diffs against the state manifest,
-and downloads what changed into --data. patch rebuilds exactly the
-builds whose inputs changed; global is the same executor with every
-feed in the changed set — the oracle patch must match. check works
-today; patch and global plan (--dry-run: measure shared steel,
-re-derive groups, print the rebuild closure) but do not yet execute.
+downloads what changed into --data, and then runs the patch flow on the
+changed set. patch rebuilds exactly the builds whose inputs changed —
+measure shared steel, re-derive groups, rewrite the registry, build,
+verify, tile, export; global is the same executor with every on-disk
+feed in the changed set, and is the oracle patch must match byte for
+byte. --dry-run prints the plan and stops before touching anything.
 
 TRANSITLAND_API_KEY is read from the environment. Feed entries without
 an onestop id are reported and skipped. A new upstream sha over
@@ -817,7 +818,7 @@ hash is the identity that matters (docs/SYNC.md).`,
 		fs.StringVar(&s.state, "state", "", "state manifest (default <build>/sync-state.json)")
 		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory")
 		fs.StringVar(&s.feeds, "feeds", "", "comma list of feed keys (patch only)")
-		fs.IntVar(&s.jobs, "jobs", runtime.NumCPU(), "parallel feed builds")
+		fs.IntVar(&s.jobs, "jobs", sync.DefaultJobs(), "parallel feed builds (chart is memory-heavy; the default is deliberately modest)")
 		fs.BoolVar(&s.dryRun, "dry-run", false, "plan only: print what would happen, change nothing")
 		fs.BoolVar(&s.jsonOut, "json", false, "final stdout line is RESULT {…} for a supervising process")
 		return s
@@ -868,7 +869,48 @@ func runSync(args []string) {
 		runSyncCheck(sf)
 		return
 	}
-	runSyncStub(sub, sf)
+	runSyncPatchGlobal(sub, sf)
+}
+
+// resultLine is the machine-readable last stdout line under --json —
+// the barrelman contract (docs/SYNC.md). One schema for check, patch
+// and global; check's original {changed, skipped, errors} keys are all
+// present, so its parser keeps working.
+type resultLine struct {
+	Changed         []string       `json:"changed"`
+	Affected        []string       `json:"affected"`
+	Rebuilt         []string       `json:"rebuilt"`
+	GroupsRewritten bool           `json:"groups_rewritten"`
+	Tiles           sync.TileTally `json:"tiles"`
+	Exported        []string       `json:"exported"`
+	Skipped         []string       `json:"skipped"`
+	Errors          []string       `json:"errors"`
+}
+
+func emitResult(sf *syncFlags, rl resultLine) {
+	if !sf.jsonOut {
+		return
+	}
+	if rl.Changed == nil {
+		rl.Changed = []string{}
+	}
+	if rl.Affected == nil {
+		rl.Affected = []string{}
+	}
+	if rl.Rebuilt == nil {
+		rl.Rebuilt = []string{}
+	}
+	if rl.Exported == nil {
+		rl.Exported = []string{}
+	}
+	if rl.Skipped == nil {
+		rl.Skipped = []string{}
+	}
+	if rl.Errors == nil {
+		rl.Errors = []string{}
+	}
+	b, _ := json.Marshal(rl)
+	fmt.Printf("RESULT %s\n", b)
 }
 
 func runSyncCheck(sf *syncFlags) {
@@ -885,30 +927,27 @@ func runSyncCheck(sf *syncFlags) {
 	die(err)
 	fmt.Printf("%d changed, %d skipped, %d errors\n",
 		len(res.Changed), len(res.Skipped), len(res.Errors))
-	if sf.jsonOut {
-		b, _ := json.Marshal(res)
-		fmt.Printf("RESULT %s\n", b)
+	rl := resultLine{Changed: res.Changed, Skipped: res.Skipped, Errors: res.Errors}
+	// check hands into the patch flow: the downloaded changed set is
+	// planned and executed exactly as `sync patch --feeds` would.
+	// --dry-run stops after the diff, touching nothing.
+	if !sf.dryRun && len(res.Changed) > 0 {
+		run := execSync(sf, res.Changed, false)
+		rl = run
+		rl.Skipped = res.Skipped
+		rl.Errors = append(res.Errors, run.Errors...)
 	}
-	if len(res.Errors) > 0 {
+	emitResult(sf, rl)
+	if len(rl.Errors) > 0 {
 		os.Exit(1)
 	}
 }
 
-// runSyncStub: the PLANNER is real — measurement, group re-derivation,
-// the rebuild closure, the registry rewrite payload — and --dry-run
-// prints it. Execution (actually rebuilding) is the next phase; a
-// non-dry run refuses before measuring anything.
-func runSyncStub(sub string, sf *syncFlags) {
-	if !sf.dryRun {
-		fmt.Fprintf(os.Stderr, "portolan: sync %s is not yet implemented — sync check and --dry-run work today\n", sub)
-		os.Exit(1)
-	}
-	cfg, err := registry.Load(sf.config)
-	die(err)
-	doc, err := sync.LoadDoc(sf.config)
-	die(err)
-	st, err := sync.LoadState(sf.state)
-	die(err)
+// runSyncPatchGlobal plans, prints the plan, and — unless --dry-run —
+// executes it (internal/sync.Run): registry rewrite, builds under
+// --jobs child processes, group verify gates, tiling, style manifests,
+// the static tile index, exports and the state manifest.
+func runSyncPatchGlobal(sub string, sf *syncFlags) {
 	var changed []string
 	if sub == "patch" {
 		for _, k := range strings.Split(sf.feeds, ",") {
@@ -917,23 +956,78 @@ func runSyncStub(sub string, sf *syncFlags) {
 			}
 		}
 	}
+	rl := execSync(sf, changed, sub == "global")
+	emitResult(sf, rl)
+	if len(rl.Errors) > 0 {
+		os.Exit(1)
+	}
+}
+
+// execSync is the shared plan-and-execute body of patch, global and the
+// tail of check. It dies on run-level failures and returns the RESULT
+// payload for everything else.
+func execSync(sf *syncFlags, changed []string, global bool) resultLine {
+	cfg, err := registry.Load(sf.config)
+	die(err)
+	doc, err := sync.LoadDoc(sf.config)
+	die(err)
+	st, err := sync.LoadState(sf.state)
+	die(err)
+	// global operates on what is local: a registry row whose zip was
+	// never downloaded is reported, not fatal — most of the registry is
+	// undownloaded discovery output
+	var skipped []string
+	if global {
+		for k, fc := range cfg.Feeds {
+			if len(fc.Members) > 0 || fc.PrimaryGTFS() == "" {
+				continue
+			}
+			if _, err := os.Stat(fc.PrimaryGTFS()); err != nil {
+				skipped = append(skipped, k)
+			}
+		}
+		sort.Strings(skipped)
+		if len(skipped) > 0 {
+			fmt.Printf("global: %d feeds have no zip on disk — skipped\n", len(skipped))
+		}
+	}
 	plan, err := sync.BuildPlan(sync.PlanOpts{
 		Config: cfg, Doc: doc, State: st,
-		Changed: changed, BuildDir: sf.build, Global: sub == "global",
-		Log: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		Changed: changed, BuildDir: sf.build, Global: global,
+		Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
 	})
 	die(err)
 	printPlan(plan)
-	if sf.jsonOut {
-		b, _ := json.Marshal(map[string]any{
-			"changed": plan.Changed, "affected": plan.Affected,
-			"standalone": plan.Standalone, "member_pyramids": plan.MemberPyramids,
-			"groups": plan.Groups, "groups_created": plan.GroupsCreated,
-			"groups_deleted": plan.GroupsDeleted, "overlays": plan.Overlays,
-			"groups_rewritten": plan.RegistryChanged,
-		})
-		fmt.Printf("RESULT %s\n", b)
+	planned := map[string]bool{}
+	for _, ks := range [][]string{plan.Standalone, plan.Overlays, plan.MemberPyramids, plan.Groups} {
+		for _, k := range ks {
+			planned[k] = true
+		}
 	}
+	var rebuilt []string
+	for k := range planned {
+		rebuilt = append(rebuilt, k)
+	}
+	sort.Strings(rebuilt)
+	if sf.dryRun {
+		return resultLine{Changed: plan.Changed, Affected: plan.Affected,
+			Rebuilt: rebuilt, GroupsRewritten: plan.RegistryChanged, Skipped: skipped}
+	}
+	exe, err := os.Executable()
+	die(err)
+	res, err := sync.Run(plan, sync.RunOpts{
+		ConfigPath: sf.config, StatePath: sf.state,
+		BuildDir: sf.build, TilesDir: sf.tiles, ExportDir: sf.exportGTFS,
+		StyleDir: sf.styleDir, Jobs: sf.jobs, Portolan: exe,
+		Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	})
+	die(err)
+	fmt.Printf("done: %d rebuilt, tiles %d written / %d unchanged / %d removed, %d exported, %d errors\n",
+		len(res.Rebuilt), res.Tiles.Written, res.Tiles.Unchanged, res.Tiles.Removed,
+		len(res.Exported), len(res.Errors))
+	return resultLine{Changed: res.Changed, Affected: res.Affected,
+		Rebuilt: res.Rebuilt, GroupsRewritten: res.GroupsRewritten,
+		Tiles: res.Tiles, Exported: res.Exported, Skipped: skipped, Errors: res.Errors}
 }
 
 // printPlan: the derivation the way groups.py reports it, then the
