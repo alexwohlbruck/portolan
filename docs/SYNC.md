@@ -179,7 +179,12 @@ The executor walks a Plan in this order:
    from (internal/tiles.Index), over the post-run registry, so the
    static file and the live endpoint cannot drift.
 8. **State**, stamped and saved after each feed completes — kill the
-   run anywhere and the rerun resumes, skipping what finished.
+   run anywhere and rerunning the SAME command resumes, skipping what
+   finished. One asymmetry to know: an interrupted `sync check` cannot
+   resume through check itself (the downloads are already recorded, so
+   the next check sees nothing changed) — run `sync global` to
+   converge, which is cheap when the world is clean: every current
+   build fingerprint-skips and only the genuinely unfinished work runs.
 
 `sync global` is the same executor with C = every feed whose zip is on
 disk. Registry entries whose zip was never downloaded (most of the
@@ -244,6 +249,8 @@ templates.
   remain `tools/feed.sh` / `tools/onboard-*` territory. sync operates on
   feeds the registry already describes with existing extracts.
 - **OSM refresh.** Rail/stops/streets extracts are inputs, not managed
-  artifacts. If an extract changes on disk, the affected feeds rebuild on
-  the next run (extract hashes participate in the input fingerprint).
+  artifacts — and, like style documents, they are OUTSIDE the input
+  fingerprint: a refreshed extract or a curation change wants an
+  explicit rebuild (`tools/feed.sh build`, or clear the feed's state
+  stamps and run sync), by design.
 - **Serving.** The atlas serves; sync writes files.
