@@ -225,6 +225,26 @@ build() { # $1 = feed key
   # shapes.txt (docs/REGIONS.md) — env rather than a flag so `all` and
   # feed.sh reads them for every build
   if [ -n "${EXPORT_GTFS:-}" ]; then set -- "$@" --export-gtfs "$EXPORT_GTFS"; fi
+  # onestop: stations carry <feed-onestop>:<stop_id> so a consumer can open
+  # the stop a label names. Built from every zip in THIS build's gtfs list,
+  # keyed by basename, which is how chart matches a station back to the
+  # feed it came from — a group therefore labels each member's stops with
+  # that member's own id, not the group's.
+  local onestop
+  onestop=$(jq -r --arg g "$gtfs" '
+    def basename: sub("^.*/";"") | sub("\\.zip$";"");
+    . as $cfg
+    | [ ($g | split(",") | map(gsub("^\\s+|\\s+$";"")))[]
+        | . as $z
+        | ($z | basename) as $key
+        | ( $cfg.feeds[$key].onestop
+            // ( [ $cfg.feeds | to_entries[]
+                  | select(((.value.gtfs // "") | split(",") | map(gsub("^\\s+|\\s+$";"")) | first) == $z)
+                  | .value.onestop // empty ] | first )
+            // empty ) as $id
+        | "\($key)=\($id)" ]
+    | unique | join(",")' "$CFG")
+  [ -n "$onestop" ] && set -- "$@" --onestop "$onestop"
   # chart_args: per-feed extra chart flags (e.g. "--set match_gap_cost=150"
   # for us-intercity) — how a region's tuned dials survive a refresh
   local extra

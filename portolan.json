@@ -14,7 +14,8 @@
         40.92
       ],
       "network": "sketches/network-5.json",
-      "out": "build/mta-subway.geojson"
+      "out": "build/mta-subway.geojson",
+      "onestop": "f-dr5r-nyctsubway"
     },
     "mta-metro-north": {
       "name": "Metro-North Railroad",
@@ -29,7 +30,8 @@
         40.92
       ],
       "out": "build/mta-metro-north.geojson",
-      "network": "sketches/network-mta-metro-north.json"
+      "network": "sketches/network-mta-metro-north.json",
+      "onestop": "f-dr7-mtanyc~metro~north"
     },
     "mta-lirr": {
       "name": "Long Island Rail Road",
@@ -44,7 +46,8 @@
         40.92
       ],
       "out": "build/mta-lirr.geojson",
-      "network": "sketches/network-mta-lirr.json"
+      "network": "sketches/network-mta-lirr.json",
+      "onestop": "f-dr5-mtanyclirr"
     },
     "nyc-ferry": {
       "name": "NYC Ferry",
@@ -89,7 +92,8 @@
         40.92
       ],
       "out": "build/jfk-airtrain.geojson",
-      "network": "sketches/network-jfk-airtrain.json"
+      "network": "sketches/network-jfk-airtrain.json",
+      "onestop": "f-dr5x2-jfkairtrain"
     },
     "mta-nyct-bus": {
       "name": "MTA NYCT Bus",
@@ -104,7 +108,8 @@
         40.92
       ],
       "out": "build/mta-nyct-bus.geojson",
-      "network": "sketches/network-mta-nyct-bus.json"
+      "network": "sketches/network-mta-nyct-bus.json",
+      "onestop": "f-dr5r-mtanyctbusbrooklyn"
     },
     "mta-bus": {
       "name": "MTA Bus Company",
@@ -119,7 +124,8 @@
         40.92
       ],
       "out": "build/mta-bus.geojson",
-      "network": "sketches/network-mta-bus.json"
+      "network": "sketches/network-mta-bus.json",
+      "onestop": "f-dr5r-mtabc"
     },
     "chicago-cta": {
       "name": "Chicago CTA",
@@ -134,7 +140,8 @@
         42.08
       ],
       "network": "sketches/network-29.json",
-      "out": "build/chicago-cta.geojson"
+      "out": "build/chicago-cta.geojson",
+      "onestop": "f-dp3-cta"
     },
     "metra": {
       "name": "Metra",
@@ -149,7 +156,8 @@
         42.08
       ],
       "out": "build/metra.geojson",
-      "network": "sketches/network-metra.json"
+      "network": "sketches/network-metra.json",
+      "onestop": "f-dp3-metra"
     },
     "amtrak": {
       "name": "Amtrak",
@@ -164,7 +172,8 @@
         -66,
         50.5
       ],
-      "chart_args": "--set match_gap_cost=150"
+      "chart_args": "--set match_gap_cost=150",
+      "onestop": "f-9-amtrak~amtrakcalifornia~amtrakcharteredvehicle"
     },
     "viarail": {
       "name": "VIA Rail",
@@ -177,7 +186,8 @@
         -62.5,
         59.5
       ],
-      "chart_args": "--set match_gap_cost=150"
+      "chart_args": "--set match_gap_cost=150",
+      "onestop": "f-f-viarail~traindecharlevoix"
     },
     "barcelona-tmb": {
       "name": "Barcelona TMB",
@@ -191,7 +201,8 @@
         41.51
       ],
       "out": "build/barcelona-tmb.geojson",
-      "network": "sketches/network-barcelona-tmb.json"
+      "network": "sketches/network-barcelona-tmb.json",
+      "onestop": "f-sp3e-tmb"
     },
     "barcelona-fgc": {
       "name": "FGC",
@@ -205,10 +216,11 @@
         41.51
       ],
       "out": "build/barcelona-fgc.geojson",
-      "network": "sketches/network-barcelona-fgc.json"
+      "network": "sketches/network-barcelona-fgc.json",
+      "onestop": "f-fgc~cat"
     },
     "barcelona-tbs": {
-      "name": "Tram Bes\u00f2s",
+      "name": "Tram Besòs",
       "gtfs": "data/gtfs/barcelona-tbs.zip",
       "rail": "build/barcelona-rail.geojson",
       "stops": "build/barcelona-stops.geojson",
@@ -219,7 +231,8 @@
         41.51
       ],
       "out": "build/barcelona-tbs.geojson",
-      "network": "sketches/network-barcelona-tbs.json"
+      "network": "sketches/network-barcelona-tbs.json",
+      "onestop": "f-tram~tbs"
     },
     "barcelona-tbx": {
       "name": "Tram Baix",
@@ -233,7 +246,8 @@
         41.51
       ],
       "out": "build/barcelona-tbx.geojson",
-      "network": "sketches/network-barcelona-tbx.json"
+      "network": "sketches/network-barcelona-tbx.json",
+      "onestop": "f-tram~tbx"
     },
     "la-metro-rail": {
       "name": "LA Metro Rail",
@@ -248,7 +262,8 @@
         34.2
       ],
       "out": "build/la-metro-rail.geojson",
-      "network": "sketches/network-la-metro-rail.json"
+      "network": "sketches/network-la-metro-rail.json",
+      "onestop": "f-9q5-metro~losangeles~rail"
     },
     "la-metro-bus": {
       "name": "LA Metro Bus",
@@ -263,7 +278,8 @@
         34.2
       ],
       "out": "build/la-metro-bus.geojson",
-      "network": "sketches/network-la-metro-bus.json"
+      "network": "sketches/network-la-metro-bus.json",
+      "onestop": "f-9q5-metro~losangeles"
     },
     "tokyo-metro": {
       "name": "Tokyo Metro",
@@ -305,7 +321,8 @@
         39.16
       ],
       "network": "sketches/network-dc.json",
-      "out": "build/wmata.geojson"
+      "out": "build/wmata.geojson",
+      "onestop": "f-dqc-wmata~rail"
     },
     "dc-streetcar": {
       "name": "DC Streetcar",
@@ -334,7 +351,8 @@
         -84.2,
         33.96
       ],
-      "streets": "build/atlanta-streets.geojson"
+      "streets": "build/atlanta-streets.geojson",
+      "onestop": "f-dnh-marta"
     },
     "charlotte": {
       "name": "Charlotte",
@@ -349,7 +367,8 @@
         -80.68,
         35.35
       ],
-      "streets": "build/charlotte-streets.geojson"
+      "streets": "build/charlotte-streets.geojson",
+      "onestop": "f-dnq-charlotteareatransitsystem"
     },
     "london": {
       "name": "London",
@@ -378,7 +397,8 @@
         2.55,
         48.98
       ],
-      "streets": "build/paris-streets.geojson"
+      "streets": "build/paris-streets.geojson",
+      "onestop": "f-u09-paris~metro~bus~tram"
     },
     "berlin": {
       "name": "Berlin",
@@ -407,7 +427,8 @@
         19.23,
         -98.93,
         19.72
-      ]
+      ],
+      "onestop": "f-9g3-semovi"
     },
     "amsterdam": {
       "name": "Amsterdam",
@@ -435,7 +456,8 @@
         42.17,
         -70.92,
         42.48
-      ]
+      ],
+      "onestop": "f-drt-mbta"
     },
     "toronto": {
       "name": "Toronto",
@@ -449,7 +471,8 @@
         43.56,
         -79.1,
         43.88
-      ]
+      ],
+      "onestop": "f-dpz8-ttc"
     },
     "vienna": {
       "name": "Vienna",
@@ -463,7 +486,8 @@
         48.09,
         16.55,
         48.33
-      ]
+      ],
+      "onestop": "f-u2ed-wienerlinien~wlb"
     },
     "santiago": {
       "name": "Santiago",
@@ -477,7 +501,8 @@
         -33.65,
         -70.49,
         -33.33
-      ]
+      ],
+      "onestop": "f-66jc-transantiago~metrodesantiago"
     },
     "septa-rail": {
       "name": "SEPTA Regional Rail",
@@ -491,7 +516,8 @@
         -74.704,
         40.356
       ],
-      "stops": "build/septa-rail-stops.geojson"
+      "stops": "build/septa-rail-stops.geojson",
+      "onestop": "f-dr4-septa~rail"
     },
     "septa": {
       "name": "SEPTA",
@@ -505,7 +531,8 @@
         -74.704,
         40.384
       ],
-      "stops": "build/septa-stops.geojson"
+      "stops": "build/septa-stops.geojson",
+      "onestop": "f-dr4-septa~bus"
     },
     "patco": {
       "name": "PATCO",
@@ -519,7 +546,8 @@
         -74.951,
         40.005
       ],
-      "stops": "build/patco-stops.geojson"
+      "stops": "build/patco-stops.geojson",
+      "onestop": "f-dr4e-patco"
     },
     "path": {
       "name": "PATH",
@@ -533,7 +561,8 @@
         -73.939,
         40.799
       ],
-      "stops": "build/path-stops.geojson"
+      "stops": "build/path-stops.geojson",
+      "onestop": "f-dr5r-path~nj~us"
     },
     "nj-transit-rail": {
       "name": "NJ Transit Rail",
@@ -547,7 +576,8 @@
         -73.938,
         41.522
       ],
-      "stops": "build/nj-transit-rail-stops.geojson"
+      "stops": "build/nj-transit-rail-stops.geojson",
+      "onestop": "f-dr5-nj~transit~rail"
     },
     "marc": {
       "name": "MARC",
@@ -561,7 +591,8 @@
         -76.024,
         39.608
       ],
-      "stops": "build/marc-stops.geojson"
+      "stops": "build/marc-stops.geojson",
+      "onestop": "f-dq-mtamaryland~marc"
     },
     "baltimore-metro": {
       "name": "Baltimore Metro SubwayLink",
@@ -575,7 +606,8 @@
         -76.544,
         39.458
       ],
-      "stops": "build/baltimore-metro-stops.geojson"
+      "stops": "build/baltimore-metro-stops.geojson",
+      "onestop": "f-dq-mtamaryland~subwaylink"
     },
     "baltimore-light-rail": {
       "name": "Baltimore Light RailLink",
@@ -589,7 +621,8 @@
         -76.566,
         39.546
       ],
-      "stops": "build/baltimore-light-rail-stops.geojson"
+      "stops": "build/baltimore-light-rail-stops.geojson",
+      "onestop": "f-dq-mtamaryland~raillink"
     },
     "vre": {
       "name": "Virginia Railway Express",
@@ -603,7 +636,8 @@
         -76.955,
         38.95
       ],
-      "stops": "build/vre-stops.geojson"
+      "stops": "build/vre-stops.geojson",
+      "onestop": "f-dqc-virginiarailwayexpress"
     },
     "hartford-line": {
       "name": "CTrail Hartford Line",
@@ -617,10 +651,11 @@
         -72.543,
         42.156
       ],
-      "stops": "build/hartford-line-stops.geojson"
+      "stops": "build/hartford-line-stops.geojson",
+      "onestop": "f-cttransit~hartford~line"
     },
     "dallas": {
-      "name": "Dallas\u2013Fort Worth",
+      "name": "Dallas–Fort Worth",
       "gtfs": "data/gtfs/dallasarearapidtransit.zip,data/gtfs/dentoncountytransportationauthority.zip,data/gtfs/fortworthtransportationauthority.zip,data/gtfs/mckinney-avenue-transit-authority.zip,data/gtfs/amtrak.zip",
       "rail": "build/dallas-rail.geojson",
       "stops": "build/dallas-stops.geojson",
@@ -644,7 +679,7 @@
       ]
     },
     "washington": {
-      "name": "Washington\u2013Baltimore",
+      "name": "Washington–Baltimore",
       "gtfs": "data/gtfs/baltimore-light-rail.zip,data/gtfs/marc.zip,data/gtfs/vre.zip,data/gtfs/dc.zip,data/gtfs/amtrak.zip",
       "rail": "build/washington-rail.geojson",
       "stops": "build/washington-stops.geojson",
@@ -12945,7 +12980,7 @@
         -73.824,
         45.537
       ],
-      "onestop": "f-f256-exo~citlapresqu\u00eele"
+      "onestop": "f-f256-exo~citlapresquîle"
     },
     "exo-citlaurentides": {
       "name": "exo-citlaurentides",
@@ -13065,7 +13100,7 @@
         -72.895,
         45.691
       ],
-      "onestop": "f-f25g-exo~citvall\u00e9e~du~richelieu"
+      "onestop": "f-f25g-exo~citvallée~du~richelieu"
     },
     "exo-omitsainte-julie": {
       "name": "exo-omitsainte-julie",
@@ -13125,7 +13160,7 @@
         -71.765,
         45.532
       ],
-      "onestop": "f-f2hf-soci\u00e9t\u00e9detransportdesherbrooke"
+      "onestop": "f-f2hf-sociétédetransportdesherbrooke"
     },
     "laregiedetransportencommundelavilledesha": {
       "name": "laregiedetransportencommundelavilledesha",
@@ -22564,7 +22599,7 @@
       ]
     },
     "montreal": {
-      "name": "Montr\u00e9al",
+      "name": "Montréal",
       "gtfs": "data/gtfs/exo-reseaudetransportmetropolitain.zip,data/gtfs/reseau-express-metropolitain.zip,data/gtfs/socitdetransportdemontral.zip,data/gtfs/amtrak.zip,data/gtfs/viarail.zip",
       "rail": "build/montreal-rail.geojson",
       "stops": "build/montreal-stops.geojson",
