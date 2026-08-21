@@ -23,6 +23,7 @@ import (
 
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
+	"github.com/alexwohlbruck/portolan/internal/registry"
 	"github.com/alexwohlbruck/portolan/internal/sketch"
 	"github.com/alexwohlbruck/portolan/internal/style"
 )
@@ -36,41 +37,12 @@ var mapHTML []byte
 //go:embed nav.js
 var navJS []byte
 
-// FeedCfg is one feed (or feed group) in portolan.json.
-type FeedCfg struct {
-	Name    string    `json:"name"`
-	GTFS    string    `json:"gtfs"` // comma list: primary feed, then overlays (Metra, Amtrak)
-	Rail    string    `json:"rail"`
-	Streets string    `json:"streets"` // optional street extract — enables bus routes
-	Stops   string    `json:"stops"`   // optional OSM stop extract — station name/id matching
-	Out     string    `json:"out"`
-	Network string    `json:"network"` // drawn ground truth for scoring
-	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip
-	// Members marks a GROUP: the feed keys whose networks this entry
-	// builds together (so cross-feed routes bundle on shared track). The
-	// group's tileset REPLACES its members' in the global index — a
-	// member listed here is skipped there, or the world would draw the
-	// same railroad twice.
-	Members []string `json:"members,omitempty"`
-}
-
-// primaryGTFS: the first feed of the comma list — scenarios and mtime
-// checks are primary-feed concepts.
-func (f FeedCfg) primaryGTFS() string {
-	if i := strings.IndexByte(f.GTFS, ','); i >= 0 {
-		return strings.TrimSpace(f.GTFS[:i])
-	}
-	return strings.TrimSpace(f.GTFS)
-}
-
-type Config struct {
-	Feeds    map[string]FeedCfg `json:"feeds"`
-	Sketches string             `json:"sketches"`
-	// StyleDir: where the curation documents live (default "style").
-	// Colours and names are NOT in this file — they are source code, one
-	// document per city, so they diff and revert on their own.
-	StyleDir string `json:"style_dir,omitempty"`
-}
+// FeedCfg and Config live in internal/registry now, shared with sync —
+// one parser for portolan.json. The aliases keep this package's API.
+type (
+	FeedCfg = registry.FeedCfg
+	Config  = registry.Config
+)
 
 // styleFor resolves the effective style for one city through the SAME
 // loader the CLI uses — style/_default.json then style/<city>.json. One
@@ -155,16 +127,7 @@ func NewServer(configPath, maplibreDir string) (*Server, error) {
 	return s, nil
 }
 
-func parseConfig(raw []byte) (Config, error) {
-	var cfg Config
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return cfg, err
-	}
-	if cfg.Sketches == "" {
-		cfg.Sketches = "sketches"
-	}
-	return cfg, nil
-}
+func parseConfig(raw []byte) (Config, error) { return registry.Parse(raw) }
 
 // config re-reads portolan.json when it has changed on disk, so adding a
 // city (docs/CITIES.md) shows up on refresh — the same edit-and-refresh
@@ -691,7 +654,7 @@ func (s *Server) scenariosAPI(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"available": false})
 		return
 	}
-	st, err := os.Stat(fc.primaryGTFS())
+	st, err := os.Stat(fc.PrimaryGTFS())
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
 		return

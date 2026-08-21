@@ -31,7 +31,7 @@ func (s *Server) activityAPI(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"available": false})
 		return
 	}
-	st, err := os.Stat(fc.primaryGTFS())
+	st, err := os.Stat(fc.PrimaryGTFS())
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]any{"available": false, "error": err.Error()})
 		return
