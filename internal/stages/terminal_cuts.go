@@ -187,13 +187,30 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 							if td > tcEndDistM {
 								continue
 							}
+							// A trim may shave the overshoot beyond a
+							// terminal stop; it may never erase the ride.
+							// A path that runs the WHOLE segment puts both
+							// its tips on it, so one interior stop matches
+							// the tail test on BOTH sides and pulls a and b
+							// onto itself — a zero-length cover, which votes
+							// for no hours at all. The all-day pattern then
+							// contributes nothing to the segment's mask and
+							// the line inherits the hours of whatever
+							// short-turn variant is left: Charlotte's LYNX
+							// read as 04:00-05:00 service and vanished from
+							// a live map for the other twenty-two hours.
+							na, nb := cv.a, cv.b
 							if ta > sa && L-ta < tcMarginM {
-								cv.b = sa // tail on the high side
+								nb = sa // tail on the high side
 							} else if ta < sa && ta < tcMarginM {
-								cv.a = sa // tail on the low side
+								na = sa // tail on the low side
 							} else {
 								continue
 							}
+							if nb-na < tcEndDistM {
+								continue
+							}
+							cv.a, cv.b = na, nb
 							if sa > tcMarginM && sa < L-tcMarginM {
 								terminal = sa
 							}
