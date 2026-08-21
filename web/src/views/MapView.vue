@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
-import { Layers, Crosshair, RefreshCw, Clock, Copy, Check } from 'lucide-vue-next'
+import { Layers, Crosshair, RefreshCw, Clock, Copy, Check, X } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
@@ -164,6 +164,11 @@ const KINDS: [string, any][] = [
 // and detaches by restoring exactly this, so recombination is lossless
 const structuralFilter = new Map<string, any>()
 const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
+
+// The layer picker starts folded to a single button: expanded it covers a
+// third of a phone screen, and the toggles are an occasional tool, not
+// something worth paying map area for on every visit.
+const layersOpen = ref(false)
 
 // per-class visibility. Stored as the DISABLED set so the default —
 // everything on — is an empty set and new classes appearing in a build
@@ -2026,9 +2031,9 @@ watch(feed, async () => {
          scenario dropdown is gone: a timestamp IS the scenario selection
          now (dynamic rendering), and the prebuilt-scenario QA controls
          live on the Service page. -->
-    <div class="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center p-4">
+    <div class="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center p-2 sm:p-4">
       <div class="pointer-events-auto flex max-w-full flex-wrap items-center gap-1 rounded-xl border border-border bg-card/90 px-2 py-1.5 shadow-sm backdrop-blur">
-        <span class="px-2 text-sm font-medium">{{ isGlobal ? 'Global' : currentFeed?.name || 'No feed' }}</span>
+        <span class="max-w-[40vw] truncate px-2 text-sm font-medium sm:max-w-none">{{ isGlobal ? 'Global' : currentFeed?.name || 'No feed' }}</span>
         <Badge v-if="loading" variant="info"><Spinner class="size-3" /></Badge>
         <Button variant="ghost" size="icon" title="Reload" @click="reload"><RefreshCw class="size-4" /></Button>
         <Button variant="ghost" size="icon" title="Fit to feed" @click="fitFeed"><Crosshair class="size-4" /></Button>
@@ -2074,10 +2079,27 @@ watch(feed, async () => {
       </div>
     </div>
 
-    <div class="pointer-events-auto absolute bottom-4 left-4 z-10 w-56 rounded-xl border border-border bg-card/90 p-3 shadow-sm backdrop-blur">
-      <div class="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+    <!-- collapsed until asked for: one button holds the corner, the full
+         panel replaces it in place and folds back from its header -->
+    <button
+      v-if="!layersOpen"
+      class="pointer-events-auto absolute bottom-4 left-4 z-10 flex items-center gap-2 rounded-xl border border-border bg-card/90 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+      title="Basemap, class and debug toggles"
+      @click="layersOpen = true"
+    >
+      <Layers class="size-3.5" /> Layers
+    </button>
+    <div
+      v-else
+      class="pointer-events-auto absolute bottom-4 left-4 z-10 max-h-[calc(100%-6rem)] w-56 overflow-y-auto rounded-xl border border-border bg-card/90 p-3 shadow-sm backdrop-blur"
+    >
+      <button
+        class="mb-2 flex w-full items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
+        @click="layersOpen = false"
+      >
         <Layers class="size-3.5" /> Layers
-      </div>
+        <X class="ml-auto size-3.5" />
+      </button>
       <!-- the basemap is what the drawn network is read against, so it
            sits above the class toggles: blank to judge geometry alone,
            OpenRailwayMap to check a ribbon against the real alignment -->
@@ -2112,7 +2134,7 @@ watch(feed, async () => {
 
     <button
       class="pointer-events-auto absolute z-10 flex items-center gap-2 rounded-lg border border-border bg-card/90 px-2.5 py-1.5 font-mono text-xs shadow-sm backdrop-blur transition-colors hover:bg-accent"
-      :class="inspect ? 'bottom-4 right-[19.5rem]' : 'bottom-4 right-4'"
+      :class="inspect ? 'bottom-4 right-4 max-sm:hidden sm:right-[19.5rem]' : 'bottom-4 right-4'"
       :title="`Copy ${viewText} to the clipboard`"
       @click="copyView"
     >
@@ -2130,7 +2152,7 @@ watch(feed, async () => {
 
     <div
       v-if="inspect"
-      class="pointer-events-auto absolute bottom-4 right-4 z-10 w-72 rounded-xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur"
+      class="pointer-events-auto absolute bottom-4 right-4 z-10 max-h-[calc(100%-6rem)] w-72 overflow-y-auto rounded-xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur max-sm:left-4 max-sm:w-auto"
     >
       <div class="mb-2 flex items-center justify-between">
         <span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Segment</span>
