@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bytes"
+	"os"
 	"reflect"
 	"testing"
 
@@ -131,5 +132,48 @@ func TestBuildPlanGlobalMatchesPatchRegistry(t *testing.T) {
 	}
 	if !bytes.Equal(p2.Registry, global.Registry) {
 		t.Fatalf("patch(b)+patch(h) ≠ global:\n%s\n----\n%s", p2.Registry, global.Registry)
+	}
+}
+
+// TestBuildPlanGlobalKeepsAbsentGroups: global operates on what is
+// local — a derived group whose member zips were never downloaded is
+// out of scope, not unsupported, and must survive the rewrite.
+func TestBuildPlanGlobalKeepsAbsentGroups(t *testing.T) {
+	dir := t.TempDir()
+	raw := buildFixture(t, dir)
+	t.Chdir(dir)
+	cfg, doc := loadFixture(t, raw)
+
+	// settle the world: derive and rewrite both groups
+	d, err := DeriveGroups(cfg, nil, "build", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	RewriteGroups(doc, d, nil)
+	settled := MarshalDoc(doc)
+	cfg2, doc2 := loadFixture(t, settled)
+
+	// h's zip vanishes (never downloaded on this machine)
+	if err := os.Remove("gtfs/h.zip"); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(PlanOpts{
+		Config: cfg2, Doc: doc2, State: &State{Feeds: map[string]FeedState{}},
+		BuildDir: "build", Global: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range plan.GroupsDeleted {
+		if g == "hotel-metro" {
+			t.Fatal("global dissolved a group whose member zips are simply absent")
+		}
+	}
+	reg, err := registry.Parse(settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Feeds["hotel-metro"]; !ok {
+		t.Fatal("fixture lost hotel-metro before the check")
 	}
 }

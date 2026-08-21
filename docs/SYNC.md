@@ -183,7 +183,9 @@ The executor walks a Plan in this order:
 
 `sync global` is the same executor with C = every feed whose zip is on
 disk. Registry entries whose zip was never downloaded (most of the
-registry is discovery output) are reported in `skipped`, not failed.
+registry is discovery output) are reported in `skipped`, not failed —
+and a derived group whose member zips are absent is out of scope, not
+unsupported: absence of data must never read as the railway vanishing.
 Sound scoring (`portolan sound`) is not part of sync — it is advisory
 and feed.sh territory.
 

@@ -166,7 +166,13 @@ func BuildPlan(o PlanOpts) (*Plan, error) {
 		Length: der.Length, Pairs: der.Pairs, Extent: der.Extent,
 		Duplicate: der.Duplicate, Undrawn: der.Undrawn, Measured: der.Measured,
 	}
-	var scope map[string]bool
+	// scope bounds the delete rule: a derived group is deletable only if
+	// its members were measured. For patch that is the affected
+	// component; for global it is every feed with a zip on disk — a
+	// derived group whose members were never downloaded is out of scope,
+	// not unsupported (global operates on what is local, and an absent
+	// data tree must not read as the railway vanishing).
+	scope := measurable
 	if !o.Global {
 		scope = affected
 	}
