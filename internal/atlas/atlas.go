@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +25,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/registry"
 	"github.com/alexwohlbruck/portolan/internal/sketch"
 	"github.com/alexwohlbruck/portolan/internal/style"
+	"github.com/alexwohlbruck/portolan/internal/tiles"
 )
 
 //go:embed editor.html
@@ -279,46 +279,14 @@ func (s *Server) Handler() http.Handler {
 	// the probe that tells it to fall back to the GeoJSON band protocol.
 	mux.HandleFunc("/api/tiles/", func(w http.ResponseWriter, r *http.Request) {
 		// index.json is the world: every feed with a cut pyramid, with its
-		// bounds — the global view draws exactly this list and nothing else
+		// bounds — the global view draws exactly this list and nothing
+		// else. Composed by tiles.Index, the SAME helper sync uses to
+		// write the static --tiles/index.json, so the two cannot drift.
 		if r.URL.Path == "/api/tiles/index.json" {
-			type entry struct {
-				Feed    string    `json:"feed"`
-				Name    string    `json:"name"`
-				Bounds  []float64 `json:"bounds,omitempty"`
-				MaxZoom int       `json:"maxzoom"`
-			}
 			cfg := s.config()
-			// a feed that rides inside a group is drawn BY the group —
-			// listing both would double-draw its railroad
-			grouped := map[string]bool{}
-			for _, fc := range cfg.Feeds {
-				for _, m := range fc.Members {
-					grouped[m] = true
-				}
-			}
-			keys := make([]string, 0, len(cfg.Feeds))
-			for k := range cfg.Feeds {
-				if !grouped[k] {
-					keys = append(keys, k)
-				}
-			}
-			sort.Strings(keys)
-			out := []entry{}
-			for _, k := range keys {
-				fc := cfg.Feeds[k]
-				raw, err := os.ReadFile(filepath.Join(filepath.Dir(fc.Out), "tiles", k, "tiles.json"))
-				if err != nil {
-					continue
-				}
-				var tj struct {
-					Bounds  []float64 `json:"bounds"`
-					MaxZoom int       `json:"maxzoom"`
-				}
-				if json.Unmarshal(raw, &tj) != nil {
-					continue
-				}
-				out = append(out, entry{Feed: k, Name: fc.Name, Bounds: tj.Bounds, MaxZoom: tj.MaxZoom})
-			}
+			out := tiles.Index(cfg, func(k string) string {
+				return filepath.Join(filepath.Dir(cfg.Feeds[k].Out), "tiles", k)
+			})
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			json.NewEncoder(w).Encode(out)
