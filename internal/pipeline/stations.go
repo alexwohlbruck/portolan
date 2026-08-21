@@ -69,6 +69,14 @@ type Station struct {
 	// join a drawn station back to OpenStreetMap (docs/STOP-LABELS.md).
 	OSMID string
 
+	// StopIDs: every GTFS stop merged into this station — platforms and
+	// parent-station records, still carrying loadFeeds' overlay prefix
+	// ("f1:GCT"). Sorted and deduped. This is the identity the gtfs_ids
+	// tile prop is assembled from, so a clicked station can open a
+	// stop-detail panel keyed by the source feed's own ids (docs/SYNC.md,
+	// "Tile contract additions").
+	StopIDs []string
+
 	// Set by SnapStations: where the label anchors (the busiest marker),
 	// and one marker per ribbon bundle the station's lines snap to — a
 	// complex like Times Sq is one label but three bundles, each with its
@@ -489,6 +497,25 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 		sortBullets(rids, routeByID)
 
 		st := Station{Name: name, LL: geo.LL{Lon: cx / float64(np), Lat: cy / float64(np)}}
+		{
+			// member stop identity: the served platforms, plus the parent
+			// station record when the feed ships one (it is a stops.txt row
+			// too, and the id a downstream API most likely keys on)
+			ids := map[string]bool{}
+			for _, ni := range members {
+				for _, sid := range nodes[ni].g.stops {
+					ids[sid] = true
+				}
+				if _, ok := feed.Stops[nodes[ni].g.key]; ok {
+					ids[nodes[ni].g.key] = true
+				}
+			}
+			st.StopIDs = make([]string, 0, len(ids))
+			for sid := range ids {
+				st.StopIDs = append(st.StopIDs, sid)
+			}
+			sort.Strings(st.StopIDs)
+		}
 		{
 			out := map[string]bool{}
 			inside := map[string]bool{}
@@ -1106,12 +1133,45 @@ func naturalCmp(a, b string) int {
 	return strings.Compare(a, b)
 }
 
+// gtfsIDProp assembles a station's gtfs_ids tile prop from its member
+// stop ids: semicolon-joined "<feed-onestop>:<stop_id>" pairs, deduped
+// and sorted. onestop maps loadFeeds' feed prefix ("" primary, "f1"…)
+// to that feed's onestop id; a stop whose source feed has no onestop id
+// is omitted — an absent pair is an honest "not registered", not an
+// empty key. Empty result means the prop is omitted entirely.
+func gtfsIDProp(stopIDs []string, onestop map[string]string) string {
+	if len(onestop) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	var pairs []string
+	for _, sid := range stopIDs {
+		pre := feedPrefix(sid)
+		os, ok := onestop[pre]
+		if !ok || os == "" {
+			continue
+		}
+		bare := sid
+		if pre != "" {
+			bare = sid[len(pre)+1:] // strip "fN:"
+		}
+		p := os + ":" + bare
+		if !seen[p] {
+			seen[p] = true
+			pairs = append(pairs, p)
+		}
+	}
+	sort.Strings(pairs)
+	return strings.Join(pairs, ";")
+}
+
 // writeStations emits <out>.stations.geojson: one `ftype: "station"`
 // label feature per station (anchored at its busiest marker) plus one
 // `ftype: "marker"` feature per snapped bundle — a complex is one label
 // and as many markers as corridors. Aligned per-route arrays are
-// comma-joined like ribbon `routes`.
-func writeStations(path string, sts []Station, cats []CatBullet) error {
+// comma-joined like ribbon `routes`. onestop (feed prefix → onestop id,
+// nil ok) adds the gtfs_ids identity prop to station features.
+func writeStations(path string, sts []Station, cats []CatBullet, onestop map[string]string) error {
 	fc := collection{Type: "FeatureCollection"}
 	pt := func(ll geo.LL) json.RawMessage {
 		raw, _ := json.Marshal([2]float64{ll.Lon, ll.Lat})
@@ -1145,6 +1205,11 @@ func writeStations(path string, sts []Station, cats []CatBullet) error {
 		// stand behind — an absent key is an honest "not matched"
 		if s.OSMID != "" {
 			stProps["osm"] = s.OSMID
+		}
+		// GTFS stop identity for downstream stop-detail panels — omitted
+		// when no source feed has an onestop id (docs/SYNC.md)
+		if ids := gtfsIDProp(s.StopIDs, onestop); ids != "" {
+			stProps["gtfs_ids"] = ids
 		}
 		fc.Features = append(fc.Features, feature{
 			Type: "Feature", Props: stProps,

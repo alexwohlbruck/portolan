@@ -296,6 +296,7 @@ type chartFlags struct {
 	styleDir, city, stylePath, lineAgency string
 	scenario                              string
 	exportGTFS                            string
+	onestop                               string
 	set                                   string
 	allowUnmatched                        bool
 	cover                                 float64
@@ -322,7 +323,7 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 	groups: []flagGroup{
 		{"inputs", []string{"gtfs", "rail", "corridors", "corridor-nodes", "streets", "stops"}},
 		{"window and projection", []string{"bbox", "exclude-bbox", "anchor"}},
-		{"output", []string{"out", "format", "band", "export-gtfs", "set", "allow-unmatched"}},
+		{"output", []string{"out", "format", "band", "export-gtfs", "onestop", "set", "allow-unmatched"}},
 		{"curation", []string{"style-dir", "feed", "style", "line-agencies"}},
 		{"service", []string{"scenario", "cover"}},
 	},
@@ -354,6 +355,7 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 		fs.StringVar(&c.lineAgency, "line-agencies", "", "comma list: regional agencies keeping per-line colours")
 		fs.StringVar(&c.scenario, "scenario", "", "build one service scenario (see `portolan scenarios`)")
 		fs.StringVar(&c.exportGTFS, "export-gtfs", "", "directory: write the source feeds back out with matched shapes.txt")
+		fs.StringVar(&c.onestop, "onestop", "", "onestop id per source zip, by basename: key=f-…[,key=f-…] — stations carry gtfs_ids")
 		fs.StringVar(&c.set, "set", "", "tuning overrides: key=val[,key=val] over the defaults (keys as in the atlas tuning panel, e.g. join_tol=120)")
 		fs.BoolVar(&c.allowUnmatched, "allow-unmatched", false, "ship rail patterns that failed to path-match (default: the build fails)")
 		fs.Float64Var(&c.cover, "cover", 0.99, "pattern trip-coverage fraction")
@@ -475,6 +477,19 @@ func runChart(c *chartFlags) {
 	if c.lineAgency != "" {
 		las = strings.Split(c.lineAgency, ",")
 	}
+	// --onestop: zip basename (sans .zip) → onestop id. Sync fills the
+	// same map from the registry; this flag is the by-hand route.
+	var onestop map[string]string
+	if c.onestop != "" {
+		onestop = map[string]string{}
+		for _, kv := range strings.Split(c.onestop, ",") {
+			k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+			if !ok || k == "" || v == "" {
+				fail("--onestop wants key=onestop-id[,key=onestop-id]\ntry: portolan help chart")
+			}
+			onestop[strings.TrimSuffix(k, ".zip")] = v
+		}
+	}
 	// Curation resolves through the SAME loader the atlas uses, so a CLI
 	// build and a dashboard build of one city cannot disagree.
 	var sty *style.Set
@@ -521,7 +536,7 @@ func runChart(c *chartFlags) {
 	die(pipeline.Chart(pipeline.ChartOpts{
 		GTFS: c.gtfs, Rail: c.rail, Streets: c.streets, Stops: c.stops, BBox: bbox, Exclude: exclude,
 		Corridors: c.corridors, CorridorNodes: c.corridorNodes, Anchor: anchorLL,
-		LineAgencies: las, Scenario: c.scenario, Style: sty, ExportGTFS: c.exportGTFS, AllowUnmatched: c.allowUnmatched,
+		LineAgencies: las, Scenario: c.scenario, Style: sty, ExportGTFS: c.exportGTFS, Onestop: onestop, AllowUnmatched: c.allowUnmatched,
 		Out: out, Format: c.format, Band: bandPtr, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }))
 }

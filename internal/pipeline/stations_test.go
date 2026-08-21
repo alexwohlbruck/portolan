@@ -398,3 +398,63 @@ func TestNormName(t *testing.T) {
 		t.Fatal("abbreviations must NOT expand")
 	}
 }
+
+func TestStationStopIDsAndGTFSIDProp(t *testing.T) {
+	feed, pats := testFeed()
+	sts := BuildStations(feed, pats, nil, nil)
+	var gc *Station
+	for i := range sts {
+		if sts[i].Name == "Grand Central" {
+			gc = &sts[i]
+		}
+	}
+	if gc == nil {
+		t.Fatal("no Grand Central")
+	}
+	// the served platforms, the parent record (a stops.txt row itself),
+	// and the overlay feed's stop — sorted, still prefixed
+	want := []string{"GC", "GCn", "GCs", "f1:GCT"}
+	if !reflect.DeepEqual(gc.StopIDs, want) {
+		t.Fatalf("GC StopIDs = %v, want %v", gc.StopIDs, want)
+	}
+
+	// both feeds registered: pairs from both, prefixes stripped, sorted
+	m := map[string]string{"": "f-dr5r-nyct", "f1": "f-mnr"}
+	got := gtfsIDProp(gc.StopIDs, m)
+	if got != "f-dr5r-nyct:GC;f-dr5r-nyct:GCn;f-dr5r-nyct:GCs;f-mnr:GCT" {
+		t.Fatalf("gtfs_ids = %q", got)
+	}
+	// overlay feed unregistered: its stop is omitted, not emitted bare
+	got = gtfsIDProp(gc.StopIDs, map[string]string{"": "f-dr5r-nyct"})
+	if got != "f-dr5r-nyct:GC;f-dr5r-nyct:GCn;f-dr5r-nyct:GCs" {
+		t.Fatalf("gtfs_ids sans overlay = %q", got)
+	}
+	// only the overlay registered: primary stops omitted
+	got = gtfsIDProp(gc.StopIDs, map[string]string{"f1": "f-mnr"})
+	if got != "f-mnr:GCT" {
+		t.Fatalf("gtfs_ids overlay-only = %q", got)
+	}
+	// no map at all: prop absent
+	if got := gtfsIDProp(gc.StopIDs, nil); got != "" {
+		t.Fatalf("gtfs_ids with no onestop map = %q, want empty", got)
+	}
+	// duplicate ids collapse
+	if got := gtfsIDProp([]string{"A", "A"}, map[string]string{"": "f-x"}); got != "f-x:A" {
+		t.Fatalf("dedup: %q", got)
+	}
+}
+
+func TestOnestopByPrefix(t *testing.T) {
+	m := onestopByPrefix("data/gtfs/mta-subway.zip, data/gtfs/mnr.zip,amtrak.zip",
+		map[string]string{"mta-subway": "f-nyct", "amtrak": "f-amtk"})
+	want := map[string]string{"": "f-nyct", "f2": "f-amtk"}
+	if !reflect.DeepEqual(m, want) {
+		t.Fatalf("onestopByPrefix = %v, want %v", m, want)
+	}
+	if onestopByPrefix("a.zip", nil) != nil {
+		t.Fatal("nil map must stay nil")
+	}
+	if onestopByPrefix("a.zip", map[string]string{"b": "f-b"}) != nil {
+		t.Fatal("no key matched: nil, not empty pairs")
+	}
+}

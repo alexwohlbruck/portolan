@@ -129,6 +129,21 @@ Barrelman parses this line; everything above it is human progress output.
 A build failure for one feed does not abort the run — it lands in `errors`
 and the exit code is 1, with everything else completed.
 
+## Tile contract additions
+
+Station label features (`ftype: "station"`) carry a `gtfs_ids` property:
+semicolon-joined `<feed-onestop>:<stop_id>` pairs, deduped and sorted —
+the GTFS stops merged into that station (served platforms plus the
+parent-station record where the feed ships one). Stop ids are the source
+feed's own, prefix-free. A stop whose source feed has no onestop id is
+omitted; when nothing qualifies the property is absent, not empty. This
+is how a clicked station tile feature opens a stop-detail panel keyed by
+feed identity. Markers (`ftype: "marker"`) do not carry it — they share
+the station's name, and the label feature is the identity anchor.
+
+By hand the map arrives via `chart --onestop <zip-basename>=<onestop>,…`;
+sync fills it from the registry's `onestop` fields automatically.
+
 ## What sync does not do
 
 - **Onboarding.** New feeds (Overpass extracts, pfaedle, discovery sweeps)
