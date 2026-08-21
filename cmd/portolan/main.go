@@ -789,8 +789,9 @@ var syncCmd = &command{
 moved (by the registry's onestop ids), diffs against the state manifest,
 and downloads what changed into --data. patch rebuilds exactly the
 builds whose inputs changed; global is the same executor with every
-feed in the changed set — the oracle patch must match. patch and global
-are not yet implemented; check works today.
+feed in the changed set — the oracle patch must match. check works
+today; patch and global plan (--dry-run: measure shared steel,
+re-derive groups, print the rebuild closure) but do not yet execute.
 
 TRANSITLAND_API_KEY is read from the environment. Feed entries without
 an onestop id are reported and skipped. A new upstream sha over
@@ -893,20 +894,95 @@ func runSyncCheck(sf *syncFlags) {
 	}
 }
 
-// runSyncStub: patch and global parse their flags today and land in a
-// later phase; --dry-run says what the run would have done, so the
-// operator can see the plan before the executor exists.
+// runSyncStub: the PLANNER is real — measurement, group re-derivation,
+// the rebuild closure, the registry rewrite payload — and --dry-run
+// prints it. Execution (actually rebuilding) is the next phase; a
+// non-dry run refuses before measuring anything.
 func runSyncStub(sub string, sf *syncFlags) {
-	if sf.dryRun {
-		scope := "every registered feed"
-		if sub == "patch" {
-			scope = "feeds " + sf.feeds
-		}
-		fmt.Printf("sync %s would: take %s as the changed set, measure the affected\n", sub, scope)
-		fmt.Printf("closure (shared steel, groups, overlays — docs/SYNC.md), rebuild those\n")
-		fmt.Printf("builds into %s, retile into %s, export corrected GTFS\n", sf.build, sf.tiles)
-		fmt.Printf("into %s, and record each stage in %s\n", sf.exportGTFS, sf.state)
+	if !sf.dryRun {
+		fmt.Fprintf(os.Stderr, "portolan: sync %s is not yet implemented — sync check and --dry-run work today\n", sub)
+		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "portolan: sync %s is not yet implemented — sync check works today\n", sub)
-	os.Exit(1)
+	cfg, err := registry.Load(sf.config)
+	die(err)
+	doc, err := sync.LoadDoc(sf.config)
+	die(err)
+	st, err := sync.LoadState(sf.state)
+	die(err)
+	var changed []string
+	if sub == "patch" {
+		for _, k := range strings.Split(sf.feeds, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				changed = append(changed, k)
+			}
+		}
+	}
+	plan, err := sync.BuildPlan(sync.PlanOpts{
+		Config: cfg, Doc: doc, State: st,
+		Changed: changed, BuildDir: sf.build, Global: sub == "global",
+		Log: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+	})
+	die(err)
+	printPlan(plan)
+	if sf.jsonOut {
+		b, _ := json.Marshal(map[string]any{
+			"changed": plan.Changed, "affected": plan.Affected,
+			"standalone": plan.Standalone, "member_pyramids": plan.MemberPyramids,
+			"groups": plan.Groups, "groups_created": plan.GroupsCreated,
+			"groups_deleted": plan.GroupsDeleted, "overlays": plan.Overlays,
+			"groups_rewritten": plan.RegistryChanged,
+		})
+		fmt.Printf("RESULT %s\n", b)
+	}
+}
+
+// printPlan: the derivation the way groups.py reports it, then the
+// rebuild closure — what a non-dry run would do, in execution order.
+func printPlan(p *sync.Plan) {
+	d := p.Derivation
+	dups := make([]string, 0, len(d.Duplicate))
+	for lo := range d.Duplicate {
+		dups = append(dups, lo)
+	}
+	sort.Strings(dups)
+	for _, lo := range dups {
+		fmt.Printf("  duplicate: %s is %s again — held out\n", lo, d.Duplicate[lo])
+	}
+	for _, k := range d.Undrawn {
+		fmt.Printf("  undrawn:   %s has no build — held out\n", k)
+	}
+	for _, g := range d.Groups {
+		e := g.Extent
+		fmt.Printf("[%.2f,%.2f,%.2f,%.2f]  %.2f deg2\n", e[0], e[1], e[2], e[3], e.Area())
+		for _, m := range g.Members {
+			fmt.Printf("    member  %s\n", m)
+		}
+		for _, o := range g.Overlays {
+			var km float64
+			for _, m := range g.Members {
+				if s := d.SharedM(o, m); s > km {
+					km = s
+				}
+			}
+			fmt.Printf("    overlay %s  (%.0f km shared)\n", o, km/1000)
+		}
+	}
+	fmt.Printf("\nplan: %d changed, %d measured, %d affected\n",
+		len(p.Changed), len(p.Measured), len(p.Affected))
+	list := func(name string, ks []string) {
+		if len(ks) > 0 {
+			fmt.Printf("  %-20s %s\n", name, strings.Join(ks, " "))
+		}
+	}
+	list("rebuild standalone:", p.Standalone)
+	list("rebuild groups:", p.Groups)
+	list("  created:", p.GroupsCreated)
+	list("  deleted:", p.GroupsDeleted)
+	list("overlay backgrounds:", p.Overlays)
+	list("member pyramids:", p.MemberPyramids)
+	if p.RegistryChanged {
+		fmt.Printf("  registry rewrite:    yes (%d bytes)\n", len(p.Registry))
+	} else {
+		fmt.Printf("  registry rewrite:    no\n")
+	}
 }

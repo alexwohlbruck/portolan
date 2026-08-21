@@ -49,7 +49,10 @@ The work is finding the closure of "input set changed":
    sample rail-typed shapes every 30 m, bin into 60 m cells, a pair
    qualifies at ≥900 m of co-occupied run. A bbox prefilter keeps this
    cheap: only feeds whose window intersects a changed feed's window are
-   measured.
+   measured — transitively through region-scale windows, so a whole
+   member chain is measured together, but corridor-scale windows
+   (>20 deg²: Amtrak, VIA) are measured when touched without propagating
+   the frontier, or every patch would weld into a global run.
 3. **Group closure** — group membership is re-derived over the affected
    component (the union-find component containing any feed in C, measured
    with the same rules `tools/groups.py` uses). If membership, windows, or
@@ -113,8 +116,13 @@ entry in portolan.json already points its primary gtfs at
 `data/gtfs/<feedkey>.zip`, so a download lands exactly where the feed's
 build reads.
 
-(Phasing: today check ends after download-and-record — the handoff into
-the patch flow arrives with the patch executor itself.)
+(Phasing: today check ends after download-and-record, and `sync patch
+--dry-run` / `sync global --dry-run` print the real plan — measurement,
+group re-derivation, the rebuild closure, and whether the registry would
+be rewritten — without executing it. The executor that walks the plan is
+the next phase. A changed feed's zip must be on disk before planning:
+the measurement reads it, and a patch planned over an absent zip would
+read a partial data tree as the railway vanishing.)
 
 ## Machine-readable result
 
