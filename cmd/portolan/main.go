@@ -19,16 +19,18 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"sort"
-	"time"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexwohlbruck/portolan/internal/atlas"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
+	"github.com/alexwohlbruck/portolan/internal/registry"
 	"github.com/alexwohlbruck/portolan/internal/serve"
 	"github.com/alexwohlbruck/portolan/internal/style"
+	"github.com/alexwohlbruck/portolan/internal/sync"
 	"github.com/alexwohlbruck/portolan/internal/tiles"
 )
 
@@ -47,6 +49,10 @@ type command struct {
 	// flags registers the command's flags; run does the work.
 	flags func(*flag.FlagSet) any
 	run   func(*flag.FlagSet, any)
+	// raw, when set, takes over argument handling entirely — for a
+	// command whose first argument is a verb, not a flag (sync
+	// check|patch|global). printHelp still reads flags as usual.
+	raw func(args []string)
 }
 
 type flagGroup struct {
@@ -57,7 +63,10 @@ type flagGroup struct {
 var commands []*command
 
 func init() {
-	commands = []*command{chartCmd, soundCmd, scenariosCmd, tilesCmd, atlasCmd, serveCmd}
+	commands = []*command{chartCmd, soundCmd, scenariosCmd, tilesCmd, syncCmd, atlasCmd, serveCmd}
+	// wired here, not in the literal: runSync prints syncCmd's help, and
+	// the compiler calls that reference an initialization cycle
+	syncCmd.raw = runSync
 }
 
 func main() {
@@ -106,6 +115,10 @@ func find(name string) *command {
 // help, not a usage error — while a genuine mistake goes to stderr with
 // a pointer to the right help page and exits 2.
 func (c *command) exec(args []string) {
+	if c.raw != nil {
+		c.raw(args)
+		return
+	}
 	fs := flag.NewFlagSet(c.name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	cfg := c.flags(fs)
@@ -738,4 +751,147 @@ bullets at z12, matching the viewer's own symbol floors. A tiles.json
 		fmt.Printf("%d tiles written (%.1f MB), %d unchanged, %d pruned → %s\n",
 			st.Tiles, float64(st.Bytes)/1e6, st.Unchanged, st.Removed, t.out)
 	},
+}
+
+// ------------------------------------------------------------ sync
+
+type syncFlags struct {
+	config, data, build, tiles, exportGTFS string
+	state, styleDir, feeds                 string
+	jobs                                   int
+	dryRun, jsonOut                        bool
+}
+
+var syncCmd = &command{
+	name:    "sync",
+	summary: "reconcile the feed fleet against upstream (docs/SYNC.md)",
+	usage: []string{
+		"sync check  --config portolan.json [flags]",
+		"sync patch  --config portolan.json --feeds key1,key2 [flags]",
+		"sync global --config portolan.json [flags]",
+	},
+	about: `Keeps a fleet of feeds current. check asks transitland which feeds
+moved (by the registry's onestop ids), diffs against the state manifest,
+and downloads what changed into --data. patch rebuilds exactly the
+builds whose inputs changed; global is the same executor with every
+feed in the changed set — the oracle patch must match. patch and global
+are not yet implemented; check works today.
+
+TRANSITLAND_API_KEY is read from the environment. Feed entries without
+an onestop id are reported and skipped. A new upstream sha over
+identical content records the sha and rebuilds nothing — the content
+hash is the identity that matters (docs/SYNC.md).`,
+	groups: []flagGroup{
+		{"inputs", []string{"config", "data", "feeds"}},
+		{"outputs", []string{"build", "tiles", "export-gtfs", "state", "style-dir"}},
+		{"run", []string{"jobs", "dry-run", "json"}},
+	},
+	example: []string{
+		"portolan sync check --config portolan.json --dry-run",
+		"portolan sync check --config portolan.json --json",
+		"portolan sync patch --config portolan.json --feeds mta-subway",
+	},
+	flags: func(fs *flag.FlagSet) any {
+		s := &syncFlags{}
+		fs.StringVar(&s.config, "config", "portolan.json", "feed registry")
+		fs.StringVar(&s.data, "data", "data/gtfs", "where GTFS zips live / are downloaded")
+		fs.StringVar(&s.build, "build", "build", "build fan output dir")
+		fs.StringVar(&s.tiles, "tiles", "build/tiles", "tile pyramids + index.json")
+		fs.StringVar(&s.exportGTFS, "export-gtfs", "build/export", "corrected GTFS zips (empty = skip export)")
+		fs.StringVar(&s.state, "state", "", "state manifest (default <build>/sync-state.json)")
+		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory")
+		fs.StringVar(&s.feeds, "feeds", "", "comma list of feed keys (patch only)")
+		fs.IntVar(&s.jobs, "jobs", runtime.NumCPU(), "parallel feed builds")
+		fs.BoolVar(&s.dryRun, "dry-run", false, "plan only: print what would happen, change nothing")
+		fs.BoolVar(&s.jsonOut, "json", false, "final stdout line is RESULT {…} for a supervising process")
+		return s
+	},
+	// raw is runSync, assigned in init() to break an initialization cycle
+}
+
+func runSync(args []string) {
+	if len(args) == 0 {
+		fail("sync needs a subcommand: check, patch or global\ntry: portolan help sync")
+	}
+	sub := args[0]
+	switch sub {
+	case "help", "-h", "--help":
+		syncCmd.printHelp(os.Stdout)
+		return
+	case "check", "patch", "global":
+	default:
+		fail("sync %q: want check, patch or global\ntry: portolan help sync", sub)
+	}
+	fs := flag.NewFlagSet("sync "+sub, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	sf := syncCmd.flags(fs).(*syncFlags)
+	if err := fs.Parse(args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			syncCmd.printHelp(os.Stdout)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "portolan sync %s: %v\n", sub, err)
+		fmt.Fprintf(os.Stderr, "try: portolan help sync\n")
+		os.Exit(2)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "portolan sync %s: unexpected argument %q — flags only\n", sub, fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "try: portolan help sync\n")
+		os.Exit(2)
+	}
+	if sub == "patch" && sf.feeds == "" {
+		fail("sync patch needs --feeds: the keys whose zips changed\ntry: portolan help sync")
+	}
+	if sub != "patch" && sf.feeds != "" {
+		fail("--feeds is a patch flag — %s finds the changed set itself", sub)
+	}
+	if sf.state == "" {
+		sf.state = filepath.Join(sf.build, "sync-state.json")
+	}
+	if sub == "check" {
+		runSyncCheck(sf)
+		return
+	}
+	runSyncStub(sub, sf)
+}
+
+func runSyncCheck(sf *syncFlags) {
+	cfg, err := registry.Load(sf.config)
+	die(err)
+	res, err := sync.Check(sync.CheckOpts{
+		Config:    cfg,
+		StatePath: sf.state,
+		DataDir:   sf.data,
+		Client:    sync.NewClient(os.Getenv("TRANSITLAND_API_KEY")),
+		DryRun:    sf.dryRun,
+		Log:       func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	})
+	die(err)
+	fmt.Printf("%d changed, %d skipped, %d errors\n",
+		len(res.Changed), len(res.Skipped), len(res.Errors))
+	if sf.jsonOut {
+		b, _ := json.Marshal(res)
+		fmt.Printf("RESULT %s\n", b)
+	}
+	if len(res.Errors) > 0 {
+		os.Exit(1)
+	}
+}
+
+// runSyncStub: patch and global parse their flags today and land in a
+// later phase; --dry-run says what the run would have done, so the
+// operator can see the plan before the executor exists.
+func runSyncStub(sub string, sf *syncFlags) {
+	if sf.dryRun {
+		scope := "every registered feed"
+		if sub == "patch" {
+			scope = "feeds " + sf.feeds
+		}
+		fmt.Printf("sync %s would: take %s as the changed set, measure the affected\n", sub, scope)
+		fmt.Printf("closure (shared steel, groups, overlays — docs/SYNC.md), rebuild those\n")
+		fmt.Printf("builds into %s, retile into %s, export corrected GTFS\n", sf.build, sf.tiles)
+		fmt.Printf("into %s, and record each stage in %s\n", sf.exportGTFS, sf.state)
+	}
+	fmt.Fprintf(os.Stderr, "portolan: sync %s is not yet implemented — sync check works today\n", sub)
+	os.Exit(1)
 }

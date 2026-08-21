@@ -97,12 +97,24 @@ is written after each feed completes, so a rerun resumes where it stopped.
 ## check
 
 For every feed entry with an `onestop` id, ask transitland for the current
-`feed_state.feed_version.sha1` (batched, `feeds/{onestop}`), diff against the
-manifest, download changed feeds into `--data` (via
-`download_latest_feed_version`, falling back to `urls.static_current`), then
-run the patch flow on the changed set. `--dry-run` stops after the diff.
-Feeds without an `onestop` id are reported and skipped. Exit 0 with
-`"changed": []` when nothing moved.
+`feed_state.feed_version.sha1` (one `feeds/{onestop}` request per feed,
+sequential, honoring a 429 once via Retry-After — the API has no batch
+lookup), diff against the manifest, download changed feeds into `--data` as
+`<feedkey>.zip` (via `download_latest_feed_version`, falling back to
+`urls.static_current`), then run the patch flow on the changed set. A new
+sha over identical content records the sha and changes nothing on disk.
+`--dry-run` stops after the diff, touching neither `--data` nor the
+manifest. Feeds without an `onestop` id are reported and skipped. Exit 0
+with `"changed": []` when nothing moved; check's RESULT line carries
+`{"changed":[…],"skipped":[…],"errors":[…]}`.
+
+The `<feedkey>.zip` name is not a new convention: every onestop-bearing
+entry in portolan.json already points its primary gtfs at
+`data/gtfs/<feedkey>.zip`, so a download lands exactly where the feed's
+build reads.
+
+(Phasing: today check ends after download-and-record — the handoff into
+the patch flow arrives with the patch executor itself.)
 
 ## Machine-readable result
 
