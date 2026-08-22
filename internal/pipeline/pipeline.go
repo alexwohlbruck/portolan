@@ -908,11 +908,44 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 		}, s.Line, frame); ok {
 			if len(s.Acts) > 0 {
 				f.Props["acts"] = strings.Join(s.Acts, ";")
+				if idx := actsIndex(s.Routes, len(s.Acts)); idx != "" {
+					f.Props["ridx"] = idx
+				}
 			}
 			fc.Features = append(fc.Features, f)
 		}
 	}
 	return writeFC(path, fc)
+}
+
+// actsIndex names each route's slot in the `acts` string: "A=00;C=01;E=02".
+//
+// `acts` is aligned to `routes` and every mask is the same width, so slot
+// i starts at a fixed stride — a consumer that knows i can read one route's
+// mask exactly. What it cannot do is FIND i: a filter expression can slice
+// a string at a computed offset but cannot count the commas before a token,
+// and route ids are not fixed width. So the index is published instead of
+// re-derived, two digits per route, which is a fifth of what repeating the
+// masks per route would cost.
+//
+// Two digits is enough by construction: ACTS_MAX_ROUTES is 16, and a
+// segment carrying more masks than routes (or fewer) is not indexable at
+// all — better to omit the field than to name a slot that is not there.
+func actsIndex(routes []string, masks int) string {
+	if len(routes) != masks || len(routes) > 99 {
+		return ""
+	}
+	var b strings.Builder
+	for i, r := range routes {
+		if r == "" || strings.ContainsAny(r, ";=") {
+			return "" // a delimiter inside an id would break every lookup
+		}
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		fmt.Fprintf(&b, "%s=%02d", r, i)
+	}
+	return b.String()
 }
 
 // vertexFeature emits a line's own vertices (no resampling).

@@ -72,6 +72,19 @@ AND of their two sides — a movement runs only when the route rides both.
 Route-level masks (/api/activity) remain as the toolbar summary and the
 fallback for builds that predate acts.
 
+Each ribbon also carries `ridx`, naming the slot every route owns in its
+own `acts` string: `"A=00;C=01;E=02"`. The masks ride at a fixed stride,
+so a consumer that knows the slot can read ONE route's hours exactly —
+but a renderer's filter expression can slice a string at a computed
+offset and cannot count the commas in `routes`, and route ids are not
+fixed width. Publishing the slot costs two digits per route, a fifth of
+what repeating the masks would, and it is what lets a client isolate a
+single line honestly: "is the 3 running on this track" rather than "is
+anything running on this track", which on shared trunk (2/3, A/C — most
+of a big system) are different questions with different answers at 3am.
+Absent on builds that predate it, and a consumer should fall back to the
+per-segment union rather than drawing nothing.
+
 The mid-edge short-turn residual is RESOLVED by terminal cuts
 (stages.CutSegmentsAtTerminals, a post-FAIR pass): emitted segments are
 cut at mid-segment pattern terminals — anchored at the pattern's
