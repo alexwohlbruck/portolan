@@ -242,6 +242,15 @@ Each pyramid `--tiles/<feed>/` additionally carries:
 - `style.json` — the build's resolved style manifest (`<out>.style.json`
   copied in), so the tile consumer fetches `<feed>/style.json` next to
   the tiles it draws;
+- `routes.json` — every route the pyramid draws, keyed by the id its
+  TILES use (prefixed as a group build prefixes them, `f3:2`), with the
+  bullet style already resolved: `{label, color, shape, mode}`. Curation
+  decides a bullet's outline — `shape:` on a route or its agency — and
+  the build resolves it and bakes the answer into the symbols; a consumer
+  that is not the map holds a route id from a routing engine and cannot
+  redo that, so the answer is published beside the tiles. An empty
+  `shape` is the default circle, exactly as the tiles carry it. Absent
+  for a pyramid with no drawn symbols at all (the bus-only feeds);
 - `tiles.json` — TileJSON with a single RELATIVE `{z}/{x}/{y}.mvt`
   template, no hosts.
 
