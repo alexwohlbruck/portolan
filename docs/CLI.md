@@ -462,6 +462,55 @@ for 30 minutes.
 
 ---
 
+## sync
+
+Reconcile the feed fleet against upstream — notice which GTFS feeds
+changed, download them, rebuild what their change touches. The full
+contract, including why a patch run must equal a global one, is
+[SYNC.md](SYNC.md).
+
+```
+portolan sync check  --config portolan.json [flags]
+portolan sync patch  --config portolan.json --feeds key1,key2 [flags]
+portolan sync global --config portolan.json [flags]
+```
+
+| flag | meaning |
+|---|---|
+| `--config` | Feed registry (default `portolan.json`). |
+| `--data` | Where GTFS zips live / are downloaded (default `data/gtfs`). |
+| `--feeds` | Comma list of feed keys — `patch` only. |
+| `--build` | Build fan output dir (default `build`). |
+| `--tiles` | Tile pyramids + index.json (default `build/tiles`). |
+| `--export-gtfs` | Corrected GTFS zips; empty skips export (default `build/export`). |
+| `--state` | State manifest (default `<build>/sync-state.json`). |
+| `--style-dir` | Curation directory (default `style`). |
+| `--jobs` | Parallel feed builds (default min(4, NumCPU) — charts are memory-heavy). |
+| `--dry-run` | Plan only: print what would happen, change nothing. |
+| `--json` | Final stdout line is `RESULT {…}` for a supervising process. |
+
+`check` asks transitland for each registered feed's current version (by
+the registry's `onestop` id, `TRANSITLAND_API_KEY` from the environment),
+diffs against the manifest, downloads what moved into `--data`, and runs
+the patch flow on the changed set. A new upstream sha over identical
+content records the sha and rebuilds nothing. `patch` rebuilds exactly
+the builds whose inputs the named feeds touch — shared-steel
+measurement, group re-derivation, registry rewrite, builds (each a
+`portolan chart` child process), the ink-retention verify gate on every
+group, tiling, GTFS export, the static tile index. `global` is the same
+executor with every on-disk feed in the changed set — the oracle a patch
+must match byte for byte; registry entries whose zip was never
+downloaded are reported and skipped.
+
+```bash
+portolan sync check --dry-run              # what moved upstream?
+portolan sync check --json                 # download + rebuild it, tell barrelman
+portolan sync patch --feeds mta-subway     # rebuild one feed's closure
+portolan sync global --json                # rebuild the world, report
+```
+
+---
+
 ## Recipes
 
 ```bash

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Opts configures one tiling run. Build is the ribbon GeoJSON `chart`
@@ -278,6 +279,9 @@ func Build(o Opts) (Stats, error) {
 		return st, err
 	}
 
+	if err := writeRouteIndex(o, points); err != nil {
+		return st, err
+	}
 	return st, writeTileJSON(o, minx, miny, maxx, maxy)
 }
 
@@ -741,4 +745,106 @@ func writeTileJSON(o Opts, minx, miny, maxx, maxy float64) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(o.Out, "tiles.json"), raw, 0o644)
+}
+
+// ── the pyramid's bullet vocabulary ────────────────────────────────────
+
+// RouteStyle is how one route's bullet is drawn: the glyphs on it, its
+// colour, and the outline curation puts it in. Everything a consumer
+// needs to draw the same bullet the map draws, without the map.
+type RouteStyle struct {
+	Label string `json:"label"`
+	Color string `json:"color,omitempty"`
+	// Shape is portolan's curated outline ("square", "notch", …). Empty
+	// is the default circle, exactly as the tiles carry it — an absent
+	// shape is not "no shape".
+	Shape string `json:"shape,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+}
+
+// writeRouteIndex emits <out>/routes.json: every route the pyramid draws,
+// keyed by the id its tiles use, with the bullet style already resolved.
+//
+// The map resolves curation (a route's own `shape:`, then its agency's,
+// then the default) while it builds, and bakes the answer into each
+// station's aligned arrays. A panel beside the map has no way to redo
+// that: it holds a route id from a routing engine and knows nothing about
+// portolan's style documents, so a Mexico City numeral came out a circle
+// there and a notched square on the map beside it. This publishes the
+// resolved answer next to the tiles it belongs to.
+//
+// Ids are the TILE's ids, prefixed as a group build prefixes them
+// ("f3:2"), because that is what identifies a route in this pyramid. A
+// consumer holding a feed's own id matches on the `:id` suffix, the same
+// way the isolation filter does.
+func writeRouteIndex(o Opts, points []point) error {
+	styles := map[string]RouteStyle{}
+	add := func(id, label, color, shape, mode string) {
+		if id == "" {
+			return
+		}
+		cur, seen := styles[id]
+		// first writer wins, but never let a blank overwrite a value:
+		// markers and stations carry the same vocabulary, and a station
+		// with one route missing a colour must not erase it
+		if !seen {
+			styles[id] = RouteStyle{Label: label, Color: color, Shape: shape, Mode: mode}
+			return
+		}
+		if cur.Label == "" {
+			cur.Label = label
+		}
+		if cur.Color == "" {
+			cur.Color = color
+		}
+		if cur.Shape == "" {
+			cur.Shape = shape
+		}
+		if cur.Mode == "" {
+			cur.Mode = mode
+		}
+		styles[id] = cur
+	}
+	at := func(xs []string, i int) string {
+		if i < len(xs) {
+			return xs[i]
+		}
+		return ""
+	}
+	for _, p := range points {
+		switch str(p.props["ftype"]) {
+		case "station", "marker":
+			ids := splitCSV(str(p.props["routes"]))
+			labels := splitCSV(str(p.props["labels"]))
+			colors := splitCSV(str(p.props["route_colors"]))
+			shapes := splitCSV(str(p.props["shapes"]))
+			modes := splitCSV(str(p.props["modes"]))
+			for i, id := range ids {
+				add(id, at(labels, i), at(colors, i), at(shapes, i), at(modes, i))
+			}
+		case "cat":
+			// a caterpillar names one route on its own — the only place a
+			// route with no drawn station still states its bullet
+			add(str(p.props["route"]), str(p.props["label"]),
+				str(p.props["hex"]), str(p.props["shape"]), str(p.props["mode"]))
+		}
+	}
+	if len(styles) == 0 {
+		return nil // nothing to say; no file rather than an empty one
+	}
+	raw, err := json.MarshalIndent(styles, "", " ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(o.Out, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(o.Out, "routes.json"), raw, 0o644)
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -183,6 +184,12 @@ type ChartOpts struct {
 	// the extract, not to ship the chord. The escape hatch exists for
 	// extracts known to be incomplete mid-migration.
 	AllowUnmatched bool
+	// Onestop: transitland onestop id per source GTFS zip, keyed by the
+	// zip's basename without ".zip" ("mta-subway" for data/gtfs/
+	// mta-subway.zip). Optional; feeds absent here simply contribute no
+	// gtfs_ids entries. The chart CLI fills it from --onestop; sync
+	// (phase 3) fills it from the registry's onestop fields.
+	Onestop map[string]string
 	// ExportGTFS: a directory to write ADJUSTED copies of the source
 	// feeds into — each input zip again, with shapes.txt geometry
 	// replaced by the matched track walk (export.go). Path-only like
@@ -614,7 +621,8 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	} else {
 		logf("caterpillars: off (style)")
 	}
-	if err := writeStations(o.Out+".stations.geojson", sts, cats); err != nil {
+	if err := writeStations(o.Out+".stations.geojson", sts, cats,
+		onestopByPrefix(o.GTFS, o.Onestop)); err != nil {
 		return err
 	}
 	// the resolved style travels WITH the build: the viewer renders widths,
@@ -900,11 +908,44 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 		}, s.Line, frame); ok {
 			if len(s.Acts) > 0 {
 				f.Props["acts"] = strings.Join(s.Acts, ";")
+				if idx := actsIndex(s.Routes, len(s.Acts)); idx != "" {
+					f.Props["ridx"] = idx
+				}
 			}
 			fc.Features = append(fc.Features, f)
 		}
 	}
 	return writeFC(path, fc)
+}
+
+// actsIndex names each route's slot in the `acts` string: "A=00;C=01;E=02".
+//
+// `acts` is aligned to `routes` and every mask is the same width, so slot
+// i starts at a fixed stride — a consumer that knows i can read one route's
+// mask exactly. What it cannot do is FIND i: a filter expression can slice
+// a string at a computed offset but cannot count the commas before a token,
+// and route ids are not fixed width. So the index is published instead of
+// re-derived, two digits per route, which is a fifth of what repeating the
+// masks per route would cost.
+//
+// Two digits is enough by construction: ACTS_MAX_ROUTES is 16, and a
+// segment carrying more masks than routes (or fewer) is not indexable at
+// all — better to omit the field than to name a slot that is not there.
+func actsIndex(routes []string, masks int) string {
+	if len(routes) != masks || len(routes) > 99 {
+		return ""
+	}
+	var b strings.Builder
+	for i, r := range routes {
+		if r == "" || strings.ContainsAny(r, ";=") {
+			return "" // a delimiter inside an id would break every lookup
+		}
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		fmt.Fprintf(&b, "%s=%02d", r, i)
+	}
+	return b.String()
 }
 
 // vertexFeature emits a line's own vertices (no resampling).
@@ -987,6 +1028,34 @@ func LoadServiceInfo(gtfsPaths string) (*gtfs.ServiceInfo, error) {
 			return c.Drawable() && c != mode.Bus
 		},
 	})
+}
+
+// onestopByPrefix resolves ChartOpts.Onestop (keyed by zip basename)
+// into the feed prefixes loadFeeds stamps on ids: "" for the primary,
+// "f1", "f2"… for overlays, in comma-list order — the SAME order
+// loadFeeds numbers them, so the two cannot disagree about which feed
+// "f1" is. Nil in, nil out.
+func onestopByPrefix(gtfsPaths string, byKey map[string]string) map[string]string {
+	if len(byKey) == 0 || gtfsPaths == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for i, p := range strings.Split(gtfsPaths, ",") {
+		key := strings.TrimSuffix(filepath.Base(strings.TrimSpace(p)), ".zip")
+		os, ok := byKey[key]
+		if !ok || os == "" {
+			continue
+		}
+		if i == 0 {
+			out[""] = os
+		} else {
+			out[fmt.Sprintf("f%d", i)] = os
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // loadFeeds loads and merges every feed in the comma list. Overlay route

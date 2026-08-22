@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -396,5 +399,147 @@ func TestNormName(t *testing.T) {
 	}
 	if normName("Court St") == normName("Court Street") {
 		t.Fatal("abbreviations must NOT expand")
+	}
+}
+
+func TestStationStopIDsAndGTFSIDProp(t *testing.T) {
+	feed, pats := testFeed()
+	sts := BuildStations(feed, pats, nil, nil)
+	var gc *Station
+	for i := range sts {
+		if sts[i].Name == "Grand Central" {
+			gc = &sts[i]
+		}
+	}
+	if gc == nil {
+		t.Fatal("no Grand Central")
+	}
+	// the served platforms, the parent record (a stops.txt row itself),
+	// and the overlay feed's stop — sorted, still prefixed
+	want := []string{"GC", "GCn", "GCs", "f1:GCT"}
+	if !reflect.DeepEqual(gc.StopIDs, want) {
+		t.Fatalf("GC StopIDs = %v, want %v", gc.StopIDs, want)
+	}
+
+	// both feeds registered: pairs from both, prefixes stripped, sorted
+	m := map[string]string{"": "f-dr5r-nyct", "f1": "f-mnr"}
+	got := gtfsIDProp(gc.StopIDs, m)
+	if got != "f-dr5r-nyct:GC;f-dr5r-nyct:GCn;f-dr5r-nyct:GCs;f-mnr:GCT" {
+		t.Fatalf("gtfs_ids = %q", got)
+	}
+	// overlay feed unregistered: its stop is omitted, not emitted bare
+	got = gtfsIDProp(gc.StopIDs, map[string]string{"": "f-dr5r-nyct"})
+	if got != "f-dr5r-nyct:GC;f-dr5r-nyct:GCn;f-dr5r-nyct:GCs" {
+		t.Fatalf("gtfs_ids sans overlay = %q", got)
+	}
+	// only the overlay registered: primary stops omitted
+	got = gtfsIDProp(gc.StopIDs, map[string]string{"f1": "f-mnr"})
+	if got != "f-mnr:GCT" {
+		t.Fatalf("gtfs_ids overlay-only = %q", got)
+	}
+	// no map at all: prop absent
+	if got := gtfsIDProp(gc.StopIDs, nil); got != "" {
+		t.Fatalf("gtfs_ids with no onestop map = %q, want empty", got)
+	}
+	// duplicate ids collapse
+	if got := gtfsIDProp([]string{"A", "A"}, map[string]string{"": "f-x"}); got != "f-x:A" {
+		t.Fatalf("dedup: %q", got)
+	}
+}
+
+func TestOnestopByPrefix(t *testing.T) {
+	m := onestopByPrefix("data/gtfs/mta-subway.zip, data/gtfs/mnr.zip,amtrak.zip",
+		map[string]string{"mta-subway": "f-nyct", "amtrak": "f-amtk"})
+	want := map[string]string{"": "f-nyct", "f2": "f-amtk"}
+	if !reflect.DeepEqual(m, want) {
+		t.Fatalf("onestopByPrefix = %v, want %v", m, want)
+	}
+	if onestopByPrefix("a.zip", nil) != nil {
+		t.Fatal("nil map must stay nil")
+	}
+	if onestopByPrefix("a.zip", map[string]string{"b": "f-b"}) != nil {
+		t.Fatal("no key matched: nil, not empty pairs")
+	}
+}
+
+// A marker is the station, one corridor at a time — the dot a rider
+// clicks, and at high zoom over a complex the only labelled feature left
+// once the merged label bows out. So it has to carry the same identity
+// the station does, or those clicks open nothing.
+func TestMarkersCarryStationIdentity(t *testing.T) {
+	sts := []Station{{
+		Name:    "Fulton St",
+		LL:      geo.LL{Lat: 40.7101, Lon: -74.0090},
+		LabelLL: geo.LL{Lat: 40.7101, Lon: -74.0090},
+		OSMID:   "node/1683730419",
+		StopIDs: []string{"418", "635"},
+		Routes:  []string{"A", "4"},
+		Markers: []Marker{
+			{LL: geo.LL{Lat: 40.7101, Lon: -74.0090}, Routes: []string{"A"}},
+			{LL: geo.LL{Lat: 40.7104, Lon: -74.0088}, Routes: []string{"4"}},
+		},
+	}}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "fulton")
+	if err := writeStations(out+".stations.geojson", sts, nil, map[string]string{"": "f-dr5r-nyctsubway"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(out + ".stations.geojson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct {
+		Features []struct {
+			Props map[string]any `json:"properties"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantIDs = "f-dr5r-nyctsubway:418;f-dr5r-nyctsubway:635"
+	markers := 0
+	for _, f := range fc.Features {
+		switch f.Props["ftype"] {
+		case "station", "marker":
+			if f.Props["ftype"] == "marker" {
+				markers++
+			}
+			if got := f.Props["osm"]; got != "node/1683730419" {
+				t.Errorf("%v osm = %v", f.Props["ftype"], got)
+			}
+			if got := f.Props["gtfs_ids"]; got != wantIDs {
+				t.Errorf("%v gtfs_ids = %v", f.Props["ftype"], got)
+			}
+		}
+	}
+	if markers != 2 {
+		t.Fatalf("markers = %d, want 2", markers)
+	}
+
+	// an unmatched station emits neither key rather than an empty one:
+	// absence is the honest "not matched", and "" would read as an id
+	sts[0].OSMID = ""
+	if err := writeStations(out+".none.geojson", sts, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(out + ".none.geojson")
+	// a FRESH value: unmarshalling into the old one merges into the maps
+	// it already holds, and every key would still be there
+	var bare struct {
+		Features []struct {
+			Props map[string]any `json:"properties"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &bare); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range bare.Features {
+		if _, ok := f.Props["osm"]; ok {
+			t.Error("osm emitted for an unmatched station")
+		}
+		if _, ok := f.Props["gtfs_ids"]; ok {
+			t.Error("gtfs_ids emitted with no onestop map")
+		}
 	}
 }

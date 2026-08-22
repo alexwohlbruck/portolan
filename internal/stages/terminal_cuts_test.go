@@ -206,3 +206,67 @@ func TestCutsPullBackToTerminalStop(t *testing.T) {
 		t.Fatalf("acts wrong: near=%s far=%s", out[0].Acts[0], out[1].Acts[0])
 	}
 }
+
+// The L problem in miniature: a segment whose 24/7 hours come from a
+// pattern that no longer rides its centerline — the geometry drifted,
+// which is what --allow-unmatched and a merged rail extract can do in a
+// group build. Recomputing from what is left would replace a railway that
+// runs all night with the hours of a limited-service pattern.
+//
+// The same feed built alone got this right, so the guard has to be
+// explicit: hours nothing on this segment can explain mean the segment is
+// not reconstructible, and the original stands.
+func TestCutsKeepHoursNoPatternCanExplain(t *testing.T) {
+	line := func(x0, x1, y float64) *geo.Line {
+		var pts []geo.Pt
+		for x := x0; x <= x1; x += 50 {
+			pts = append(pts, geo.Pt{X: x, Y: y})
+		}
+		return geo.NewLine(pts)
+	}
+	allDay := gtfs.Pattern{Route: gtfs.Route{ID: "L"}, ShapeID: "allday"}
+	rush := gtfs.Pattern{Route: gtfs.Route{ID: "L"}, ShapeID: "rush"}
+
+	var always, peak gtfs.Mask168
+	for d := 0; d < 7; d++ {
+		for h := 0; h < 24; h++ {
+			always = always.Set(d, h)
+		}
+		peak = peak.Set(d, 8)
+	}
+	SetPatternActs(map[string]gtfs.Mask168{
+		"L\x1fallday": always,
+		"L\x1frush":   peak,
+	})
+	defer SetPatternActs(nil)
+
+	seg := Segment{
+		Kind: "steady", Routes: []string{"L"},
+		Acts: []string{always.Hex()}, // SPLIT ORed both onto these edges
+		Line: line(0, 2000, 0),
+	}
+	paths := []Path{
+		// the all-day pattern drifted 300 m off the drawn centerline: no
+		// endpoint inside, and it rides nowhere near it
+		{Pattern: allDay, Line: line(-500, 2500, 300)},
+		// the rush pattern short-turns 700 m in and does ride the line
+		{Pattern: rush, Line: line(-500, 700, 0)},
+	}
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil)
+	for _, sg := range out {
+		if sg.Acts[0] != always.Hex() {
+			t.Fatalf("a 24/7 railway lost its hours to a rush-only pattern: %s", sg.Acts[0])
+		}
+	}
+
+	// and once that pattern is back ON the centerline, refinement runs
+	// again: the far piece keeps only the all-day hours
+	paths[0].Line = line(-500, 2500, 0)
+	out = CutSegmentsAtTerminals([]Segment{seg}, paths, nil)
+	if len(out) != 2 {
+		t.Fatalf("want 2 pieces once reconstructible, got %d", len(out))
+	}
+	if out[0].Acts[0] != always.Or(peak).Hex() || out[1].Acts[0] != always.Hex() {
+		t.Fatalf("near=%s far=%s", out[0].Acts[0], out[1].Acts[0])
+	}
+}

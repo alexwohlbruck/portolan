@@ -33,6 +33,9 @@ import (
 
 var tcDebug = os.Getenv("PORTOLAN_TCDBG") != ""
 
+// PORTOLAN_TCROUTE=<route id> traces every path decision for one route.
+var tcRoute = os.Getenv("PORTOLAN_TCROUTE")
+
 const (
 	tcEndDistM = 40.0  // a path endpoint this close to the segment is ON it
 	tcRideM    = 40.0  // a sample this close to a path counts as ridden
@@ -45,6 +48,34 @@ const (
 type pathCover struct {
 	a, b float64
 	mask gtfs.Mask168
+}
+
+// explains reports whether the patterns found on this segment can account
+// for every hour it already has — the precondition for rewriting them.
+//
+// This pass may only REFINE: each piece gets a subset of the segment's
+// hours, so what the pieces cover together must still be the whole. A
+// pattern that rides these edges but whose path never came near the drawn
+// centerline contributes nothing, and refining without it deletes service
+// that is really there.
+//
+// Not hypothetical. In the northeast-corridor group the L's two all-day
+// patterns produced neither cover nor contact, so the recomputation
+// replaced a 24/7 railway with the hours of its two limited-service
+// patterns, and the Canarsie line went dark on the map at night. The same
+// feed built alone was correct — the group matches against a merged rail
+// extract with --allow-unmatched, and the L's paths ended up somewhere the
+// centerline is not. Hours nothing here can explain are the signal that
+// this segment is not reconstructible, whatever the reason.
+func explains(acts []string, ri int, explained gtfs.Mask168) bool {
+	if ri >= len(acts) {
+		return true // no prior claim to contradict
+	}
+	orig, ok := gtfs.ParseMask168(acts[ri])
+	if !ok {
+		return true // nothing parseable to preserve
+	}
+	return explained.Or(orig) == explained
 }
 
 // CutSegmentsAtTerminals cuts steady/bridge segments at mid-segment
@@ -127,10 +158,18 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 		for ri, rid := range s.Routes {
 			ok := true
 			var cvs []pathCover
+			// every hour a pattern that touches this segment can account
+			// for, whether or not its coverage was usable
+			var explained gtfs.Mask168
 			for _, pi := range byRoute[rid] {
 				pa := &paths[pi]
-				cv, terminal, okc := coverOn(s.Line, L, pa.Line)
+				cv, terminal, okc, touches := coverOn(s.Line, L, pa.Line)
 				if !okc {
+					if touches {
+						if m, has := patternActs[pathActKey(*pa)]; has {
+							explained = explained.Or(m)
+						}
+					}
 					continue
 				}
 				mask, has := patternActs[pathActKey(*pa)]
@@ -138,6 +177,7 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 					ok = false
 					break
 				}
+				explained = explained.Or(mask)
 				cv.mask = mask
 				// pull the terminal back from the overshot path tip to
 				// the pattern's terminal STOP where we know it
@@ -181,19 +221,62 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 						// ending at nearer platforms must not keep the
 						// tail lit); only the CUT placement respects
 						// the sliver margin.
+						// A terminal stop trims the tail on ITS OWN side.
+						// A path that runs the whole segment puts both
+						// tips on it, and pairing a stop with the far tip
+						// reads the entire line as that stop's overshoot:
+						// the L's terminals sit 68 m and 110 m inside the
+						// drawn line (platforms, as always), and the far
+						// pairing shrank a 16 km 24/7 cover to a 68 m
+						// sliver. The line then inherited the hours of its
+						// limited-service variants and went dark at night.
+						// So when both tips are on the segment, a stop
+						// speaks only for the nearer one.
 						pp := pa.Line.Pts
+						tips := make([]geo.Pt, 0, 2)
 						for _, tip := range []geo.Pt{pp[0], pp[len(pp)-1]} {
+							if _, td := s.Line.ProjectArc(tip); td <= tcEndDistM {
+								tips = append(tips, tip)
+							}
+						}
+						if len(tips) == 2 {
+							a0, _ := s.Line.ProjectArc(tips[0])
+							a1, _ := s.Line.ProjectArc(tips[1])
+							if math.Abs(a1-sa) < math.Abs(a0-sa) {
+								tips = tips[1:]
+							} else {
+								tips = tips[:1]
+							}
+						}
+						for _, tip := range tips {
 							ta, td := s.Line.ProjectArc(tip)
 							if td > tcEndDistM {
 								continue
 							}
+							// A trim may shave the overshoot beyond a
+							// terminal stop; it may never erase the ride.
+							// A path that runs the WHOLE segment puts both
+							// its tips on it, so one interior stop matches
+							// the tail test on BOTH sides and pulls a and b
+							// onto itself — a zero-length cover, which votes
+							// for no hours at all. The all-day pattern then
+							// contributes nothing to the segment's mask and
+							// the line inherits the hours of whatever
+							// short-turn variant is left: Charlotte's LYNX
+							// read as 04:00-05:00 service and vanished from
+							// a live map for the other twenty-two hours.
+							na, nb := cv.a, cv.b
 							if ta > sa && L-ta < tcMarginM {
-								cv.b = sa // tail on the high side
+								nb = sa // tail on the high side
 							} else if ta < sa && ta < tcMarginM {
-								cv.a = sa // tail on the low side
+								na = sa // tail on the low side
 							} else {
 								continue
 							}
+							if nb-na < tcEndDistM {
+								continue
+							}
+							cv.a, cv.b = na, nb
 							if sa > tcMarginM && sa < L-tcMarginM {
 								terminal = sa
 							}
@@ -205,7 +288,12 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 					cuts = append(cuts, terminal)
 				}
 			}
-			if ok && len(cvs) > 0 {
+			if tcRoute != "" && rid == tcRoute {
+				for _, cv := range cvs {
+					fmt.Printf("TCFINAL seg=%d cover=[%.0f,%.0f] mask=%s\n", si, cv.a, cv.b, cv.mask.Hex()[:8])
+				}
+			}
+			if ok && len(cvs) > 0 && explains(s.Acts, ri, explained) {
 				covers[ri] = cvs
 				trusted[ri] = true
 			}
@@ -321,7 +409,15 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 // lands in the segment (or -1). A path either covers the whole segment
 // (segments end at junctions; paths only join and leave there) or a
 // prefix/suffix ending at one of its own endpoints.
-func coverOn(sl *geo.Line, L float64, path *geo.Line) (pathCover, float64, bool) {
+// coverOn projects a pattern's path onto a segment. The third result is
+// the usable cover; the fourth says the path TOUCHES this segment even
+// when no cover could be read off it — an endpoint of the path lands
+// inside, so the pattern is demonstrably here, and its hours are
+// accounted for even though its coverage is too ambiguous to refine
+// with. That distinction is what separates a tip-toucher (deliberately
+// excluded, hours explained) from a pattern whose geometry has drifted
+// away from the drawn centerline entirely (hours unexplained).
+func coverOn(sl *geo.Line, L float64, path *geo.Line) (pathCover, float64, bool, bool) {
 	// where do the path's endpoints sit relative to the segment?
 	pts := path.Pts
 	e0, e1 := pts[0], pts[len(pts)-1]
@@ -336,11 +432,11 @@ func coverOn(sl *geo.Line, L float64, path *geo.Line) (pathCover, float64, bool)
 		// path lives entirely within it (a stub pattern)
 		lo, hi := math.Min(a0, a1), math.Max(a0, a1)
 		if !ride((lo + hi) / 2) {
-			return pathCover{}, -1, false
+			return pathCover{}, -1, false, true
 		}
 		// two interior terminals: report the one further from an end —
 		// the caller's margin filters both anyway
-		return pathCover{a: lo, b: hi}, lo, true
+		return pathCover{a: lo, b: hi}, lo, true, true
 	case in0 || in1:
 		t := a0
 		if in1 {
@@ -351,19 +447,35 @@ func coverOn(sl *geo.Line, L float64, path *geo.Line) (pathCover, float64, bool)
 		const pr = tcRideM + 20
 		loSide := t > pr && ride(t-pr)
 		hiSide := t < L-pr && ride(t+pr)
-		if loSide == hiSide {
-			return pathCover{}, -1, false // ambiguous or crossing — skip
+		if loSide && hiSide {
+			// The path rides BOTH sides of its own endpoint, so that
+			// endpoint is not a terminal for this segment — the pattern
+			// runs through. It happens where a terminal stop projects a
+			// few metres inside the drawn centerline, and reading it as
+			// "ambiguous" cost the L its hours: its two all-day patterns
+			// were skipped here, leaving the segment to be rebuilt from
+			// limited-service patterns alone, and a 24/7 railway went
+			// dark at night. The ride probes are the evidence; believe
+			// them over the projection.
+			return pathCover{a: 0, b: L}, -1, true, true
+		}
+		if !loSide && !hiSide {
+			// touches without riding either side: a tip-toucher, which
+			// must not light the segment it barely reaches
+			return pathCover{}, -1, false, true
 		}
 		if loSide {
-			return pathCover{a: 0, b: t}, t, true
+			return pathCover{a: 0, b: t}, t, true, true
 		}
-		return pathCover{a: t, b: L}, t, true
+		return pathCover{a: t, b: L}, t, true, true
 	default:
-		// no endpoint inside: full coverage or none
+		// no endpoint inside: full coverage or none. "None" here means
+		// the path is not on this centerline — either it rides elsewhere
+		// entirely, or its geometry drifted off the line that was drawn.
 		if ride(L*0.5) && ride(L*0.25) && ride(L*0.75) {
-			return pathCover{a: 0, b: L}, -1, true
+			return pathCover{a: 0, b: L}, -1, true, true
 		}
-		return pathCover{}, -1, false
+		return pathCover{}, -1, false, false
 	}
 }
 

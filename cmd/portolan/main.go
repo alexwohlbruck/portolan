@@ -19,16 +19,18 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"sort"
-	"time"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexwohlbruck/portolan/internal/atlas"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/pipeline"
+	"github.com/alexwohlbruck/portolan/internal/registry"
 	"github.com/alexwohlbruck/portolan/internal/serve"
 	"github.com/alexwohlbruck/portolan/internal/style"
+	"github.com/alexwohlbruck/portolan/internal/sync"
 	"github.com/alexwohlbruck/portolan/internal/tiles"
 )
 
@@ -47,6 +49,10 @@ type command struct {
 	// flags registers the command's flags; run does the work.
 	flags func(*flag.FlagSet) any
 	run   func(*flag.FlagSet, any)
+	// raw, when set, takes over argument handling entirely — for a
+	// command whose first argument is a verb, not a flag (sync
+	// check|patch|global). printHelp still reads flags as usual.
+	raw func(args []string)
 }
 
 type flagGroup struct {
@@ -57,7 +63,10 @@ type flagGroup struct {
 var commands []*command
 
 func init() {
-	commands = []*command{chartCmd, soundCmd, scenariosCmd, tilesCmd, atlasCmd, serveCmd}
+	commands = []*command{chartCmd, soundCmd, scenariosCmd, tilesCmd, syncCmd, atlasCmd, serveCmd}
+	// wired here, not in the literal: runSync prints syncCmd's help, and
+	// the compiler calls that reference an initialization cycle
+	syncCmd.raw = runSync
 }
 
 func main() {
@@ -106,6 +115,10 @@ func find(name string) *command {
 // help, not a usage error — while a genuine mistake goes to stderr with
 // a pointer to the right help page and exits 2.
 func (c *command) exec(args []string) {
+	if c.raw != nil {
+		c.raw(args)
+		return
+	}
 	fs := flag.NewFlagSet(c.name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	cfg := c.flags(fs)
@@ -283,6 +296,7 @@ type chartFlags struct {
 	styleDir, city, stylePath, lineAgency string
 	scenario                              string
 	exportGTFS                            string
+	onestop                               string
 	set                                   string
 	allowUnmatched                        bool
 	cover                                 float64
@@ -309,7 +323,7 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 	groups: []flagGroup{
 		{"inputs", []string{"gtfs", "rail", "corridors", "corridor-nodes", "streets", "stops"}},
 		{"window and projection", []string{"bbox", "exclude-bbox", "anchor"}},
-		{"output", []string{"out", "format", "band", "export-gtfs", "set", "allow-unmatched"}},
+		{"output", []string{"out", "format", "band", "export-gtfs", "onestop", "set", "allow-unmatched"}},
 		{"curation", []string{"style-dir", "feed", "style", "line-agencies"}},
 		{"service", []string{"scenario", "cover"}},
 	},
@@ -341,6 +355,7 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 		fs.StringVar(&c.lineAgency, "line-agencies", "", "comma list: regional agencies keeping per-line colours")
 		fs.StringVar(&c.scenario, "scenario", "", "build one service scenario (see `portolan scenarios`)")
 		fs.StringVar(&c.exportGTFS, "export-gtfs", "", "directory: write the source feeds back out with matched shapes.txt")
+		fs.StringVar(&c.onestop, "onestop", "", "onestop id per source zip, by basename: key=f-…[,key=f-…] — stations carry gtfs_ids")
 		fs.StringVar(&c.set, "set", "", "tuning overrides: key=val[,key=val] over the defaults (keys as in the atlas tuning panel, e.g. join_tol=120)")
 		fs.BoolVar(&c.allowUnmatched, "allow-unmatched", false, "ship rail patterns that failed to path-match (default: the build fails)")
 		fs.Float64Var(&c.cover, "cover", 0.99, "pattern trip-coverage fraction")
@@ -462,6 +477,19 @@ func runChart(c *chartFlags) {
 	if c.lineAgency != "" {
 		las = strings.Split(c.lineAgency, ",")
 	}
+	// --onestop: zip basename (sans .zip) → onestop id. Sync fills the
+	// same map from the registry; this flag is the by-hand route.
+	var onestop map[string]string
+	if c.onestop != "" {
+		onestop = map[string]string{}
+		for _, kv := range strings.Split(c.onestop, ",") {
+			k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+			if !ok || k == "" || v == "" {
+				fail("--onestop wants key=onestop-id[,key=onestop-id]\ntry: portolan help chart")
+			}
+			onestop[strings.TrimSuffix(k, ".zip")] = v
+		}
+	}
 	// Curation resolves through the SAME loader the atlas uses, so a CLI
 	// build and a dashboard build of one city cannot disagree.
 	var sty *style.Set
@@ -508,7 +536,7 @@ func runChart(c *chartFlags) {
 	die(pipeline.Chart(pipeline.ChartOpts{
 		GTFS: c.gtfs, Rail: c.rail, Streets: c.streets, Stops: c.stops, BBox: bbox, Exclude: exclude,
 		Corridors: c.corridors, CorridorNodes: c.corridorNodes, Anchor: anchorLL,
-		LineAgencies: las, Scenario: c.scenario, Style: sty, ExportGTFS: c.exportGTFS, AllowUnmatched: c.allowUnmatched,
+		LineAgencies: las, Scenario: c.scenario, Style: sty, ExportGTFS: c.exportGTFS, Onestop: onestop, AllowUnmatched: c.allowUnmatched,
 		Out: out, Format: c.format, Band: bandPtr, Dials: &d,
 	}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }))
 }
@@ -738,4 +766,317 @@ bullets at z12, matching the viewer's own symbol floors. A tiles.json
 		fmt.Printf("%d tiles written (%.1f MB), %d unchanged, %d pruned → %s\n",
 			st.Tiles, float64(st.Bytes)/1e6, st.Unchanged, st.Removed, t.out)
 	},
+}
+
+// ------------------------------------------------------------ sync
+
+type syncFlags struct {
+	config, data, build, tiles, exportGTFS string
+	state, styleDir, feeds                 string
+	jobs                                   int
+	dryRun, jsonOut                        bool
+}
+
+var syncCmd = &command{
+	name:    "sync",
+	summary: "reconcile the feed fleet against upstream (docs/SYNC.md)",
+	usage: []string{
+		"sync check  --config portolan.json [flags]",
+		"sync patch  --config portolan.json --feeds key1,key2 [flags]",
+		"sync global --config portolan.json [flags]",
+	},
+	about: `Keeps a fleet of feeds current. check asks transitland which feeds
+moved (by the registry's onestop ids), diffs against the state manifest,
+downloads what changed into --data, and then runs the patch flow on the
+changed set. patch rebuilds exactly the builds whose inputs changed —
+measure shared steel, re-derive groups, rewrite the registry, build,
+verify, tile, export; global is the same executor with every on-disk
+feed in the changed set, and is the oracle patch must match byte for
+byte. --dry-run prints the plan and stops before touching anything.
+
+TRANSITLAND_API_KEY is read from the environment. Feed entries without
+an onestop id are reported and skipped. A new upstream sha over
+identical content records the sha and rebuilds nothing — the content
+hash is the identity that matters (docs/SYNC.md).`,
+	groups: []flagGroup{
+		{"inputs", []string{"config", "data", "feeds"}},
+		{"outputs", []string{"build", "tiles", "export-gtfs", "state", "style-dir"}},
+		{"run", []string{"jobs", "dry-run", "json"}},
+	},
+	example: []string{
+		"portolan sync check --config portolan.json --dry-run",
+		"portolan sync check --config portolan.json --json",
+		"portolan sync patch --config portolan.json --feeds mta-subway",
+	},
+	flags: func(fs *flag.FlagSet) any {
+		s := &syncFlags{}
+		fs.StringVar(&s.config, "config", "portolan.json", "feed registry")
+		fs.StringVar(&s.data, "data", "data/gtfs", "where GTFS zips live / are downloaded")
+		fs.StringVar(&s.build, "build", "build", "build fan output dir")
+		fs.StringVar(&s.tiles, "tiles", "build/tiles", "tile pyramids + index.json")
+		fs.StringVar(&s.exportGTFS, "export-gtfs", "build/export", "corrected GTFS zips (empty = skip export)")
+		fs.StringVar(&s.state, "state", "", "state manifest (default <build>/sync-state.json)")
+		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory")
+		fs.StringVar(&s.feeds, "feeds", "", "comma list of feed keys (patch only)")
+		fs.IntVar(&s.jobs, "jobs", sync.DefaultJobs(), "parallel feed builds (chart is memory-heavy; the default is deliberately modest)")
+		fs.BoolVar(&s.dryRun, "dry-run", false, "plan only: print what would happen, change nothing")
+		fs.BoolVar(&s.jsonOut, "json", false, "final stdout line is RESULT {…} for a supervising process")
+		return s
+	},
+	// raw is runSync, assigned in init() to break an initialization cycle
+}
+
+func runSync(args []string) {
+	if len(args) == 0 {
+		fail("sync needs a subcommand: check, patch or global\ntry: portolan help sync")
+	}
+	sub := args[0]
+	switch sub {
+	case "help", "-h", "--help":
+		syncCmd.printHelp(os.Stdout)
+		return
+	case "check", "patch", "global":
+	default:
+		fail("sync %q: want check, patch or global\ntry: portolan help sync", sub)
+	}
+	fs := flag.NewFlagSet("sync "+sub, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	sf := syncCmd.flags(fs).(*syncFlags)
+	if err := fs.Parse(args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			syncCmd.printHelp(os.Stdout)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "portolan sync %s: %v\n", sub, err)
+		fmt.Fprintf(os.Stderr, "try: portolan help sync\n")
+		os.Exit(2)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "portolan sync %s: unexpected argument %q — flags only\n", sub, fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "try: portolan help sync\n")
+		os.Exit(2)
+	}
+	if sub == "patch" && sf.feeds == "" {
+		fail("sync patch needs --feeds: the keys whose zips changed\ntry: portolan help sync")
+	}
+	if sub != "patch" && sf.feeds != "" {
+		fail("--feeds is a patch flag — %s finds the changed set itself", sub)
+	}
+	if sf.state == "" {
+		sf.state = filepath.Join(sf.build, "sync-state.json")
+	}
+	if sub == "check" {
+		runSyncCheck(sf)
+		return
+	}
+	runSyncPatchGlobal(sub, sf)
+}
+
+// resultLine is the machine-readable last stdout line under --json —
+// the barrelman contract (docs/SYNC.md). One schema for check, patch
+// and global; check's original {changed, skipped, errors} keys are all
+// present, so its parser keeps working.
+type resultLine struct {
+	Changed         []string       `json:"changed"`
+	Affected        []string       `json:"affected"`
+	Rebuilt         []string       `json:"rebuilt"`
+	GroupsRewritten bool           `json:"groups_rewritten"`
+	Tiles           sync.TileTally `json:"tiles"`
+	Exported        []string       `json:"exported"`
+	Skipped         []string       `json:"skipped"`
+	Errors          []string       `json:"errors"`
+}
+
+func emitResult(sf *syncFlags, rl resultLine) {
+	if !sf.jsonOut {
+		return
+	}
+	if rl.Changed == nil {
+		rl.Changed = []string{}
+	}
+	if rl.Affected == nil {
+		rl.Affected = []string{}
+	}
+	if rl.Rebuilt == nil {
+		rl.Rebuilt = []string{}
+	}
+	if rl.Exported == nil {
+		rl.Exported = []string{}
+	}
+	if rl.Skipped == nil {
+		rl.Skipped = []string{}
+	}
+	if rl.Errors == nil {
+		rl.Errors = []string{}
+	}
+	b, _ := json.Marshal(rl)
+	fmt.Printf("RESULT %s\n", b)
+}
+
+func runSyncCheck(sf *syncFlags) {
+	cfg, err := registry.Load(sf.config)
+	die(err)
+	res, err := sync.Check(sync.CheckOpts{
+		Config:    cfg,
+		StatePath: sf.state,
+		DataDir:   sf.data,
+		Client:    sync.NewClient(os.Getenv("TRANSITLAND_API_KEY")),
+		DryRun:    sf.dryRun,
+		Log:       func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	})
+	die(err)
+	fmt.Printf("%d changed, %d skipped, %d errors\n",
+		len(res.Changed), len(res.Skipped), len(res.Errors))
+	rl := resultLine{Changed: res.Changed, Skipped: res.Skipped, Errors: res.Errors}
+	// check hands into the patch flow: the downloaded changed set is
+	// planned and executed exactly as `sync patch --feeds` would.
+	// --dry-run stops after the diff, touching nothing.
+	if !sf.dryRun && len(res.Changed) > 0 {
+		run := execSync(sf, res.Changed, false)
+		rl = run
+		rl.Skipped = res.Skipped
+		rl.Errors = append(res.Errors, run.Errors...)
+	}
+	emitResult(sf, rl)
+	if len(rl.Errors) > 0 {
+		os.Exit(1)
+	}
+}
+
+// runSyncPatchGlobal plans, prints the plan, and — unless --dry-run —
+// executes it (internal/sync.Run): registry rewrite, builds under
+// --jobs child processes, group verify gates, tiling, style manifests,
+// the static tile index, exports and the state manifest.
+func runSyncPatchGlobal(sub string, sf *syncFlags) {
+	var changed []string
+	if sub == "patch" {
+		for _, k := range strings.Split(sf.feeds, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				changed = append(changed, k)
+			}
+		}
+	}
+	rl := execSync(sf, changed, sub == "global")
+	emitResult(sf, rl)
+	if len(rl.Errors) > 0 {
+		os.Exit(1)
+	}
+}
+
+// execSync is the shared plan-and-execute body of patch, global and the
+// tail of check. It dies on run-level failures and returns the RESULT
+// payload for everything else.
+func execSync(sf *syncFlags, changed []string, global bool) resultLine {
+	cfg, err := registry.Load(sf.config)
+	die(err)
+	doc, err := sync.LoadDoc(sf.config)
+	die(err)
+	st, err := sync.LoadState(sf.state)
+	die(err)
+	// global operates on what is local: a registry row whose zip was
+	// never downloaded is reported, not fatal — most of the registry is
+	// undownloaded discovery output
+	var skipped []string
+	if global {
+		for k, fc := range cfg.Feeds {
+			if len(fc.Members) > 0 || fc.PrimaryGTFS() == "" {
+				continue
+			}
+			if _, err := os.Stat(fc.PrimaryGTFS()); err != nil {
+				skipped = append(skipped, k)
+			}
+		}
+		sort.Strings(skipped)
+		if len(skipped) > 0 {
+			fmt.Printf("global: %d feeds have no zip on disk — skipped\n", len(skipped))
+		}
+	}
+	plan, err := sync.BuildPlan(sync.PlanOpts{
+		Config: cfg, Doc: doc, State: st,
+		Changed: changed, BuildDir: sf.build, Global: global,
+		Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	})
+	die(err)
+	printPlan(plan)
+	planned := map[string]bool{}
+	for _, ks := range [][]string{plan.Standalone, plan.Overlays, plan.MemberPyramids, plan.Groups} {
+		for _, k := range ks {
+			planned[k] = true
+		}
+	}
+	var rebuilt []string
+	for k := range planned {
+		rebuilt = append(rebuilt, k)
+	}
+	sort.Strings(rebuilt)
+	if sf.dryRun {
+		return resultLine{Changed: plan.Changed, Affected: plan.Affected,
+			Rebuilt: rebuilt, GroupsRewritten: plan.RegistryChanged, Skipped: skipped}
+	}
+	exe, err := os.Executable()
+	die(err)
+	res, err := sync.Run(plan, sync.RunOpts{
+		ConfigPath: sf.config, StatePath: sf.state,
+		BuildDir: sf.build, TilesDir: sf.tiles, ExportDir: sf.exportGTFS,
+		StyleDir: sf.styleDir, Jobs: sf.jobs, Portolan: exe,
+		Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	})
+	die(err)
+	fmt.Printf("done: %d rebuilt, tiles %d written / %d unchanged / %d removed, %d exported, %d errors\n",
+		len(res.Rebuilt), res.Tiles.Written, res.Tiles.Unchanged, res.Tiles.Removed,
+		len(res.Exported), len(res.Errors))
+	return resultLine{Changed: res.Changed, Affected: res.Affected,
+		Rebuilt: res.Rebuilt, GroupsRewritten: res.GroupsRewritten,
+		Tiles: res.Tiles, Exported: res.Exported, Skipped: skipped, Errors: res.Errors}
+}
+
+// printPlan: the derivation the way groups.py reports it, then the
+// rebuild closure — what a non-dry run would do, in execution order.
+func printPlan(p *sync.Plan) {
+	d := p.Derivation
+	dups := make([]string, 0, len(d.Duplicate))
+	for lo := range d.Duplicate {
+		dups = append(dups, lo)
+	}
+	sort.Strings(dups)
+	for _, lo := range dups {
+		fmt.Printf("  duplicate: %s is %s again — held out\n", lo, d.Duplicate[lo])
+	}
+	for _, k := range d.Undrawn {
+		fmt.Printf("  undrawn:   %s has no build — held out\n", k)
+	}
+	for _, g := range d.Groups {
+		e := g.Extent
+		fmt.Printf("[%.2f,%.2f,%.2f,%.2f]  %.2f deg2\n", e[0], e[1], e[2], e[3], e.Area())
+		for _, m := range g.Members {
+			fmt.Printf("    member  %s\n", m)
+		}
+		for _, o := range g.Overlays {
+			var km float64
+			for _, m := range g.Members {
+				if s := d.SharedM(o, m); s > km {
+					km = s
+				}
+			}
+			fmt.Printf("    overlay %s  (%.0f km shared)\n", o, km/1000)
+		}
+	}
+	fmt.Printf("\nplan: %d changed, %d measured, %d affected\n",
+		len(p.Changed), len(p.Measured), len(p.Affected))
+	list := func(name string, ks []string) {
+		if len(ks) > 0 {
+			fmt.Printf("  %-20s %s\n", name, strings.Join(ks, " "))
+		}
+	}
+	list("rebuild standalone:", p.Standalone)
+	list("rebuild groups:", p.Groups)
+	list("  created:", p.GroupsCreated)
+	list("  deleted:", p.GroupsDeleted)
+	list("overlay backgrounds:", p.Overlays)
+	list("member pyramids:", p.MemberPyramids)
+	if p.RegistryChanged {
+		fmt.Printf("  registry rewrite:    yes (%d bytes)\n", len(p.Registry))
+	} else {
+		fmt.Printf("  registry rewrite:    no\n")
+	}
 }
