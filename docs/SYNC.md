@@ -224,8 +224,15 @@ parent-station record where the feed ships one). Stop ids are the source
 feed's own, prefix-free. A stop whose source feed has no onestop id is
 omitted; when nothing qualifies the property is absent, not empty. This
 is how a clicked station tile feature opens a stop-detail panel keyed by
-feed identity. Markers (`ftype: "marker"`) do not carry it — they share
-the station's name, and the label feature is the identity anchor.
+feed identity.
+
+Markers (`ftype: "marker"`) carry the same `gtfs_ids`, and the same `osm`
+join key, as the station they belong to. A marker is that station seen one
+corridor at a time, not a different stop — and it is what a rider actually
+clicks: the dot itself, and, from the zoom where a complex's merged label
+yields to its per-corridor ones, the only feature still drawing a name.
+Without the identity on the marker those clicks open nothing, which is
+exactly what they did.
 
 By hand the map arrives via `chart --onestop <zip-basename>=<onestop>,…`;
 sync fills it from the registry's `onestop` fields automatically.

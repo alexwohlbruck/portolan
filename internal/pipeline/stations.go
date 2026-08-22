@@ -1170,7 +1170,10 @@ func gtfsIDProp(stopIDs []string, onestop map[string]string) string {
 // `ftype: "marker"` feature per snapped bundle — a complex is one label
 // and as many markers as corridors. Aligned per-route arrays are
 // comma-joined like ribbon `routes`. onestop (feed prefix → onestop id,
-// nil ok) adds the gtfs_ids identity prop to station features.
+// nil ok) adds the gtfs_ids identity prop; it and the OSM join key go on
+// the station AND on every one of its markers, which are that same
+// station seen one corridor at a time — and, at high zoom over a complex,
+// the only features still carrying a label.
 func writeStations(path string, sts []Station, cats []CatBullet, onestop map[string]string) error {
 	fc := collection{Type: "FeatureCollection"}
 	pt := func(ll geo.LL) json.RawMessage {
@@ -1208,8 +1211,9 @@ func writeStations(path string, sts []Station, cats []CatBullet, onestop map[str
 		}
 		// GTFS stop identity for downstream stop-detail panels — omitted
 		// when no source feed has an onestop id (docs/SYNC.md)
-		if ids := gtfsIDProp(s.StopIDs, onestop); ids != "" {
-			stProps["gtfs_ids"] = ids
+		gtfsIDs := gtfsIDProp(s.StopIDs, onestop)
+		if gtfsIDs != "" {
+			stProps["gtfs_ids"] = gtfsIDs
 		}
 		fc.Features = append(fc.Features, feature{
 			Type: "Feature", Props: stProps,
@@ -1230,6 +1234,20 @@ func writeStations(path string, sts []Station, cats []CatBullet, onestop map[str
 				"rank":         len(s.Routes),
 				"imp":          s.Imp,
 				"nmarkers":     len(s.Markers),
+			}
+			// A marker carries the STATION's identity, because it is that
+			// station: the dot a rider clicks, and — at high zoom over a
+			// complex, where the merged label bows out for the
+			// per-corridor ones — the only labelled feature left. Without
+			// these the click has nothing to open, so Fulton St answered
+			// a click and Times Sq did not. Same values, not a subset:
+			// a marker is one corridor of the station, not a different
+			// stop, and the station's ids are what identify it.
+			if s.OSMID != "" {
+				props["osm"] = s.OSMID
+			}
+			if gtfsIDs != "" {
+				props["gtfs_ids"] = gtfsIDs
 			}
 			if m.Pill {
 				props["span_px"] = math.Round(m.SpanPx*10) / 10

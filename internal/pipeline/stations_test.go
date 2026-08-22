@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -456,5 +459,87 @@ func TestOnestopByPrefix(t *testing.T) {
 	}
 	if onestopByPrefix("a.zip", map[string]string{"b": "f-b"}) != nil {
 		t.Fatal("no key matched: nil, not empty pairs")
+	}
+}
+
+// A marker is the station, one corridor at a time — the dot a rider
+// clicks, and at high zoom over a complex the only labelled feature left
+// once the merged label bows out. So it has to carry the same identity
+// the station does, or those clicks open nothing.
+func TestMarkersCarryStationIdentity(t *testing.T) {
+	sts := []Station{{
+		Name:    "Fulton St",
+		LL:      geo.LL{Lat: 40.7101, Lon: -74.0090},
+		LabelLL: geo.LL{Lat: 40.7101, Lon: -74.0090},
+		OSMID:   "node/1683730419",
+		StopIDs: []string{"418", "635"},
+		Routes:  []string{"A", "4"},
+		Markers: []Marker{
+			{LL: geo.LL{Lat: 40.7101, Lon: -74.0090}, Routes: []string{"A"}},
+			{LL: geo.LL{Lat: 40.7104, Lon: -74.0088}, Routes: []string{"4"}},
+		},
+	}}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "fulton")
+	if err := writeStations(out+".stations.geojson", sts, nil, map[string]string{"": "f-dr5r-nyctsubway"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(out + ".stations.geojson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct {
+		Features []struct {
+			Props map[string]any `json:"properties"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantIDs = "f-dr5r-nyctsubway:418;f-dr5r-nyctsubway:635"
+	markers := 0
+	for _, f := range fc.Features {
+		switch f.Props["ftype"] {
+		case "station", "marker":
+			if f.Props["ftype"] == "marker" {
+				markers++
+			}
+			if got := f.Props["osm"]; got != "node/1683730419" {
+				t.Errorf("%v osm = %v", f.Props["ftype"], got)
+			}
+			if got := f.Props["gtfs_ids"]; got != wantIDs {
+				t.Errorf("%v gtfs_ids = %v", f.Props["ftype"], got)
+			}
+		}
+	}
+	if markers != 2 {
+		t.Fatalf("markers = %d, want 2", markers)
+	}
+
+	// an unmatched station emits neither key rather than an empty one:
+	// absence is the honest "not matched", and "" would read as an id
+	sts[0].OSMID = ""
+	if err := writeStations(out+".none.geojson", sts, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(out + ".none.geojson")
+	// a FRESH value: unmarshalling into the old one merges into the maps
+	// it already holds, and every key would still be there
+	var bare struct {
+		Features []struct {
+			Props map[string]any `json:"properties"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &bare); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range bare.Features {
+		if _, ok := f.Props["osm"]; ok {
+			t.Error("osm emitted for an unmatched station")
+		}
+		if _, ok := f.Props["gtfs_ids"]; ok {
+			t.Error("gtfs_ids emitted with no onestop map")
+		}
 	}
 }

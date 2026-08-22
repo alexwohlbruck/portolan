@@ -269,8 +269,10 @@ is one-to-one and greedy by score. The extract is opt-in per city, and its
 presence IS the switch — a city with no `stops` path is untouched.
 
 A match always attaches the OSM object id, emitted as `osm` on the station
-feature (`"node/5106080553"`), so a consumer can join a drawn station back
-to OpenStreetMap. Whether it also renames is the `osm_stop_names` knob
+feature and on each of its markers (`"node/5106080553"`), so a consumer
+can join a drawn station back to OpenStreetMap — and so a click on the
+transit layer and a click on the same platform as a basemap POI resolve to
+one place rather than two. Whether it also renames is the `osm_stop_names` knob
 (default on), and two laws constrain the rename:
 
 **A rename must ADD information.** OSM is not uniformly better. Mexico
