@@ -37,7 +37,7 @@ type piece struct {
 // once against the region masks, transitions refine to outline crossings,
 // crossings cluster into entrances, and Dijkstra over the clipped in-yard
 // track graph turns entrance pairs into spine centerlines.
-func (ix *Index) buildEntrancesAndSpines(tracks []Track) {
+func (ix *Index) buildEntrancesAndSpines(tracks []Track, eff []int) {
 	nr := len(ix.regions)
 	crossings := make([][]crossing, nr)
 	pieces := make([][]piece, nr)
@@ -50,10 +50,13 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track) {
 	}
 
 	// regionAt answers with the region index a sample belongs to, or -1 —
-	// level-gated: a subway under a surface yard is outside it.
+	// level-gated on EFFECTIVE levels: a subway under a surface yard is
+	// outside it, but a 150 m tunnel=yes underpass fragment of a surface
+	// corridor is not a subway (it cost the Bushwick branch its entrance
+	// and region 66 its whole spine graph).
 	regionAt := func(p geo.Pt, lvl int) int {
-		id, ok := ix.cellRegion[cellKey(p)]
-		if !ok || ix.regions[id].Level != lvl || rings[id] == nil {
+		id := ix.regionIdxAt(p)
+		if id < 0 || ix.regions[id].Level != lvl || rings[id] == nil {
 			return -1
 		}
 		return int(id)
@@ -66,7 +69,7 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track) {
 			continue
 		}
 		prevArc := 0.0
-		prevReg := regionAt(t.Line.AtArc(0), t.Level)
+		prevReg := regionAt(t.Line.AtArc(0), eff[ti])
 		openAt := math.Inf(-1)
 		if prevReg >= 0 {
 			openAt = 0
@@ -75,7 +78,7 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track) {
 			if s > total {
 				s = total
 			}
-			reg := regionAt(t.Line.AtArc(s), t.Level)
+			reg := regionAt(t.Line.AtArc(s), eff[ti])
 			if reg != prevReg {
 				if prevReg >= 0 {
 					c, ok := refineCrossing(t, ti, prevArc, s, rings[prevReg], false)
@@ -310,9 +313,9 @@ func (q pq) Less(i, j int) bool {
 	}
 	return q[i].node < q[j].node
 }
-func (q pq) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
-func (q *pq) Push(x any)        { *q = append(*q, x.(pqItem)) }
-func (q *pq) Pop() any          { old := *q; n := len(old); it := old[n-1]; *q = old[:n-1]; return it }
+func (q pq) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
+func (q *pq) Push(x any)   { *q = append(*q, x.(pqItem)) }
+func (q *pq) Pop() any     { old := *q; n := len(old); it := old[n-1]; *q = old[:n-1]; return it }
 
 // buildSpines connects entrance pairs through the yard's own steel, then
 // contracts the union of kept paths into the region's skeleton.
@@ -359,11 +362,11 @@ func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing
 	}
 
 	var spines []Spine
-	kept := map[int]bool{} // edge indices covered by kept spines
+	kept := map[int]bool{} // edge indices the skeleton is built from
 	maxSpines := spineCapFactor * len(ents)
-	for i := 0; i < len(ents) && len(spines) < maxSpines; i++ {
+	for i := 0; i < len(ents); i++ {
 		dist, prevE := dijkstra(g, entNode[i])
-		for j := i + 1; j < len(ents) && len(spines) < maxSpines; j++ {
+		for j := i + 1; j < len(ents); j++ {
 			if math.IsInf(dist[entNode[j]], 1) || entNode[j] == entNode[i] {
 				continue
 			}
@@ -385,7 +388,20 @@ func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing
 					covered += g.edges[ei].arcL
 				}
 			}
-			if total < 1e-9 || covered/total >= spineOverlap {
+			if total < 1e-9 {
+				continue
+			}
+			// The skeleton must reach EVERY entrance, so the path's edges
+			// join kept unconditionally — an 85%-covered path still owns
+			// the 15% branch that is some entrance's only connection
+			// (skipping it entirely left entrances dangling with no
+			// centerline). The overlap rule only gates emitting one more
+			// PAIR spine, and the cap bounds those, never the skeleton.
+			dup := covered/total >= spineOverlap
+			for _, ei := range path {
+				kept[ei] = true
+			}
+			if dup || len(spines) >= maxSpines {
 				continue
 			}
 			// Assemble geometry i→j (path is j→i).
@@ -401,7 +417,6 @@ func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing
 					cur = e.b
 				}
 				pts = append(pts, seg[1:]...)
-				kept[path[k]] = true
 			}
 			sm := geo.SmoothTurning(pts, spineSmoothS)
 			// The weld guarantee: spine ends bit-equal to the entrances.

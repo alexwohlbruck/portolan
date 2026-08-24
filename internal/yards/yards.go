@@ -62,11 +62,11 @@ type SkelEdge struct {
 
 // Region is one detected yard: a connected patch of parallel-track density.
 type Region struct {
-	ID        int
-	Outline   []geo.Pt // closed CCW ring, first vertex not repeated
-	TrackLen  float64  // member steel hot arc inside the region (m)
-	Peak      float64  // max parallel-proximity score seen
-	Level     int      // dominant member level — the footprint is 2D, and a
+	ID       int
+	Outline  []geo.Pt // closed CCW ring, first vertex not repeated
+	TrackLen float64  // member steel hot arc inside the region (m)
+	Peak     float64  // max parallel-proximity score seen
+	Level    int      // dominant member level — the footprint is 2D, and a
 	// subway running UNDER a surface yard must not grow entrances into it
 	WayIDs    []string // ways with hot samples inside, sorted
 	Entrances []Entrance
@@ -102,28 +102,39 @@ func svcYard(s string) bool { return s == "yard" || s == "siding" || s == "spur"
 
 // Index answers the pipeline's yard queries. Immutable after Build.
 type Index struct {
-	regions     []*Region
-	regionCells []map[[2]int]bool // per region, the dilated mask cells
-	cellRegion  map[[2]int]int32
-	svc         map[string]string // wayID → service tag, "" absent
-	regionWay   map[string]bool   // wayID → hot member of some region
-	memberGrid  *geo.Grid
+	regions    []*Region
+	cellRegion map[[2]int]int32  // cells wholly inside a region's outline
+	boundary   map[[2]int]int32  // outline passes through — exact test on query
+	svc        map[string]string // wayID → service tag, "" absent
+	regionWay  map[string]bool   // wayID → hot member of some region
+	memberGrid *geo.Grid
 }
 
 func cellKey(p geo.Pt) [2]int {
 	return [2]int{int(math.Floor(p.X / cellM)), int(math.Floor(p.Y / cellM))}
 }
 
-// InYard reports whether p lies inside a yard region (dilated footprint —
-// interior points between ladder tracks count). Consumers must read it as
+// regionIdxAt: the region whose outline contains p, -1 outside. Interior
+// cells answer with one map hit; only outline-crossing cells pay the
+// exact point-in-ring test, so the hot paths stay O(1) while the answer
+// is exactly consistent with Region.Outline.
+func (ix *Index) regionIdxAt(p geo.Pt) int32 {
+	c := cellKey(p)
+	if id, ok := ix.cellRegion[c]; ok {
+		return id
+	}
+	if id, ok := ix.boundary[c]; ok && pointInRing(ix.regions[id].Outline, p) {
+		return id
+	}
+	return -1
+}
+
+// InYard reports whether p lies inside a yard region's outline (interior
+// points between ladder tracks count). Consumers must read it as
 // "suppress yard heuristics here", never "drop this geometry": revenue
 // mainlines run through Sunnyside and stay revenue.
 func (ix *Index) InYard(p geo.Pt) bool {
-	if ix == nil {
-		return false
-	}
-	_, ok := ix.cellRegion[cellKey(p)]
-	return ok
+	return ix != nil && ix.regionIdxAt(p) >= 0
 }
 
 // RegionAt returns the region containing p, nil outside every region.
@@ -131,8 +142,8 @@ func (ix *Index) RegionAt(p geo.Pt) *Region {
 	if ix == nil {
 		return nil
 	}
-	id, ok := ix.cellRegion[cellKey(p)]
-	if !ok {
+	id := ix.regionIdxAt(p)
+	if id < 0 {
 		return nil
 	}
 	return ix.regions[id]
@@ -192,6 +203,58 @@ func (ix *Index) Regions() []*Region {
 
 var neigh8 = [8][2]int{{-1, -1}, {-1, 0}, {-1, 1}, {0, -1}, {0, 1}, {1, -1}, {1, 0}, {1, 1}}
 
+const shortFragM = 250.0 // grade-interruption forgiveness cap
+
+// effectiveLevels smooths grade interruptions: OSM chops a surface
+// corridor at every underpass and tags the dip tunnel=yes, and the level
+// gate then reads the corridor as ending mid-region (the Bushwick branch
+// lost its entrance and region 66 its whole spine graph to exactly this).
+// A SHORT fragment whose endpoint neighbours all sit at one other level
+// adopts it; a genuinely subterranean corridor (the E/F under Sunnyside)
+// has same-level neighbours everywhere and keeps its own.
+func effectiveLevels(tracks []Track) []int {
+	eff := make([]int, len(tracks))
+	type endRef struct {
+		ti  int
+		lvl int
+	}
+	ends := map[[2]int64][]endRef{}
+	key := func(p geo.Pt) [2]int64 {
+		return [2]int64{int64(math.Round(p.X * 2)), int64(math.Round(p.Y * 2))} // 0.5 m
+	}
+	for ti := range tracks {
+		eff[ti] = tracks[ti].Level
+		pts := tracks[ti].Line.Pts
+		if len(pts) == 0 {
+			continue
+		}
+		for _, p := range []geo.Pt{pts[0], pts[len(pts)-1]} {
+			ends[key(p)] = append(ends[key(p)], endRef{ti, tracks[ti].Level})
+		}
+	}
+	for ti := range tracks {
+		t := &tracks[ti]
+		if t.Line.Len() >= shortFragM || len(t.Line.Pts) == 0 {
+			continue
+		}
+		pts := t.Line.Pts
+		nb := map[int]bool{}
+		for _, p := range []geo.Pt{pts[0], pts[len(pts)-1]} {
+			for _, r := range ends[key(p)] {
+				if r.ti != ti {
+					nb[r.lvl] = true
+				}
+			}
+		}
+		if len(nb) == 1 {
+			for l := range nb {
+				eff[ti] = l
+			}
+		}
+	}
+	return eff
+}
+
 // Build runs the detector. Deterministic by construction: samples walk
 // tracks in input order, mask cells are sorted before labeling, components
 // are discovered at their lexicographically-smallest cell, and every
@@ -202,6 +265,7 @@ func Build(tracks []Track, p Params) *Index {
 		lines[i] = tracks[i].Line
 	}
 	grid := geo.NewGrid(lines, 64)
+	eff := effectiveLevels(tracks)
 
 	// Score pass: parallel-proximity per ~20 m sample. hotCells is the
 	// pre-dilation footprint; hots feeds the per-component stats.
@@ -228,7 +292,7 @@ func Build(tracks []Track, p Params) *Index {
 			pt := t.Line.AtArc(s)
 			cand = cand[:0]
 			grid.Near(pt, p.ParReach, func(li int) {
-				if li != ti && tracks[li].Level == t.Level {
+				if li != ti && eff[li] == eff[ti] {
 					cand = append(cand, li)
 				}
 			})
@@ -324,8 +388,9 @@ func Build(tracks []Track, p Params) *Index {
 	// Per-component evidence from the hot samples.
 	type stat struct {
 		tagM, plainM, peak float64
-		ways               map[int]float64 // track idx → hot arc inside
-		lvl                map[int]float64 // level → hot arc
+		ways               map[int]float64   // track idx → hot arc inside
+		arcs               map[int][]float64 // track idx → hot sample arcs (for clipping)
+		lvl                map[int]float64   // effective level → hot arc
 	}
 	stats := make([]stat, len(comps))
 	for _, h := range hots {
@@ -344,14 +409,17 @@ func Build(tracks []Track, p Params) *Index {
 		}
 		if st.ways == nil {
 			st.ways = map[int]float64{}
+			st.arcs = map[int][]float64{}
 			st.lvl = map[int]float64{}
 		}
 		st.ways[h.ti] += h.pitch
-		st.lvl[tracks[h.ti].Level] += h.pitch
+		st.arcs[h.ti] = append(st.arcs[h.ti], h.arc)
+		st.lvl[eff[h.ti]] += h.pitch
 	}
 
 	ix := &Index{
 		cellRegion: map[[2]int]int32{},
+		boundary:   map[[2]int]int32{},
 		svc:        map[string]string{},
 		regionWay:  map[string]bool{},
 	}
@@ -387,32 +455,89 @@ func Build(tracks []Track, p Params) *Index {
 				bestArc, r.Level = st.lvl[l], l
 			}
 		}
-		cm := make(map[[2]int]bool, len(cells))
-		for _, c := range cells {
-			ix.cellRegion[c] = rid
-			cm[c] = true
-		}
 		tis := make([]int, 0, len(st.ways))
 		for ti := range st.ways {
 			tis = append(tis, ti)
 		}
 		sort.Ints(tis)
+		// The outline hugs the region's HOT steel: each member way is
+		// clipped to its hot arc spans — a through mainline is a member
+		// only where it runs the ladder, and its distant kilometres must
+		// not drag the hull along the whole line.
+		var steel []*geo.Line
 		for _, ti := range tis {
 			r.WayIDs = append(r.WayIDs, tracks[ti].ID)
 			r.TrackLen += st.ways[ti]
 			ix.regionWay[tracks[ti].ID] = true
 			memberLines = append(memberLines, tracks[ti].Line)
+			l := tracks[ti].Line
+			total := l.Len()
+			pitch := total / math.Max(1, math.Round(total/sampleStepM))
+			arcs := st.arcs[ti] // ascending: hots walk each track in order
+			a0 := arcs[0]
+			prev := arcs[0]
+			flush := func(hi float64) {
+				sub := subPts(l, math.Max(0, a0-pitch/2), math.Min(total, hi+pitch/2))
+				if len(sub) >= 2 {
+					steel = append(steel, geo.NewLine(sub))
+				}
+			}
+			for _, a := range arcs[1:] {
+				if a-prev > 2.5*pitch {
+					flush(prev)
+					a0 = a
+				}
+				prev = a
+			}
+			flush(prev)
 		}
 		sort.Strings(r.WayIDs)
-		r.Outline = traceOutline(cm, cellM)
-		ix.regionCells = append(ix.regionCells, cm)
+		r.Outline = hullOutline(steel, outlinePadM)
+		if len(r.Outline) < 3 {
+			// degenerate contour: fall back to the raster trace so the
+			// region still has a consistent footprint
+			cm := make(map[[2]int]bool, len(cells))
+			for _, c := range cells {
+				cm[c] = true
+			}
+			r.Outline = traceOutline(cm, cellM)
+		}
+		interior, bound := classifyCells(r.Outline, hullSeeds(steel))
+		iks := make([][2]int, 0, len(interior))
+		for c := range interior {
+			iks = append(iks, c)
+		}
+		sort.Slice(iks, func(i, j int) bool {
+			if iks[i][0] != iks[j][0] {
+				return iks[i][0] < iks[j][0]
+			}
+			return iks[i][1] < iks[j][1]
+		})
+		for _, c := range iks {
+			ix.cellRegion[c] = rid
+		}
+		bks := make([][2]int, 0, len(bound))
+		for c := range bound {
+			bks = append(bks, c)
+		}
+		sort.Slice(bks, func(i, j int) bool {
+			if bks[i][0] != bks[j][0] {
+				return bks[i][0] < bks[j][0]
+			}
+			return bks[i][1] < bks[j][1]
+		})
+		for _, c := range bks {
+			if _, taken := ix.boundary[c]; !taken {
+				ix.boundary[c] = rid
+			}
+		}
 		ix.regions = append(ix.regions, r)
 	}
 	if len(memberLines) > 0 {
 		ix.memberGrid = geo.NewGrid(memberLines, 64)
 	}
 	if len(ix.regions) > 0 {
-		ix.buildEntrancesAndSpines(tracks)
+		ix.buildEntrancesAndSpines(tracks, eff)
 	}
 	return ix
 }
