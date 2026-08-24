@@ -20,9 +20,21 @@ const (
 	centerTaperM   = 45.0      // lateral shift fades to nothing at a pinned node
 	centerStepM    = 12.0      // resample pitch while centering
 	strandGapM     = 4.5       // bundle.DefaultParams().StrandGap — distinct tracks
-	spineSmoothS   = 25.0      // heading low-pass sigma — rule 6, flowing geometry
-	anchorSnapM    = 5.0       // crossing point → graph node tolerance
-	nodeQuantM     = 0.25
+
+	// bundle tracing — the centerline walk
+	traceStepM      = 10.0    // march pitch
+	traceReachM     = 40.0    // section half-reach: how wide a bundle to average
+	traceParallel   = 0.80    // a track counts as bundle within ~37 deg
+	traceCenterGain = 0.6     // damping on the lateral correction — no hunting
+	traceTurnGain   = 0.35    // heading easing toward the steel's own tangent
+	traceArriveM    = 45.0    // close enough to call it arrival at a node
+	traceMaxM       = 12000.0 // runaway guard
+	traceMinM       = 60.0    // shorter than this is furniture, not a corridor
+	traceDupM       = 22.0    // ink this close counts as already drawn
+	traceDupFrac    = 0.75    // ...and this much of a trace covered = duplicate
+	spineSmoothS    = 25.0    // heading low-pass sigma — rule 6, flowing geometry
+	anchorSnapM     = 5.0     // crossing point → graph node tolerance
+	nodeQuantM      = 0.25
 )
 
 // crossing is one spot where a track pierces a region's outline.
@@ -152,7 +164,11 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track, eff []int) {
 		ents = append(ents, tEnts...)
 		anchors = append(anchors, tAnchors...)
 		r.Entrances = ents
-		r.Spines, r.SkelNodes, r.Skel = buildSpines(g, ents, anchors, r.Steel)
+		lvl := r.Level
+		r.Spines, r.SkelNodes, r.Skel = buildSpines(ents, r.Steel, func(p geo.Pt) bool {
+			return regionAt(p, lvl) == ri
+		})
+		_ = anchors
 	}
 }
 
@@ -528,6 +544,100 @@ func terminalEntrances(g *spineGraph, tracks []Track, taken map[int]bool) ([]Ent
 	return ents, anchors
 }
 
+// traceBundle walks the middle of a track bundle, the way the corridor
+// is drawn by hand: stand at a node facing in, take a perpendicular
+// section of the tracks running with you, step to the middle of them,
+// and repeat. The heading comes from the tracks themselves (their
+// averaged tangent), so the trace curves with the yard; it stops when
+// the bundle runs out, when it leaves the region, or when it arrives at
+// another node.
+//
+// This replaced a shortest-path tree over the yard's track graph, which
+// rode whichever individual rail the switches offered and so wandered
+// diagonally across every ladder. A bundle has a middle; a path does not.
+func traceBundle(startPt, inward geo.Pt, from int, ents []Entrance,
+	sgrid *geo.Grid, steel []*geo.Line, inRegion func(geo.Pt) bool) ([]geo.Pt, int) {
+
+	dir := inward.Unit()
+	p := startPt
+	pts := []geo.Pt{p}
+	maxSteps := int(traceMaxM / traceStepM)
+	for i := 0; i < maxSteps; i++ {
+		// step forward, then re-center on the bundle at the new spot
+		q := p.Add(dir.Scale(traceStepM))
+		nrm := dir.Perp()
+		var offs []float64
+		var tanSum geo.Pt
+		sgrid.Near(q, traceReachM, func(li int) {
+			for _, c := range steel[li].CrossSectionNear(q, dir, traceReachM) {
+				if c.Parallel < traceParallel {
+					continue
+				}
+				offs = append(offs, c.Offset)
+				t := steel[li].TangentAtArc(c.Arc, 12)
+				if t.Dot(dir) < 0 {
+					t = t.Scale(-1)
+				}
+				tanSum = tanSum.Add(t)
+			}
+		})
+		if len(offs) == 0 {
+			break // the bundle ended
+		}
+		sort.Float64s(offs)
+		// the same strand clustering and median rules the corridor
+		// bundler uses: 1 → follow, 2 → midpoint, >4 → drop the outer pair
+		mid := bundle.MedianStrand(bundle.Strands(offs, strandGapM))
+		q = q.Add(nrm.Scale(mid * traceCenterGain))
+		if !inRegion(q) {
+			pts = append(pts, q)
+			break
+		}
+		// heading from the steel, eased so the line flows instead of
+		// snapping at every switch
+		if tanSum.Norm() > 1e-9 {
+			nd := tanSum.Unit()
+			dir = dir.Scale(1 - traceTurnGain).Add(nd.Scale(traceTurnGain)).Unit()
+		}
+		pts = append(pts, q)
+		p = q
+		// arrived at another node?
+		for ei := range ents {
+			if ei == from {
+				continue
+			}
+			if ents[ei].Pt.Dist(p) <= traceArriveM {
+				pts = append(pts, ents[ei].Pt)
+				return pts, ei
+			}
+		}
+	}
+	return pts, -1
+}
+
+// covered reports how much of a trace already lies under kept ink.
+func covered(pts []geo.Pt, kept []*geo.Line) float64 {
+	if len(kept) == 0 || len(pts) < 2 {
+		return 0
+	}
+	on, total := 0.0, 0.0
+	for i := 1; i < len(pts); i++ {
+		seg := pts[i].Dist(pts[i-1])
+		total += seg
+		m := geo.Lerp(pts[i-1], pts[i], 0.5)
+		for _, k := range kept {
+			if k.Within(m, traceDupM) {
+				on += seg
+				break
+			}
+		}
+	}
+	if total < 1e-9 {
+		return 0
+	}
+	return on / total
+}
+
 // buildSpines lays the region's centerlines. The centerlines form a TREE
 // over the entrances grown through the yard's own steel — never an
 // all-pairs bundle, which is what wound lassos around Jamaica: in a tree
@@ -548,97 +658,96 @@ func terminalEntrances(g *spineGraph, tracks []Track, taken map[int]bool) ([]Ent
 //     centerline path-matches steel end to end with no track jumping;
 //  6. runs are heading-smoothed with their ends pinned, so the geometry
 //     flows through the yard instead of stepping switch to switch.
-func buildSpines(g *spineGraph, ents []Entrance, anchors [][]int, steel []*geo.Line) ([]Spine, []SkelNode, []SkelEdge) {
-	if len(ents) == 0 || len(g.edges) == 0 {
+func buildSpines(ents []Entrance, steel []*geo.Line,
+	inRegion func(geo.Pt) bool) ([]Spine, []SkelNode, []SkelEdge) {
+
+	if len(ents) == 0 || len(steel) == 0 {
 		return nil, nil, nil
 	}
-	entOf := map[int]int{}
+	sgrid := geo.NewGrid(steel, 64)
+
+	type trace struct {
+		from, to int
+		line     *geo.Line
+	}
+	var traces []trace
+	var keptLines []*geo.Line
+	// Longest first: the yard's main corridor is drawn once, and a side
+	// throat's trace then survives only for the part that is genuinely
+	// its own — which is how the drawing reads, one long line with short
+	// branches rather than a line per entrance.
+	type cand struct {
+		from, to int
+		pts      []geo.Pt
+		length   float64
+	}
+	var cands []cand
 	for ei := range ents {
-		for _, n := range anchors[ei] {
-			if _, taken := entOf[n]; !taken {
-				entOf[n] = ei
-			}
+		pts, to := traceBundle(ents[ei].Pt, ents[ei].Heading.Scale(-1), ei, ents,
+			sgrid, steel, inRegion)
+		if len(pts) < 2 {
+			continue
 		}
+		l := 0.0
+		for i := 1; i < len(pts); i++ {
+			l += pts[i].Dist(pts[i-1])
+		}
+		if l < traceMinM {
+			continue
+		}
+		cands = append(cands, cand{ei, to, pts, l})
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].length != cands[j].length {
+			return cands[i].length > cands[j].length
+		}
+		return cands[i].from < cands[j].from
+	})
+	for _, c := range cands {
+		if covered(c.pts, keptLines) >= traceDupFrac {
+			continue // this corridor is already drawn
+		}
+		sm := geo.SmoothTurning(c.pts, spineSmoothS)
+		sm[0] = ents[c.from].Pt
+		if c.to >= 0 {
+			sm[len(sm)-1] = ents[c.to].Pt
+		}
+		line := geo.NewLine(sm)
+		traces = append(traces, trace{c.from, c.to, line})
+		keptLines = append(keptLines, line)
+	}
+	if len(traces) == 0 {
+		return nil, nil, nil
 	}
 
-	kept := map[int]bool{}
-	done := make([]bool, len(ents))
-	for {
-		seed := -1
-		for ei := range ents {
-			if !done[ei] && len(anchors[ei]) > 0 {
-				seed = ei
-				break
+	// nodes: every entrance that a kept trace touches, plus a free end
+	// where a trace stopped inside the yard
+	var nodes []SkelNode
+	entNode := map[int]int{}
+	nodeFor := func(ei int, at geo.Pt) int {
+		if ei >= 0 {
+			if id, ok := entNode[ei]; ok {
+				return id
 			}
+			nodes = append(nodes, SkelNode{Pt: ents[ei].Pt, Entrance: ei})
+			entNode[ei] = len(nodes) - 1
+			return len(nodes) - 1
 		}
-		if seed < 0 {
-			break
-		}
-		done[seed] = true
-		inTree := map[int]bool{}
-		tree := append([]int{}, anchors[seed]...)
-		for _, n := range tree {
-			inTree[n] = true
-		}
-		grown := false
-		for {
-			dist, prevE := dijkstraMulti(g, tree)
-			bestEnt, bestNode, bestD := -1, -1, math.Inf(1)
-			for ei := range ents {
-				if done[ei] {
-					continue
-				}
-				for _, n := range anchors[ei] {
-					if dist[n] < bestD {
-						bestEnt, bestNode, bestD = ei, n, dist[n]
-					}
-				}
-			}
-			if bestEnt < 0 {
-				break
-			}
-			for n := bestNode; !inTree[n]; {
-				ei := prevE[n]
-				if ei < 0 {
-					break
-				}
-				kept[ei] = true
-				inTree[n] = true
-				tree = append(tree, n)
-				n = g.edges[ei].a + g.edges[ei].b - n
-			}
-			done[bestEnt], grown = true, true
-			for _, n := range anchors[bestEnt] {
-				if !inTree[n] {
-					inTree[n] = true
-					tree = append(tree, n)
-				}
-			}
-		}
-		if !grown {
-			// Rule 4 for a lone entrance: no partner to reach, so run a
-			// stub down its own steel to the far end of its component.
-			dist, prevE := dijkstraMulti(g, anchors[seed])
-			far, farD := -1, 0.0
-			for n := range dist {
-				if !math.IsInf(dist[n], 1) && dist[n] > farD {
-					far, farD = n, dist[n]
-				}
-			}
-			for n := far; n >= 0 && !inTree[n]; {
-				ei := prevE[n]
-				if ei < 0 {
-					break
-				}
-				kept[ei] = true
-				inTree[n] = true
-				n = g.edges[ei].a + g.edges[ei].b - n
-			}
+		nodes = append(nodes, SkelNode{Pt: at, Entrance: -1})
+		return len(nodes) - 1
+	}
+	var edges []SkelEdge
+	var spines []Spine
+	for _, t := range traces {
+		pts := t.line.Pts
+		a := nodeFor(t.from, pts[0])
+		b := nodeFor(t.to, pts[len(pts)-1])
+		edges = append(edges, SkelEdge{A: a, B: b, Line: t.line})
+		if t.to >= 0 {
+			spines = append(spines, Spine{From: t.from, To: t.to, Line: t.line})
 		}
 	}
-
-	skN, skE := contractSkeleton(g, ents, entOf, kept, steel)
-	return spinesFromSkeleton(skN, skE), skN, skE
+	return spines, nodes, edges
 }
 
 // contractSkeleton reduces the kept edge set to runs between skeleton
