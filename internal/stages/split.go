@@ -436,7 +436,14 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// buses landed).
 	var riddenTracks []bundle.Track
 	for _, t := range tracks {
-		if usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
+		// TAGGED yard steel never votes even when MATCH rode it (genuine
+		// through-running pays the penalty and rides, but a platform track
+		// is not a corridor median). Untagged in-region steel that is
+		// ridden is the corridor itself passing the yard — it keeps its
+		// vote, which is what protects a false-positive region over a
+		// ridden trunk.
+		if usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" &&
+			!isYardWay(t.ID) {
 			riddenTracks = append(riddenTracks, t)
 		}
 	}
@@ -465,7 +472,11 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// so the South Ferry law holds.
 	var unriddenTracks []bundle.Track
 	for _, t := range tracks {
-		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
+		// Unridden in-region steel — tagged or not — is exactly the
+		// ladder that drowns twin votes; excluding it cannot hurt a
+		// ridden trunk by construction (this pool is unridden only).
+		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" &&
+			!yardSteel(t.ID) {
 			unriddenTracks = append(unriddenTracks, t)
 		}
 	}

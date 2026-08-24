@@ -289,34 +289,23 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		streetTracks = toTracks(sways)
 		ways = append(ways, sways...)
 	}
-	lvls := map[string]int{}
-	for _, t := range tracks {
-		if t.Level != 0 {
-			lvls[t.ID] = t.Level
-		}
-	}
-	for _, t := range streetTracks {
-		if t.Level != 0 {
-			lvls[t.ID] = t.Level
-		}
-	}
-	stages.SetWayLevels(lvls)
-	cls := map[string]string{}
-	for _, w := range ways {
-		cls[w.ID] = w.Tags["railway"]
-	}
-	stages.SetWayRailClass(cls)
 	// Yard regions: service steel plus the regular pool feed the detector;
-	// neither the strand pool nor the frame ever see service ways.
+	// neither the strand pool nor the frame ever see service ways. The
+	// service tracks DO join the match graph below (under penalty) so
+	// genuine through-running on yard steel can ride — and therefore the
+	// class and level maps must know them too, or classCompat sees ""
+	// (always compatible) and a yard tunnel reads as surface.
 	var yix *yards.Index
+	var svcTracks []bundle.Track
 	if style.Active().Yards {
 		ty := time.Now()
-		yt := make([]yards.Track, 0, len(tracks)+len(svcWays))
+		svcTracks = toTracks(svcWays)
+		yt := make([]yards.Track, 0, len(tracks)+len(svcTracks))
 		for i := range tracks {
 			yt = append(yt, yards.Track{ID: tracks[i].ID, Line: tracks[i].Line,
 				Service: ways[i].Tags["service"], Level: tracks[i].Level})
 		}
-		for i, st := range toTracks(svcWays) {
+		for i, st := range svcTracks {
 			yt = append(yt, yards.Track{ID: st.ID, Line: st.Line,
 				Service: svcWays[i].Tags["service"], Level: st.Level})
 		}
@@ -332,6 +321,31 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	if err := writeYards(o.Out+".yards.geojson", yix, frame); err != nil {
 		return err
 	}
+	lvls := map[string]int{}
+	for _, t := range tracks {
+		if t.Level != 0 {
+			lvls[t.ID] = t.Level
+		}
+	}
+	for _, t := range streetTracks {
+		if t.Level != 0 {
+			lvls[t.ID] = t.Level
+		}
+	}
+	for _, t := range svcTracks {
+		if t.Level != 0 {
+			lvls[t.ID] = t.Level
+		}
+	}
+	stages.SetWayLevels(lvls)
+	cls := map[string]string{}
+	for _, w := range ways {
+		cls[w.ID] = w.Tags["railway"]
+	}
+	for _, w := range svcWays {
+		cls[w.ID] = w.Tags["railway"]
+	}
+	stages.SetWayRailClass(cls)
 	strands := bundle.Chain(tracks, d.JoinTol)
 	logf("chart: %d rail ways (+%d street) → %d strands (%.1fs)",
 		len(tracks), len(streetTracks), len(strands), time.Since(t0).Seconds())
@@ -450,9 +464,12 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	mode.SetLineAgencies(la)
 	stages.SetAgencyNames(feed.Agencies)
 	mode.SetAgencyNames(feed.Agencies)
+	// Rail first, then streets, then service steel: appending keeps every
+	// rail piece id identical to a build without the extra layers.
 	matchTracks := tracks
-	if len(streetTracks) > 0 {
-		matchTracks = append(append([]bundle.Track{}, tracks...), streetTracks...)
+	if len(streetTracks) > 0 || len(svcTracks) > 0 {
+		matchTracks = append(append(append([]bundle.Track{},
+			tracks...), streetTracks...), svcTracks...)
 	}
 	paths, err := stages.Match(rail, matchTracks, frame)
 	if err != nil {
