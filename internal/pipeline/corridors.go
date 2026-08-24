@@ -64,6 +64,9 @@ func frameFor(anchor *geo.LL, w, s, e, n float64) geo.Frame {
 }
 
 func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string, ...any)) error {
+	// The Set* globals persist across serialized runs; a stale same-city
+	// yard index would answer InYard from a previous rail build.
+	stages.SetYards(nil)
 	t0 := time.Now()
 	step := func(stage string, pct int) {
 		if o.Progress != nil {

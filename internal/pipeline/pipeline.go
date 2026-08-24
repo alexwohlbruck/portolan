@@ -25,6 +25,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/sketch"
 	"github.com/alexwohlbruck/portolan/internal/stages"
 	"github.com/alexwohlbruck/portolan/internal/style"
+	"github.com/alexwohlbruck/portolan/internal/yards"
 )
 
 // Dials — tuning parameters surfaced in the atlas UI. Stage authors: add
@@ -55,6 +56,15 @@ type Dials struct {
 
 	OrderSep float64 `json:"order_sep"`
 
+	// Yard detection (internal/yards). yard_par_reach ≥ 32 pushes the
+	// cross-section queries off their capped fast path — correct, slow.
+	YardParReach  float64 `json:"yard_par_reach"`
+	YardParNear   float64 `json:"yard_par_near"`
+	YardHot       float64 `json:"yard_hot"`
+	YardMinTagM   float64 `json:"yard_min_tag_m"`
+	YardMinMassM  float64 `json:"yard_min_mass_m"`
+	YardPeakUntag float64 `json:"yard_peak_untagged"`
+
 	FairCutBase float64 `json:"fair_cut_base"`
 	FairGapPx   float64 `json:"fair_gap_px"`
 	FairMaxTurn float64 `json:"fair_max_turn"`
@@ -70,10 +80,22 @@ func DefaultDials() Dials {
 		SplitMinRefine: 40, SplitMaxRefine: 250_000, SplitMateMax: 12, SplitMateRun: 60,
 		SplitMergeDist: 12, SplitMergeRun: 60, SplitCoMergeDist: 4,
 		OrderSep: 8,
+		// Yard dials: calibrated on the NYC fixture — every known yard
+		// detected at hot 5 while the 4-track Queens Blvd express corridor
+		// peaks at 3 (LESSONS: >4 strands are yards).
+		YardParReach: 30, YardParNear: 12, YardHot: 5,
+		YardMinTagM: 500, YardMinMassM: 2000, YardPeakUntag: 8,
 		// FairGapPx 4: slot pitch. The ribbon line is 3 px at z15 (metro
 		// weight 1.0), so pitch 4 draws a 1 px visible gap between mates
 		// — the owner's Apple-tight bundle read (was 6 = a 3 px gap).
 		FairCutBase: 60, FairGapPx: 4, FairMaxTurn: 30, FairFilletR: 30,
+	}
+}
+
+func (d Dials) yardParams() yards.Params {
+	return yards.Params{
+		ParReach: d.YardParReach, ParNear: d.YardParNear, Hot: d.YardHot,
+		MinTagM: d.YardMinTagM, MinMassM: d.YardMinMassM, PeakUntag: d.YardPeakUntag,
 	}
 }
 
@@ -223,13 +245,16 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	}
 	t0 := time.Now()
 
-	ways, err := osm.Load(o.Rail)
+	ways, svcWays, err := osm.LoadWithService(o.Rail)
 	if err != nil {
 		return err
 	}
 	if len(ways) == 0 {
 		return fmt.Errorf("no regular-service rail ways in %s", o.Rail)
 	}
+	// The projection center comes from the REGULAR pool only — service
+	// ways joining FrameOf would shift every emitted coordinate in every
+	// existing build by rounding.
 	frame := FrameOf(ways)
 	xover := map[string]bool{}
 	for _, w := range ways {
@@ -281,6 +306,32 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		cls[w.ID] = w.Tags["railway"]
 	}
 	stages.SetWayRailClass(cls)
+	// Yard regions: service steel plus the regular pool feed the detector;
+	// neither the strand pool nor the frame ever see service ways.
+	var yix *yards.Index
+	if style.Active().Yards {
+		ty := time.Now()
+		yt := make([]yards.Track, 0, len(tracks)+len(svcWays))
+		for i := range tracks {
+			yt = append(yt, yards.Track{ID: tracks[i].ID, Line: tracks[i].Line,
+				Service: ways[i].Tags["service"], Level: tracks[i].Level})
+		}
+		for i, st := range toTracks(svcWays) {
+			yt = append(yt, yards.Track{ID: st.ID, Line: st.Line,
+				Service: svcWays[i].Tags["service"], Level: st.Level})
+		}
+		yix = yards.Build(yt, d.yardParams())
+		steel := 0.0
+		for _, r := range yix.Regions() {
+			steel += r.TrackLen
+		}
+		logf("chart: %d yard regions, %.0f km yard steel (%.1fs)",
+			len(yix.Regions()), steel/1000, time.Since(ty).Seconds())
+	}
+	stages.SetYards(yix)
+	if err := writeYards(o.Out+".yards.geojson", yix, frame); err != nil {
+		return err
+	}
 	strands := bundle.Chain(tracks, d.JoinTol)
 	logf("chart: %d rail ways (+%d street) → %d strands (%.1fs)",
 		len(tracks), len(streetTracks), len(strands), time.Since(t0).Seconds())
