@@ -167,13 +167,13 @@ jobs:
             exit 1
           fi
 
-      - name: Stage the platform packages from the released archives
+      - name: Stage the engines from the released archives
         working-directory: clients/npm
         run: |
           npm ci
           # Reads the ARCHIVES rather than rebuilding, so what npm carries is
           # byte-identical to what the GitHub release carries.
-          node scripts/build-platform-packages.mjs --dist ../../artifacts
+          node scripts/build-universal.mjs --dist ../../artifacts
 
       - name: Test
         working-directory: clients/npm
@@ -186,37 +186,23 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < ../../VERSION)"
+          NAME="$(node -p "require('./package.json').name")"
 
-          # Already-published versions are SKIPPED rather than retried. npm
-          # forbids republishing a version, so without this a re-run of a
-          # partially-failed release could never get past the first package.
-          publish() {
-            local dir="$1" name
-            name="$(node -p "require('./${dir}/package.json').name")"
-            if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
-              echo "  already on the registry: ${name}@${VERSION}"
-              return 0
-            fi
-            echo "  publishing ${name}@${VERSION}"
-            # ./ MATTERS. A bare `platforms/darwin-arm64` is the owner/repo
-            # shorthand for a package hosted on GitHub, not a directory, so
-            # npm went looking for git@github.com:platforms/darwin-arm64.git
-            # and failed on a public key. Only a path npm cannot read as a
-            # spec is read as a folder.
-            npm publish "./${dir}" --access public --provenance
-          }
+          # Already-published versions are SKIPPED rather than retried: npm
+          # forbids republishing a version, so a re-run of a release that
+          # failed AFTER the publish would otherwise never get past it.
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "  already on the registry: ${NAME}@${VERSION}"
+            exit 0
+          fi
 
-          # The six engines FIRST. npm skips an optional dependency it cannot
-          # resolve and still calls the install a success, so a wrapper that
-          # went out ahead of them would install cleanly and fail at the
-          # consumer's first chart call. The wrapper's own prepublishOnly
-          # (check-publish.mjs) refuses to go out until all six are live —
-          # this ordering is what lets that check pass.
-          for dir in platforms/*/; do
-            publish "${dir%/}"
-          done
-
-          publish .
+          # One package, carrying every platform's engine. This used to be
+          # seven writes in a required order, and the ordering was load-
+          # bearing: six optionalDependencies that npm skips SILENTLY when
+          # they are missing, so a wrapper published a moment too early
+          # installed clean and died at the consumer's first chart call.
+          echo "  publishing ${NAME}@${VERSION}"
+          npm publish --access public --provenance
 
   release:
     name: Publish GitHub Release

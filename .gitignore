@@ -9,6 +9,7 @@ web/node_modules/
 web/dist/
 clients/npm/node_modules/
 clients/npm/dist/
-clients/npm/platforms/
+clients/npm/bin/
+clients/npm/style/
 clients/npm/*.tgz
 /portolan
