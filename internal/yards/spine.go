@@ -113,7 +113,7 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track) {
 		}
 		ents, members := clusterEntrances(crossings[ri], rings[ri].Len(), tracks)
 		r.Entrances = ents
-		r.Spines = buildSpines(tracks, ents, members, crossings[ri], pieces[ri])
+		r.Spines, r.SkelNodes, r.Skel = buildSpines(tracks, ents, members, crossings[ri], pieces[ri])
 	}
 }
 
@@ -314,10 +314,11 @@ func (q pq) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
 func (q *pq) Push(x any)        { *q = append(*q, x.(pqItem)) }
 func (q *pq) Pop() any          { old := *q; n := len(old); it := old[n-1]; *q = old[:n-1]; return it }
 
-// buildSpines connects entrance pairs through the yard's own steel.
-func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing, pcs []piece) []Spine {
+// buildSpines connects entrance pairs through the yard's own steel, then
+// contracts the union of kept paths into the region's skeleton.
+func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing, pcs []piece) ([]Spine, []SkelNode, []SkelEdge) {
 	if len(ents) < 2 || len(pcs) == 0 {
-		return nil
+		return nil, nil, nil
 	}
 	g := &spineGraph{nodes: map[[2]int]int{}}
 
@@ -408,7 +409,102 @@ func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing
 			spines = append(spines, Spine{From: i, To: j, Line: geo.NewLine(sm)})
 		}
 	}
-	return spines
+	skN, skE := contractSkeleton(g, entNode, kept)
+	return spines, skN, skE
+}
+
+// contractSkeleton reduces the kept edge set to runs between skeleton
+// nodes (entrances, and any vertex whose kept-degree isn't 2 — forks and
+// dead ends). Runs are heading-smoothed with their end points pinned
+// bit-equal to the node positions.
+func contractSkeleton(g *spineGraph, entNode []int, kept map[int]bool) ([]SkelNode, []SkelEdge) {
+	if len(kept) == 0 {
+		return nil, nil
+	}
+	keptIDs := make([]int, 0, len(kept))
+	for ei := range kept {
+		keptIDs = append(keptIDs, ei)
+	}
+	sort.Ints(keptIDs)
+	adj := map[int][]int{}
+	for _, ei := range keptIDs {
+		e := g.edges[ei]
+		adj[e.a] = append(adj[e.a], ei)
+		adj[e.b] = append(adj[e.b], ei)
+	}
+	entOf := map[int]int{}
+	for i, n := range entNode {
+		entOf[n] = i
+	}
+	isSkel := func(n int) bool {
+		_, ent := entOf[n]
+		return ent || len(adj[n]) != 2
+	}
+	var nodes []SkelNode
+	nodeID := map[int]int{}
+	skelNode := func(n int) int {
+		if id, ok := nodeID[n]; ok {
+			return id
+		}
+		ent, ok := entOf[n]
+		if !ok {
+			ent = -1
+		}
+		nodeID[n] = len(nodes)
+		nodes = append(nodes, SkelNode{Pt: g.pos[n], Entrance: ent})
+		return nodeID[n]
+	}
+	var edges []SkelEdge
+	used := map[int]bool{}
+	starts := make([]int, 0, len(adj))
+	for n := range adj {
+		if isSkel(n) {
+			starts = append(starts, n)
+		}
+	}
+	sort.Ints(starts)
+	for _, start := range starts {
+		for _, ei0 := range adj[start] {
+			if used[ei0] {
+				continue
+			}
+			run := []geo.Pt{g.pos[start]}
+			cur, ei := start, ei0
+			for {
+				used[ei] = true
+				e := g.edges[ei]
+				seg := e.pts
+				next := e.b
+				if e.b == cur {
+					seg = reversePts(seg)
+					next = e.a
+				}
+				run = append(run, seg[1:]...)
+				cur = next
+				if isSkel(cur) {
+					break
+				}
+				found := -1
+				for _, nx := range adj[cur] {
+					if !used[nx] {
+						found = nx
+						break
+					}
+				}
+				if found < 0 {
+					break
+				}
+				ei = found
+			}
+			if len(run) < 2 {
+				continue
+			}
+			sm := geo.SmoothTurning(run, spineSmoothS)
+			sm[0], sm[len(sm)-1] = g.pos[start], g.pos[cur]
+			edges = append(edges, SkelEdge{A: skelNode(start), B: skelNode(cur), Line: geo.NewLine(sm)})
+		}
+	}
+	return nodes, edges
 }
 
 func reversePts(pts []geo.Pt) []geo.Pt {

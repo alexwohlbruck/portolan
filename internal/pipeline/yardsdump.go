@@ -75,6 +75,18 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 						return f, true
 					}
 				}
+				kind, k = 3, 0
+			case 3:
+				for k < len(r.Skel) {
+					s := r.Skel[k]
+					k++
+					if f, ok := lineFeature(map[string]any{
+						"kind": "yard_skel", "region": r.ID,
+						"a": s.A, "b": s.B,
+					}, s.Line, 10, frame); ok {
+						return f, true
+					}
+				}
 				ri, kind, k = ri+1, 0, 0
 			}
 		}

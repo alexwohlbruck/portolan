@@ -43,6 +43,23 @@ type Spine struct {
 	Line     *geo.Line
 }
 
+// SkelNode is a vertex of the region's spine skeleton: an entrance
+// (Entrance >= 0, Pt bit-equal to it) or an interior fork (-1). The
+// skeleton is the pair spines' shared steel contracted into runs — two
+// spines through one throat share the trunk section as ONE skeleton edge,
+// which is what lets a substitution draw a fork as two corridors meeting
+// at a node instead of overlapping ink.
+type SkelNode struct {
+	Pt       geo.Pt
+	Entrance int
+}
+
+// SkelEdge is one skeleton run, oriented A→B.
+type SkelEdge struct {
+	A, B int
+	Line *geo.Line
+}
+
 // Region is one detected yard: a connected patch of parallel-track density.
 type Region struct {
 	ID        int
@@ -54,6 +71,8 @@ type Region struct {
 	WayIDs    []string // ways with hot samples inside, sorted
 	Entrances []Entrance
 	Spines    []Spine
+	SkelNodes []SkelNode
+	Skel      []SkelEdge
 }
 
 // Params are the detection dials (pipeline.Dials yard_* keys).
