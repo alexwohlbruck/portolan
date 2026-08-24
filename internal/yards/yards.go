@@ -369,6 +369,7 @@ func Build(tracks []Track, p Params) *Index {
 			memberLines = append(memberLines, tracks[ti].Line)
 		}
 		sort.Strings(r.WayIDs)
+		r.Outline = traceOutline(cm, cellM)
 		ix.regionCells = append(ix.regionCells, cm)
 		ix.regions = append(ix.regions, r)
 	}
