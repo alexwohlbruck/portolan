@@ -8,9 +8,12 @@ import (
 )
 
 const (
-	outlinePadM = 15.0 // the outline hugs the outer tracks by this much
-	msGridM     = 6.0  // marching-squares field pitch — boundary smoothness
-	simplifyM   = 1.0  // ring vertex thinning tolerance
+	outlinePadM = 18.0  // the outline hugs the outer tracks by this much
+	msGridM     = 6.0   // marching-squares field pitch — boundary smoothness
+	simplifyM   = 1.0   // ring vertex thinning tolerance
+	closeM      = 24.0  // morphological closing radius — gaps under ~2× bridge
+	hullTailM   = 30.0  // hot-span end taper on hull input steel
+	hullFillM   = 200.0 // a way's mid-span score dips fill through
 )
 
 // hullOutline returns the padded offset contour of the region's hot
@@ -31,7 +34,7 @@ func hullOutline(steel []*geo.Line, pad float64) []geo.Pt {
 			hi.X, hi.Y = math.Max(hi.X, p.X), math.Max(hi.Y, p.Y)
 		}
 	}
-	margin := pad + 2*msGridM
+	margin := pad + closeM + 2*msGridM // the closing dilation must never touch the array border
 	x0, y0 := lo.X-margin, lo.Y-margin
 	nx := int(math.Ceil((hi.X-lo.X+2*margin)/msGridM)) + 1
 	ny := int(math.Ceil((hi.Y-lo.Y+2*margin)/msGridM)) + 1
@@ -44,7 +47,7 @@ func hullOutline(steel []*geo.Line, pad float64) []geo.Pt {
 	// exactly (disc scalloping at 3 m spacing is <8 cm), and it never
 	// scans a dense ladder's segment lists — the per-point NearestDist
 	// version took minutes on the Kearny complex alone.
-	reach := pad + 2*msGridM
+	reach := pad + closeM + 2*msGridM
 	f := make([]float64, nx*ny)
 	for i := range f {
 		f[i] = 1e9
@@ -73,10 +76,55 @@ func hullOutline(steel []*geo.Line, pad float64) []geo.Pt {
 			}
 		}
 	}
+	// Morphological CLOSING: contouring raw distance at pad weaves the
+	// boundary between tracks wherever coverage dips — the owner's "the
+	// shape is fitted too well". Dilate to pad+closeM, then erode by
+	// closeM: gaps under ~2×closeM bridge, concave pinches round off, and
+	// the outer boundary still sits ~pad from the outermost steel. The
+	// erosion is a two-pass chamfer distance from the dilated mask's
+	// complement.
+	dist2 := make([]float64, nx*ny)
+	for i := range dist2 {
+		if f[i] <= pad+closeM {
+			dist2[i] = 1e9 // inside the dilated mask: distance unknown yet
+		}
+	}
+	w1, w2 := msGridM, msGridM*math.Sqrt2
+	relax := func(i, j, di, dj int, w float64) {
+		ni, nj := i+di, j+dj
+		if ni < 0 || ni >= nx || nj < 0 || nj >= ny {
+			return
+		}
+		if d := dist2[nj*nx+ni] + w; d < dist2[j*nx+i] {
+			dist2[j*nx+i] = d
+		}
+	}
+	for j := 0; j < ny; j++ {
+		for i := 0; i < nx; i++ {
+			relax(i, j, -1, 0, w1)
+			relax(i, j, 0, -1, w1)
+			relax(i, j, -1, -1, w2)
+			relax(i, j, 1, -1, w2)
+		}
+	}
+	for j := ny - 1; j >= 0; j-- {
+		for i := nx - 1; i >= 0; i-- {
+			relax(i, j, 1, 0, w1)
+			relax(i, j, 0, 1, w1)
+			relax(i, j, 1, 1, w2)
+			relax(i, j, -1, 1, w2)
+		}
+	}
 	for i := range f {
-		v := f[i] - pad
+		// The centimetre offset is load-bearing: chamfer distances are
+		// sums of grid steps, so an iso value that is an exact multiple
+		// of msGridM runs THROUGH grid corners along straight stretches —
+		// four cells then share one quantized segment endpoint, the
+		// chaining map drops the duplicates, and the loop shatters (a
+		// bottom sliver once won "largest loop" over half a ladder).
+		v := closeM + 0.01 - dist2[i] // negative = survives the erosion
 		if v == 0 {
-			v = 1e-9 // a corner exactly on the contour breaks interp
+			v = 1e-9
 		}
 		f[i] = v
 	}

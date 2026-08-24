@@ -203,21 +203,21 @@ func (ix *Index) Regions() []*Region {
 
 var neigh8 = [8][2]int{{-1, -1}, {-1, 0}, {-1, 1}, {0, -1}, {0, 1}, {1, -1}, {1, 0}, {1, 1}}
 
-const shortFragM = 250.0 // grade-interruption forgiveness cap
+const shortFragM = 400.0 // grade-interruption forgiveness cap
 
-// effectiveLevels smooths grade interruptions: OSM chops a surface
-// corridor at every underpass and tags the dip tunnel=yes, and the level
-// gate then reads the corridor as ending mid-region (the Bushwick branch
-// lost its entrance and region 66 its whole spine graph to exactly this).
-// A SHORT fragment whose endpoint neighbours all sit at one other level
-// adopts it; a genuinely subterranean corridor (the E/F under Sunnyside)
-// has same-level neighbours everywhere and keeps its own.
+// effectiveLevels smooths grade interruptions: OSM chops a corridor at
+// every over- and underpass and tags the fragment bridge/tunnel, and the
+// level gate then reads the corridor as ending there — the Bushwick
+// branch lost its entrance to a tunnel=yes dip, and Jamaica station
+// shattered into shards at every bridge=yes street crossing, minting
+// bogus entrances mid-station. A SHORT fragment adopts the length-
+// weighted majority level of its endpoint neighbours; iterated, chains
+// of bridge fragments heal inward from their surface ends. A genuinely
+// stacked corridor (the E/F under Sunnyside, the AirTrain viaduct) has
+// same-level neighbours everywhere and keeps its own.
 func effectiveLevels(tracks []Track) []int {
 	eff := make([]int, len(tracks))
-	type endRef struct {
-		ti  int
-		lvl int
-	}
+	type endRef struct{ ti int }
 	ends := map[[2]int64][]endRef{}
 	key := func(p geo.Pt) [2]int64 {
 		return [2]int64{int64(math.Round(p.X * 2)), int64(math.Round(p.Y * 2))} // 0.5 m
@@ -229,27 +229,48 @@ func effectiveLevels(tracks []Track) []int {
 			continue
 		}
 		for _, p := range []geo.Pt{pts[0], pts[len(pts)-1]} {
-			ends[key(p)] = append(ends[key(p)], endRef{ti, tracks[ti].Level})
+			ends[key(p)] = append(ends[key(p)], endRef{ti})
 		}
 	}
-	for ti := range tracks {
-		t := &tracks[ti]
-		if t.Line.Len() >= shortFragM || len(t.Line.Pts) == 0 {
-			continue
-		}
-		pts := t.Line.Pts
-		nb := map[int]bool{}
-		for _, p := range []geo.Pt{pts[0], pts[len(pts)-1]} {
-			for _, r := range ends[key(p)] {
-				if r.ti != ti {
-					nb[r.lvl] = true
+	for pass := 0; pass < 3; pass++ {
+		next := append([]int{}, eff...)
+		changed := false
+		for ti := range tracks {
+			t := &tracks[ti]
+			if t.Line.Len() >= shortFragM || len(t.Line.Pts) == 0 {
+				continue
+			}
+			pts := t.Line.Pts
+			wByLvl := map[int]float64{}
+			for _, p := range []geo.Pt{pts[0], pts[len(pts)-1]} {
+				for _, r := range ends[key(p)] {
+					if r.ti != ti {
+						wByLvl[eff[r.ti]] += tracks[r.ti].Line.Len()
+					}
 				}
 			}
-		}
-		if len(nb) == 1 {
-			for l := range nb {
-				eff[ti] = l
+			if len(wByLvl) == 0 {
+				continue
 			}
+			lvls := make([]int, 0, len(wByLvl))
+			for l := range wByLvl {
+				lvls = append(lvls, l)
+			}
+			sort.Ints(lvls)
+			best, bestW := eff[ti], -1.0
+			for _, l := range lvls {
+				if wByLvl[l] > bestW {
+					best, bestW = l, wByLvl[l]
+				}
+			}
+			if best != eff[ti] {
+				next[ti] = best
+				changed = true
+			}
+		}
+		eff = next
+		if !changed {
+			break
 		}
 	}
 	return eff
@@ -477,13 +498,19 @@ func Build(tracks []Track, p Params) *Index {
 			a0 := arcs[0]
 			prev := arcs[0]
 			flush := func(hi float64) {
-				sub := subPts(l, math.Max(0, a0-pitch/2), math.Min(total, hi+pitch/2))
+				// span ends taper: the score falls under hot a little
+				// before the steel actually ends, and a hull cutting a
+				// ladder mid-track reads as tracks escaping the shape
+				sub := subPts(l, math.Max(0, a0-hullTailM), math.Min(total, hi+hullTailM))
 				if len(sub) >= 2 {
 					steel = append(steel, geo.NewLine(sub))
 				}
 			}
 			for _, a := range arcs[1:] {
-				if a-prev > 2.5*pitch {
+				// a way cool in its middle is still one member — only a
+				// real departure (the same mainline hot again at the far
+				// side of a different ladder) starts a new span
+				if a-prev > math.Max(2.5*pitch, hullFillM) {
 					flush(prev)
 					a0 = a
 				}
