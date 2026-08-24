@@ -198,7 +198,12 @@ jobs:
               return 0
             fi
             echo "  publishing ${name}@${VERSION}"
-            npm publish "${dir}" --access public --provenance
+            # ./ MATTERS. A bare `platforms/darwin-arm64` is the owner/repo
+            # shorthand for a package hosted on GitHub, not a directory, so
+            # npm went looking for git@github.com:platforms/darwin-arm64.git
+            # and failed on a public key. Only a path npm cannot read as a
+            # spec is read as a folder.
+            npm publish "./${dir}" --access public --provenance
           }
 
           # The six engines FIRST. npm skips an optional dependency it cannot
