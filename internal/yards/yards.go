@@ -49,6 +49,8 @@ type Region struct {
 	Outline   []geo.Pt // closed CCW ring, first vertex not repeated
 	TrackLen  float64  // member steel hot arc inside the region (m)
 	Peak      float64  // max parallel-proximity score seen
+	Level     int      // dominant member level — the footprint is 2D, and a
+	// subway running UNDER a surface yard must not grow entrances into it
 	WayIDs    []string // ways with hot samples inside, sorted
 	Entrances []Entrance
 	Spines    []Spine
@@ -304,6 +306,7 @@ func Build(tracks []Track, p Params) *Index {
 	type stat struct {
 		tagM, plainM, peak float64
 		ways               map[int]float64 // track idx → hot arc inside
+		lvl                map[int]float64 // level → hot arc
 	}
 	stats := make([]stat, len(comps))
 	for _, h := range hots {
@@ -322,8 +325,10 @@ func Build(tracks []Track, p Params) *Index {
 		}
 		if st.ways == nil {
 			st.ways = map[int]float64{}
+			st.lvl = map[int]float64{}
 		}
 		st.ways[h.ti] += h.pitch
+		st.lvl[tracks[h.ti].Level] += h.pitch
 	}
 
 	ix := &Index{
@@ -352,6 +357,17 @@ func Build(tracks []Track, p Params) *Index {
 		}
 		rid := int32(len(ix.regions))
 		r := &Region{ID: int(rid), Peak: st.peak}
+		lvls := make([]int, 0, len(st.lvl))
+		for l := range st.lvl {
+			lvls = append(lvls, l)
+		}
+		sort.Ints(lvls)
+		bestArc := math.Inf(-1)
+		for _, l := range lvls {
+			if st.lvl[l] > bestArc {
+				bestArc, r.Level = st.lvl[l], l
+			}
+		}
 		cm := make(map[[2]int]bool, len(cells))
 		for _, c := range cells {
 			ix.cellRegion[c] = rid
@@ -375,6 +391,9 @@ func Build(tracks []Track, p Params) *Index {
 	}
 	if len(memberLines) > 0 {
 		ix.memberGrid = geo.NewGrid(memberLines, 64)
+	}
+	if len(ix.regions) > 0 {
+		ix.buildEntrancesAndSpines(tracks)
 	}
 	return ix
 }
