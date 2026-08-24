@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/alexwohlbruck/portolan/internal/bundle"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 )
 
@@ -14,6 +15,11 @@ const (
 	entranceCos    = 0.866     // ~30° heading agreement for a merge
 	termMergeM     = 70.0      // buffer stops sit ragged; a bundle end spreads wider
 	termMinTracks  = 3         // a BUNCH of tracks ending — not every dead-end stub
+	centerReachM   = 35.0      // cross-section half-reach when centering a run
+	centerParallel = 0.85      // heading agreement for a track to count as bundle
+	centerTaperM   = 45.0      // lateral shift fades to nothing at a pinned node
+	centerStepM    = 12.0      // resample pitch while centering
+	strandGapM     = 4.5       // bundle.DefaultParams().StrandGap — distinct tracks
 	spineSmoothS   = 25.0      // heading low-pass sigma — rule 6, flowing geometry
 	anchorSnapM    = 5.0       // crossing point → graph node tolerance
 	nodeQuantM     = 0.25
@@ -146,7 +152,7 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track, eff []int) {
 		ents = append(ents, tEnts...)
 		anchors = append(anchors, tAnchors...)
 		r.Entrances = ents
-		r.Spines, r.SkelNodes, r.Skel = buildSpines(g, ents, anchors)
+		r.Spines, r.SkelNodes, r.Skel = buildSpines(g, ents, anchors, r.Steel)
 	}
 }
 
@@ -542,7 +548,7 @@ func terminalEntrances(g *spineGraph, tracks []Track, taken map[int]bool) ([]Ent
 //     centerline path-matches steel end to end with no track jumping;
 //  6. runs are heading-smoothed with their ends pinned, so the geometry
 //     flows through the yard instead of stepping switch to switch.
-func buildSpines(g *spineGraph, ents []Entrance, anchors [][]int) ([]Spine, []SkelNode, []SkelEdge) {
+func buildSpines(g *spineGraph, ents []Entrance, anchors [][]int, steel []*geo.Line) ([]Spine, []SkelNode, []SkelEdge) {
 	if len(ents) == 0 || len(g.edges) == 0 {
 		return nil, nil, nil
 	}
@@ -631,7 +637,7 @@ func buildSpines(g *spineGraph, ents []Entrance, anchors [][]int) ([]Spine, []Sk
 		}
 	}
 
-	skN, skE := contractSkeleton(g, ents, entOf, kept)
+	skN, skE := contractSkeleton(g, ents, entOf, kept, steel)
 	return spinesFromSkeleton(skN, skE), skN, skE
 }
 
@@ -642,9 +648,13 @@ func buildSpines(g *spineGraph, ents []Entrance, anchors [][]int) ([]Spine, []Sk
 // pinned to their node positions BEFORE smoothing, which lets the
 // heading low-pass absorb the lateral pull into a flowing curve instead
 // of leaving a kink at the second vertex.
-func contractSkeleton(g *spineGraph, ents []Entrance, entOf map[int]int, kept map[int]bool) ([]SkelNode, []SkelEdge) {
+func contractSkeleton(g *spineGraph, ents []Entrance, entOf map[int]int, kept map[int]bool, steel []*geo.Line) ([]SkelNode, []SkelEdge) {
 	if len(kept) == 0 {
 		return nil, nil
+	}
+	var sgrid *geo.Grid
+	if len(steel) > 0 {
+		sgrid = geo.NewGrid(steel, 64)
 	}
 	keptIDs := make([]int, 0, len(kept))
 	for ei := range kept {
@@ -732,6 +742,8 @@ func contractSkeleton(g *spineGraph, ents []Entrance, entOf map[int]int, kept ma
 			if a == b {
 				continue // a loop back onto one node draws no corridor
 			}
+			run[0], run[len(run)-1] = nodes[a].Pt, nodes[b].Pt
+			run = centerRun(run, sgrid, steel)
 			run[0], run[len(run)-1] = nodes[a].Pt, nodes[b].Pt
 			sm := geo.SmoothTurning(run, spineSmoothS)
 			sm[0], sm[len(sm)-1] = nodes[a].Pt, nodes[b].Pt
@@ -863,6 +875,53 @@ func spinesFromSkeleton(nodes []SkelNode, edges []SkelEdge) []Spine {
 				queue = append(queue, nx)
 			}
 		}
+	}
+	return out
+}
+
+// centerRun slides a run sideways onto the MIDDLE of the track bundle it
+// runs with. The tree picks a real path through the yard's steel, but a
+// path rides whichever individual rail the switches offered, so it
+// wanders diagonally across a ladder; the drawn corridor should sit down
+// the middle of the bundle. At each sample the perpendicular section
+// collects the parallel tracks, the same strand clustering and median
+// rules the corridor bundler uses pick the middle, and the point slides
+// there. The shift tapers to nothing at both ends, so the entrance and
+// fork nodes stay exactly where the skeleton pinned them.
+func centerRun(run []geo.Pt, sgrid *geo.Grid, steel []*geo.Line) []geo.Pt {
+	if len(run) < 3 || sgrid == nil || len(steel) == 0 {
+		return run
+	}
+	l := geo.NewLine(run)
+	total := l.Len()
+	if total < 2*centerTaperM {
+		return run
+	}
+	n := int(total/centerStepM) + 1
+	out := make([]geo.Pt, 0, n+1)
+	var offs []float64
+	for i := 0; i <= n; i++ {
+		s := math.Min(total, float64(i)*centerStepM)
+		p := l.AtArc(s)
+		tan := l.TangentAtArc(s, centerStepM)
+		offs = offs[:0]
+		sgrid.Near(p, centerReachM, func(li int) {
+			for _, c := range steel[li].CrossSectionNear(p, tan, centerReachM) {
+				if c.Parallel >= centerParallel {
+					offs = append(offs, c.Offset)
+				}
+			}
+		})
+		shift := 0.0
+		if len(offs) > 0 {
+			sort.Float64s(offs)
+			shift = bundle.MedianStrand(bundle.Strands(offs, strandGapM))
+		}
+		// hold the pinned ends: the taper runs the shift in and out
+		if t := math.Min(math.Min(s, total-s)/centerTaperM, 1); t < 1 {
+			shift *= t
+		}
+		out = append(out, p.Add(tan.Perp().Scale(shift)))
 	}
 	return out
 }
