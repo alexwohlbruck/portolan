@@ -33,6 +33,9 @@ type Path struct {
 	Line    *geo.Line
 	WayIDs  []string   // the OSM ways walked, in order ("gap" marks bridges)
 	Steps   []PathStep // the exact walk, for SPLIT
+	// Guide: the sibling shape whose matched path stood in for this
+	// pattern's own off-network shape ("" = matched on its own shape).
+	Guide string
 }
 
 // PathStep is one hop of a matched walk: a directed graph piece, or a gap
