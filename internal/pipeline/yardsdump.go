@@ -38,7 +38,7 @@ func pointFeature(props map[string]any, p geo.Pt, frame geo.Frame) feature {
 // collection — the dump always exists, like every other stage artifact.
 func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 	rs := ix.Regions()
-	ri, kind, k := 0, 0, 0 // kind: 0 outline, 1 entrances, 2 spines
+	ri, kind, k := 0, 0, 0 // kind: 0 outline, 1 track, 2 entrances, 3 spines, 4 skeleton
 	return writeFCSeq(path, func() (feature, bool) {
 		for ri < len(rs) {
 			r := rs[ri]
@@ -53,6 +53,19 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 					return f, true
 				}
 			case 1:
+				// the yard's own tracks, clipped to the outline — what
+				// the centerlines are meant to average
+				for k < len(r.Steel) {
+					l := r.Steel[k]
+					k++
+					if f, ok := lineFeature(map[string]any{
+						"kind": "yard_track", "region": r.ID,
+					}, l, 6, frame); ok {
+						return f, true
+					}
+				}
+				kind, k = 2, 0
+			case 2:
 				if k < len(r.Entrances) {
 					e := r.Entrances[k]
 					deg := int(math.Round(math.Atan2(e.Heading.Y, e.Heading.X) * 180 / math.Pi))
@@ -63,8 +76,8 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 					k++
 					return f, true
 				}
-				kind, k = 2, 0
-			case 2:
+				kind, k = 3, 0
+			case 3:
 				for k < len(r.Spines) {
 					s := r.Spines[k]
 					k++
@@ -75,8 +88,8 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 						return f, true
 					}
 				}
-				kind, k = 3, 0
-			case 3:
+				kind, k = 4, 0
+			case 4:
 				for k < len(r.Skel) {
 					s := r.Skel[k]
 					k++

@@ -1246,7 +1246,6 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, connLayer string) 
 	return append(pre, out...), math.Max(0, tl.Len()-qa), math.Max(0, qb)
 }
 
-
 // maxTurn12: worst turn at uniform 12 m sampling — the scale the eye
 // (and the jaggedness gate) sees; dense vertices hide nothing here.
 // straightenCone replaces near-straight runs with their chord: every

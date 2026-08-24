@@ -120,7 +120,6 @@ func edgeFamily(e *Edge) int {
 	return 0
 }
 
-
 func dbgNet(tag string, net *Network) {
 	if os.Getenv("PORTOLAN_DBGNET") == "" {
 		return

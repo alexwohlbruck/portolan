@@ -68,7 +68,8 @@ type Region struct {
 	Peak     float64  // max parallel-proximity score seen
 	Level    int      // dominant member level — the footprint is 2D, and a
 	// subway running UNDER a surface yard must not grow entrances into it
-	WayIDs    []string // ways with hot samples inside, sorted
+	WayIDs    []string    // ways with hot samples inside, sorted
+	Steel     []*geo.Line // member track clipped to the outline — the yard's own tracks
 	Entrances []Entrance
 	Spines    []Spine
 	SkelNodes []SkelNode

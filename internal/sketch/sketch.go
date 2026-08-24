@@ -103,7 +103,6 @@ func Score(net *Network, feats []BuildFeature, frame geo.Frame) *Result {
 	}
 	grid := geo.NewGrid(lines, 64)
 
-
 	drawn := make([]*geo.Line, 0, len(net.Lines))
 	for _, dl := range net.Lines {
 		pts := make([]geo.Pt, len(dl.Coords))

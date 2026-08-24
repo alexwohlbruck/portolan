@@ -24,7 +24,7 @@ import (
 // a GAP state bridges with shape geometry (OSM is incomplete — LESSONS #8).
 
 type matchParams struct {
-	SampleDs   float64 // shape sample spacing
+	SampleDs float64 // shape sample spacing
 	// MaxSamples caps samples per pattern by widening the spacing on long
 	// shapes: memory for the emission and DP tables is linear in samples,
 	// and at 20 m a 3,900 km intercity pattern is 195k samples — gigabytes
@@ -57,12 +57,12 @@ func defaultMatchParams() matchParams {
 		SampleDs:   20,
 		MaxSamples: int(dial("match_max_samples", 20_000)),
 		Reach:      dial("match_reach", 90),
-		MaxCand:  int(dial("match_cands", 14)),
-		WHead:    dial("match_w_head", 35),
-		WTurn:    dial("match_w_turn", 0.8),
-		WWalk:    0.3,
-		WHop:     2.0,
-		UTurnPen: 150,
+		MaxCand:    int(dial("match_cands", 14)),
+		WHead:      dial("match_w_head", 35),
+		WTurn:      dial("match_w_turn", 0.8),
+		WWalk:      0.3,
+		WHop:       2.0,
+		UTurnPen:   150,
 		// affinity-scaled convergence (owner's rule 1.1): a route's own
 		// directions MUST land on one track even across a wide 4-track
 		// viaduct (25), same-color services bundle at ~18, and unrelated

@@ -12,9 +12,8 @@ const (
 	walkStepM      = cellM / 2 // membership sampling pitch along every track
 	entranceMergeM = 40.0      // ring-arc radius that merges boundary crossings
 	entranceCos    = 0.866     // ~30° heading agreement for a merge
-	spineSmoothS   = 15.0
-	spineOverlap   = 0.8 // path length already covered by kept spines → dup
-	spineCapFactor = 2   // max spines per region = factor × entrances
+	spineSmoothS   = 25.0      // heading low-pass sigma — rule 6, flowing geometry
+	anchorSnapM    = 5.0       // crossing point → graph node tolerance
 	nodeQuantM     = 0.25
 )
 
@@ -116,6 +115,11 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track, eff []int) {
 		}
 		ents, members := clusterEntrances(crossings[ri], rings[ri].Len(), tracks)
 		r.Entrances = ents
+		for _, pc := range pieces[ri] {
+			if pts := subPts(tracks[pc.ti].Line, pc.a0, pc.a1); len(pts) >= 2 {
+				r.Steel = append(r.Steel, geo.NewLine(pts))
+			}
+		}
 		r.Spines, r.SkelNodes, r.Skel = buildSpines(tracks, ents, members, crossings[ri], pieces[ri])
 	}
 }
@@ -174,27 +178,52 @@ func clusterEntrances(cs []crossing, ringLen float64, tracks []Track) ([]Entranc
 		}
 		return cs[i].arc < cs[j].arc
 	})
-	var clusters [][]int
+	// Cluster by EUCLIDEAN proximity, not ring arc: the tracks of one
+	// throat pierce within metres of each other, but the outline between
+	// them wiggles, so an arc window left Jamaica's throat as five
+	// separate entrances each pulling its own centerline. Union-find, so
+	// a wide throat chains across its whole fan.
+	parent := make([]int, len(cs))
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(x int) int {
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
 	for i := range cs {
-		if n := len(clusters); n > 0 {
-			last := clusters[n-1]
-			prev := cs[last[len(last)-1]]
-			if cs[i].ringArc-prev.ringArc <= entranceMergeM && cs[i].heading.Dot(prev.heading) >= entranceCos {
-				clusters[n-1] = append(last, i)
-				continue
+		for j := i + 1; j < len(cs); j++ {
+			if cs[i].pt.Dist(cs[j].pt) <= entranceMergeM &&
+				cs[i].heading.Dot(cs[j].heading) >= entranceCos {
+				if a, b := find(i), find(j); a != b {
+					if a < b {
+						parent[b] = a
+					} else {
+						parent[a] = b
+					}
+				}
 			}
 		}
-		clusters = append(clusters, []int{i})
 	}
-	if len(clusters) > 1 {
-		// Wrap-around: the ring's zero arc is an arbitrary corner.
-		first, last := clusters[0], clusters[len(clusters)-1]
-		a, b := cs[first[0]], cs[last[len(last)-1]]
-		if a.ringArc+ringLen-b.ringArc <= entranceMergeM && a.heading.Dot(b.heading) >= entranceCos {
-			clusters[0] = append(last, first...)
-			clusters = clusters[:len(clusters)-1]
-		}
+	byRoot := map[int][]int{}
+	for i := range cs {
+		r := find(i)
+		byRoot[r] = append(byRoot[r], i)
 	}
+	roots := make([]int, 0, len(byRoot))
+	for r := range byRoot {
+		roots = append(roots, r)
+	}
+	sort.Ints(roots)
+	clusters := make([][]int, 0, len(roots))
+	for _, r := range roots {
+		clusters = append(clusters, byRoot[r])
+	}
+	_ = ringLen
 	type ent struct {
 		med     float64
 		e       Entrance
@@ -208,17 +237,23 @@ func clusterEntrances(cs []crossing, ringLen float64, tracks []Track) ([]Entranc
 		}
 		sort.Float64s(arcs)
 		med := arcs[len(arcs)/2]
-		best, bestD := cl[0], math.Inf(1)
-		for _, ci := range cl {
-			if d := math.Abs(cs[ci].ringArc - med); d < bestD {
-				best, bestD = ci, d
-			}
-		}
+		// Where several parallel tracks pierce together, the entrance is
+		// the AVERAGE centerpoint of their crossings — one node in the
+		// middle of the bundle, not a snap onto whichever rail happened
+		// to sit nearest the median. The centerline then leaves the
+		// entrance down the middle, which is what a corridor drawing of
+		// a multi-track throat means.
+		var sum, hsum geo.Pt
 		ids := map[string]bool{}
 		for _, ci := range cl {
+			sum = sum.Add(cs[ci].pt)
+			hsum = hsum.Add(cs[ci].heading)
 			ids[tracks[cs[ci].ti].ID] = true
 		}
-		e := Entrance{Pt: cs[best].pt, Heading: cs[best].heading}
+		e := Entrance{
+			Pt:      sum.Scale(1 / float64(len(cl))),
+			Heading: hsum.Unit(),
+		}
 		for id := range ids {
 			e.WayIDs = append(e.WayIDs, id)
 		}
@@ -245,10 +280,11 @@ type spineEdge struct {
 }
 
 type spineGraph struct {
-	nodes map[[2]int]int
-	pos   []geo.Pt
-	adj   [][]int // node → edge indices
-	edges []spineEdge
+	nodes  map[[2]int]int
+	pos    []geo.Pt
+	adj    [][]int // node → edge indices
+	edges  []spineEdge
+	bycell map[[2]int][]int // 4 m cells → node ids, for nearestNode
 }
 
 func (g *spineGraph) node(p geo.Pt) int {
@@ -260,7 +296,31 @@ func (g *spineGraph) node(p geo.Pt) int {
 	g.nodes[k] = id
 	g.pos = append(g.pos, p)
 	g.adj = append(g.adj, nil)
+	c := [2]int{int(math.Floor(p.X / 4)), int(math.Floor(p.Y / 4))}
+	if g.bycell == nil {
+		g.bycell = map[[2]int][]int{}
+	}
+	g.bycell[c] = append(g.bycell[c], id)
 	return id
+}
+
+// nearestNode finds the graph node closest to p within maxD. Boundary
+// crossings are computed on the outline ring while piece ends come from
+// arc interpolation, so the two agree to centimetres, not exactly.
+func (g *spineGraph) nearestNode(p geo.Pt, maxD float64) (int, bool) {
+	r := int(math.Ceil(maxD/4)) + 1
+	c := [2]int{int(math.Floor(p.X / 4)), int(math.Floor(p.Y / 4))}
+	best, bestD := -1, maxD
+	for dx := -r; dx <= r; dx++ {
+		for dy := -r; dy <= r; dy++ {
+			for _, n := range g.bycell[[2]int{c[0] + dx, c[1] + dy}] {
+				if d := g.pos[n].Dist(p); d < bestD || (d == bestD && n < best) {
+					best, bestD = n, d
+				}
+			}
+		}
+	}
+	return best, best >= 0
 }
 
 func (g *spineGraph) addEdge(pts []geo.Pt) {
@@ -317,16 +377,12 @@ func (q pq) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
 func (q *pq) Push(x any)   { *q = append(*q, x.(pqItem)) }
 func (q *pq) Pop() any     { old := *q; n := len(old); it := old[n-1]; *q = old[:n-1]; return it }
 
-// buildSpines connects entrance pairs through the yard's own steel, then
-// contracts the union of kept paths into the region's skeleton.
-func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing, pcs []piece) ([]Spine, []SkelNode, []SkelEdge) {
-	if len(ents) < 2 || len(pcs) == 0 {
-		return nil, nil, nil
-	}
+// buildYardGraph turns the in-region track pieces into a graph: nodes at
+// shared vertices (OSM switches are exact shared nodes, quantized here to
+// 25 cm), edges the runs between them. Every edge IS real steel, which is
+// what lets a centerline path-match a track end to end.
+func buildYardGraph(tracks []Track, pcs []piece) *spineGraph {
 	g := &spineGraph{nodes: map[[2]int]int{}}
-
-	// Junction census: a vertex key seen by more than one piece is a
-	// switch node; piece endpoints always are.
 	seen := map[[2]int]int{}
 	quant := func(p geo.Pt) [2]int {
 		return [2]int{int(math.Round(p.X / nodeQuantM)), int(math.Round(p.Y / nodeQuantM))}
@@ -349,90 +405,146 @@ func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing
 			}
 		}
 	}
-	// Entrance nodes weld to their member crossings' pierce points (the
-	// piece endpoints) with straight connectors.
-	entNode := make([]int, len(ents))
-	for ei, e := range ents {
-		entNode[ei] = g.node(e.Pt)
+	return g
+}
+
+// buildSpines lays the region's centerlines. The centerlines form a TREE
+// over the entrances grown through the yard's own steel — never an
+// all-pairs bundle, which is what wound lassos around Jamaica: in a tree
+// every path is unique, so a centerline cannot double back on itself.
+//
+// The rules it keeps, in the owner's numbering:
+//  1. every entrance is a node — anchors are the graph nodes where its
+//     member tracks pierce the outline;
+//  2. that node sits at the AVERAGE centerpoint of those crossings
+//     (clusterEntrances), and every anchor of one entrance contracts to
+//     that single node, so parallel tracks converge into one entry;
+//  3. every centerline edge lies on a path between entrances (Prim only
+//     ever adds one), so none floats free;
+//  4. every entrance is connected — the growth continues while any
+//     entrance remains reachable, and an entrance alone in its component
+//     still gets a stub down its own steel;
+//  5. every edge is a real track run from the graph, so the whole
+//     centerline path-matches steel end to end with no track jumping;
+//  6. runs are heading-smoothed with their ends pinned, so the geometry
+//     flows through the yard instead of stepping switch to switch.
+func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing, pcs []piece) ([]Spine, []SkelNode, []SkelEdge) {
+	if len(ents) == 0 || len(pcs) == 0 {
+		return nil, nil, nil
+	}
+	g := buildYardGraph(tracks, pcs)
+
+	// anchors: where each entrance's member tracks meet the boundary.
+	anchors := make([][]int, len(ents))
+	entOf := map[int]int{}
+	for ei := range ents {
+		seen := map[int]bool{}
 		for _, ci := range members[ei] {
-			if cs[ci].pt != e.Pt {
-				g.addEdge([]geo.Pt{e.Pt, cs[ci].pt})
+			n, ok := g.nearestNode(cs[ci].pt, anchorSnapM)
+			if !ok || seen[n] {
+				continue
+			}
+			seen[n] = true
+			anchors[ei] = append(anchors[ei], n)
+		}
+		sort.Ints(anchors[ei])
+	}
+	for ei := range ents {
+		for _, n := range anchors[ei] {
+			if _, taken := entOf[n]; !taken {
+				entOf[n] = ei
 			}
 		}
 	}
 
-	var spines []Spine
-	kept := map[int]bool{} // edge indices the skeleton is built from
-	maxSpines := spineCapFactor * len(ents)
-	for i := 0; i < len(ents); i++ {
-		dist, prevE := dijkstra(g, entNode[i])
-		for j := i + 1; j < len(ents); j++ {
-			if math.IsInf(dist[entNode[j]], 1) || entNode[j] == entNode[i] {
-				continue
+	kept := map[int]bool{}
+	done := make([]bool, len(ents))
+	for {
+		seed := -1
+		for ei := range ents {
+			if !done[ei] && len(anchors[ei]) > 0 {
+				seed = ei
+				break
 			}
-			// Reconstruct edge path j←i.
-			var path []int
-			for n := entNode[j]; n != entNode[i]; {
+		}
+		if seed < 0 {
+			break
+		}
+		done[seed] = true
+		inTree := map[int]bool{}
+		tree := append([]int{}, anchors[seed]...)
+		for _, n := range tree {
+			inTree[n] = true
+		}
+		grown := false
+		for {
+			dist, prevE := dijkstraMulti(g, tree)
+			bestEnt, bestNode, bestD := -1, -1, math.Inf(1)
+			for ei := range ents {
+				if done[ei] {
+					continue
+				}
+				for _, n := range anchors[ei] {
+					if dist[n] < bestD {
+						bestEnt, bestNode, bestD = ei, n, dist[n]
+					}
+				}
+			}
+			if bestEnt < 0 {
+				break
+			}
+			for n := bestNode; !inTree[n]; {
 				ei := prevE[n]
-				path = append(path, ei)
-				if g.edges[ei].a == n {
-					n = g.edges[ei].b
-				} else {
-					n = g.edges[ei].a
+				if ei < 0 {
+					break
 				}
-			}
-			total, covered := 0.0, 0.0
-			for _, ei := range path {
-				total += g.edges[ei].arcL
-				if kept[ei] {
-					covered += g.edges[ei].arcL
-				}
-			}
-			if total < 1e-9 {
-				continue
-			}
-			// The skeleton must reach EVERY entrance, so the path's edges
-			// join kept unconditionally — an 85%-covered path still owns
-			// the 15% branch that is some entrance's only connection
-			// (skipping it entirely left entrances dangling with no
-			// centerline). The overlap rule only gates emitting one more
-			// PAIR spine, and the cap bounds those, never the skeleton.
-			dup := covered/total >= spineOverlap
-			for _, ei := range path {
 				kept[ei] = true
+				inTree[n] = true
+				tree = append(tree, n)
+				n = g.edges[ei].a + g.edges[ei].b - n
 			}
-			if dup || len(spines) >= maxSpines {
-				continue
-			}
-			// Assemble geometry i→j (path is j→i).
-			pts := []geo.Pt{ents[i].Pt}
-			cur := entNode[i]
-			for k := len(path) - 1; k >= 0; k-- {
-				e := g.edges[path[k]]
-				seg := e.pts
-				if e.b == cur {
-					seg = reversePts(seg)
-					cur = e.a
-				} else {
-					cur = e.b
+			done[bestEnt], grown = true, true
+			for _, n := range anchors[bestEnt] {
+				if !inTree[n] {
+					inTree[n] = true
+					tree = append(tree, n)
 				}
-				pts = append(pts, seg[1:]...)
 			}
-			sm := geo.SmoothTurning(pts, spineSmoothS)
-			// The weld guarantee: spine ends bit-equal to the entrances.
-			sm[0], sm[len(sm)-1] = ents[i].Pt, ents[j].Pt
-			spines = append(spines, Spine{From: i, To: j, Line: geo.NewLine(sm)})
+		}
+		if !grown {
+			// Rule 4 for a lone entrance: no partner to reach, so run a
+			// stub down its own steel to the far end of its component.
+			dist, prevE := dijkstraMulti(g, anchors[seed])
+			far, farD := -1, 0.0
+			for n := range dist {
+				if !math.IsInf(dist[n], 1) && dist[n] > farD {
+					far, farD = n, dist[n]
+				}
+			}
+			for n := far; n >= 0 && !inTree[n]; {
+				ei := prevE[n]
+				if ei < 0 {
+					break
+				}
+				kept[ei] = true
+				inTree[n] = true
+				n = g.edges[ei].a + g.edges[ei].b - n
+			}
 		}
 	}
-	skN, skE := contractSkeleton(g, entNode, kept)
-	return spines, skN, skE
+
+	skN, skE := contractSkeleton(g, ents, entOf, kept)
+	return spinesFromSkeleton(skN, skE), skN, skE
 }
 
 // contractSkeleton reduces the kept edge set to runs between skeleton
 // nodes (entrances, and any vertex whose kept-degree isn't 2 — forks and
-// dead ends). Runs are heading-smoothed with their end points pinned
-// bit-equal to the node positions.
-func contractSkeleton(g *spineGraph, entNode []int, kept map[int]bool) ([]SkelNode, []SkelEdge) {
+// dead ends). Every anchor of one entrance contracts to ONE node at the
+// entrance's averaged point, so parallel tracks converge there; runs are
+// pinned to their node positions BEFORE smoothing, which lets the
+// heading low-pass absorb the lateral pull into a flowing curve instead
+// of leaving a kink at the second vertex.
+func contractSkeleton(g *spineGraph, ents []Entrance, entOf map[int]int, kept map[int]bool) ([]SkelNode, []SkelEdge) {
 	if len(kept) == 0 {
 		return nil, nil
 	}
@@ -447,27 +559,31 @@ func contractSkeleton(g *spineGraph, entNode []int, kept map[int]bool) ([]SkelNo
 		adj[e.a] = append(adj[e.a], ei)
 		adj[e.b] = append(adj[e.b], ei)
 	}
-	entOf := map[int]int{}
-	for i, n := range entNode {
-		entOf[n] = i
-	}
 	isSkel := func(n int) bool {
 		_, ent := entOf[n]
 		return ent || len(adj[n]) != 2
 	}
 	var nodes []SkelNode
 	nodeID := map[int]int{}
+	entNodeID := map[int]int{}
 	skelNode := func(n int) int {
 		if id, ok := nodeID[n]; ok {
 			return id
 		}
-		ent, ok := entOf[n]
-		if !ok {
-			ent = -1
+		if ei, ok := entOf[n]; ok {
+			if id, have := entNodeID[ei]; have {
+				nodeID[n] = id
+				return id
+			}
+			id := len(nodes)
+			nodes = append(nodes, SkelNode{Pt: ents[ei].Pt, Entrance: ei})
+			entNodeID[ei], nodeID[n] = id, id
+			return id
 		}
-		nodeID[n] = len(nodes)
-		nodes = append(nodes, SkelNode{Pt: g.pos[n], Entrance: ent})
-		return nodeID[n]
+		id := len(nodes)
+		nodes = append(nodes, SkelNode{Pt: g.pos[n], Entrance: -1})
+		nodeID[n] = id
+		return id
 	}
 	var edges []SkelEdge
 	used := map[int]bool{}
@@ -514,12 +630,143 @@ func contractSkeleton(g *spineGraph, entNode []int, kept map[int]bool) ([]SkelNo
 			if len(run) < 2 {
 				continue
 			}
+			a, b := skelNode(start), skelNode(cur)
+			if a == b {
+				continue // a loop back onto one node draws no corridor
+			}
+			run[0], run[len(run)-1] = nodes[a].Pt, nodes[b].Pt
 			sm := geo.SmoothTurning(run, spineSmoothS)
-			sm[0], sm[len(sm)-1] = g.pos[start], g.pos[cur]
-			edges = append(edges, SkelEdge{A: skelNode(start), B: skelNode(cur), Line: geo.NewLine(sm)})
+			sm[0], sm[len(sm)-1] = nodes[a].Pt, nodes[b].Pt
+			edges = append(edges, SkelEdge{A: a, B: b, Line: geo.NewLine(sm)})
 		}
 	}
-	return nodes, edges
+	return nodes, forest(edges)
+}
+
+// forest drops any run that closes a cycle, keeping the shorter way
+// round. The kept graph is a tree by construction, but contraction can
+// still close one: when two anchors of ONE entrance both sit in the tree,
+// merging them into that entrance's single node turns the path between
+// them into a loop — which is exactly the lasso that wound around
+// Jamaica's throat. A dropped edge never disconnects anything (both its
+// ends are already joined), so every entrance keeps its centerline.
+func forest(edges []SkelEdge) []SkelEdge {
+	if len(edges) < 2 {
+		return edges
+	}
+	order := make([]int, len(edges))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return edges[order[i]].Line.Len() < edges[order[j]].Line.Len()
+	})
+	parent := map[int]int{}
+	var find func(int) int
+	find = func(x int) int {
+		if _, ok := parent[x]; !ok {
+			parent[x] = x
+		}
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
+	keep := make([]bool, len(edges))
+	for _, i := range order {
+		a, b := find(edges[i].A), find(edges[i].B)
+		if a == b {
+			continue
+		}
+		parent[a] = b
+		keep[i] = true
+	}
+	out := edges[:0]
+	for i, e := range edges {
+		if keep[i] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// spinesFromSkeleton reads the entrance-to-entrance corridors out of the
+// skeleton: BFS from each entrance node, never expanding THROUGH another
+// entrance, so each spine is one throat-to-throat run with no entrance in
+// the middle. In a tree these paths are unique, so no pair is ambiguous.
+func spinesFromSkeleton(nodes []SkelNode, edges []SkelEdge) []Spine {
+	if len(edges) == 0 {
+		return nil
+	}
+	adj := make([][]int, len(nodes))
+	for i, e := range edges {
+		adj[e.A] = append(adj[e.A], i)
+		adj[e.B] = append(adj[e.B], i)
+	}
+	var out []Spine
+	seen := map[[2]int]bool{}
+	for s := range nodes {
+		if nodes[s].Entrance < 0 {
+			continue
+		}
+		prev := make([]int, len(nodes))
+		for i := range prev {
+			prev[i] = -1
+		}
+		visited := make([]bool, len(nodes))
+		visited[s] = true
+		queue := []int{s}
+		for len(queue) > 0 {
+			n := queue[0]
+			queue = queue[1:]
+			for _, ei := range adj[n] {
+				e := edges[ei]
+				nx := e.A + e.B - n
+				if visited[nx] {
+					continue
+				}
+				visited[nx] = true
+				prev[nx] = ei
+				if nodes[nx].Entrance >= 0 {
+					a, b := nodes[s].Entrance, nodes[nx].Entrance
+					key := [2]int{min(a, b), max(a, b)}
+					if !seen[key] {
+						seen[key] = true
+						var chain []int
+						for c := nx; c != s; {
+							pe := prev[c]
+							chain = append(chain, pe)
+							c = edges[pe].A + edges[pe].B - c
+						}
+						var pts []geo.Pt
+						cur := s
+						for k := len(chain) - 1; k >= 0; k-- {
+							e := edges[chain[k]]
+							seg := e.Line.Pts
+							if e.B == cur {
+								seg = reversePts(seg)
+								cur = e.A
+							} else {
+								cur = e.B
+							}
+							if len(pts) == 0 {
+								pts = append(pts, seg...)
+							} else {
+								pts = append(pts, seg[1:]...)
+							}
+						}
+						if len(pts) >= 2 {
+							out = append(out, Spine{From: a, To: b, Line: geo.NewLine(pts)})
+						}
+					}
+					continue // never expand THROUGH an entrance
+				}
+				queue = append(queue, nx)
+			}
+		}
+	}
+	return out
 }
 
 func reversePts(pts []geo.Pt) []geo.Pt {
@@ -530,18 +777,24 @@ func reversePts(pts []geo.Pt) []geo.Pt {
 	return out
 }
 
-// dijkstra returns per-node best cost from src and the edge used to reach
-// each node; deterministic (heap ties break on node id, edge fans are
-// appended in construction order).
-func dijkstra(g *spineGraph, src int) ([]float64, []int) {
+// dijkstraMulti returns per-node best cost from the nearest source and
+// the edge used to reach each node; deterministic (heap ties break on
+// node id, edge fans are appended in construction order).
+func dijkstraMulti(g *spineGraph, srcs []int) ([]float64, []int) {
 	dist := make([]float64, len(g.pos))
 	prevE := make([]int, len(g.pos))
 	for i := range dist {
 		dist[i] = math.Inf(1)
 		prevE[i] = -1
 	}
-	dist[src] = 0
-	q := &pq{{src, 0}}
+	q := &pq{}
+	for _, s := range srcs {
+		if dist[s] != 0 {
+			dist[s] = 0
+			*q = append(*q, pqItem{s, 0})
+		}
+	}
+	heap.Init(q)
 	for q.Len() > 0 {
 		it := heap.Pop(q).(pqItem)
 		if it.dist > dist[it.node] {
