@@ -42,31 +42,6 @@ type Entrance struct {
 	Terminal bool     // a track-bundle end, not an outline crossing
 }
 
-// Spine is a centerline through the yard between two entrances, riding
-// plausible steel. Its endpoints are bit-equal to the entrance points so
-// outside geometry welds cleanly.
-type Spine struct {
-	From, To int // indices into Region.Entrances
-	Line     *geo.Line
-}
-
-// SkelNode is a vertex of the region's spine skeleton: an entrance
-// (Entrance >= 0, Pt bit-equal to it) or an interior fork (-1). The
-// skeleton is the pair spines' shared steel contracted into runs — two
-// spines through one throat share the trunk section as ONE skeleton edge,
-// which is what lets a substitution draw a fork as two corridors meeting
-// at a node instead of overlapping ink.
-type SkelNode struct {
-	Pt       geo.Pt
-	Entrance int
-}
-
-// SkelEdge is one skeleton run, oriented A→B.
-type SkelEdge struct {
-	A, B int
-	Line *geo.Line
-}
-
 // Region is one detected yard: a connected patch of parallel-track density.
 type Region struct {
 	ID       int
@@ -78,9 +53,6 @@ type Region struct {
 	WayIDs    []string    // ways with hot samples inside, sorted
 	Steel     []*geo.Line // member track clipped to the outline — the yard's own tracks
 	Entrances []Entrance
-	Spines    []Spine
-	SkelNodes []SkelNode
-	Skel      []SkelEdge
 }
 
 // Params are the detection dials (pipeline.Dials yard_* keys).
@@ -585,7 +557,7 @@ func Build(tracks []Track, p Params) *Index {
 		ix.memberGrid = geo.NewGrid(memberLines, 64)
 	}
 	if len(ix.regions) > 0 {
-		ix.buildEntrancesAndSpines(tracks, eff)
+		ix.buildEntrances(tracks, eff)
 	}
 	return ix
 }

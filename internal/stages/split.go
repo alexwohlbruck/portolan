@@ -534,12 +534,6 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		twinTram[i] = tramFamily(st.Ways)
 	}
 	rp := bundle.DefaultParams()
-	// the yard rule proper: sole-trunk weave through detected regions
-	// collapses onto the region's spine skeleton BEFORE refinement, so
-	// refine/bundle/foldRings all operate on the corridor, not the ladder
-	if n := substituteYardSpines(net, paths); n > 0 {
-		dbgNet("yardspine", net)
-	}
 	dbgNet("pre-refine", net)
 	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
 	dbgNet("refine0", net)

@@ -33,12 +33,12 @@ func pointFeature(props map[string]any, p geo.Pt, frame geo.Frame) feature {
 }
 
 // writeYards streams the yard overlay: per region its outline polygon,
-// entrance points and spine lines, all carrying the region id so the
-// console can color per region. A nil index writes the usual empty
+// its own tracks and its entrance points, all carrying the region id so
+// the console can color per region. A nil index writes the usual empty
 // collection — the dump always exists, like every other stage artifact.
 func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 	rs := ix.Regions()
-	ri, kind, k := 0, 0, 0 // kind: 0 outline, 1 track, 2 entrances, 3 spines, 4 skeleton
+	ri, kind, k := 0, 0, 0 // kind: 0 outline, 1 track, 2 entrances
 	return writeFCSeq(path, func() (feature, bool) {
 		for ri < len(rs) {
 			r := rs[ri]
@@ -53,8 +53,7 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 					return f, true
 				}
 			case 1:
-				// the yard's own tracks, clipped to the outline — what
-				// the centerlines are meant to average
+				// the yard's own tracks, clipped to the outline
 				for k < len(r.Steel) {
 					l := r.Steel[k]
 					k++
@@ -76,30 +75,6 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 					}, e.Pt, frame)
 					k++
 					return f, true
-				}
-				kind, k = 3, 0
-			case 3:
-				for k < len(r.Spines) {
-					s := r.Spines[k]
-					k++
-					if f, ok := lineFeature(map[string]any{
-						"kind": "yard_spine", "region": r.ID,
-						"from": s.From, "to": s.To,
-					}, s.Line, 10, frame); ok {
-						return f, true
-					}
-				}
-				kind, k = 4, 0
-			case 4:
-				for k < len(r.Skel) {
-					s := r.Skel[k]
-					k++
-					if f, ok := lineFeature(map[string]any{
-						"kind": "yard_skel", "region": r.ID,
-						"a": s.A, "b": s.B,
-					}, s.Line, 10, frame); ok {
-						return f, true
-					}
 				}
 				ri, kind, k = ri+1, 0, 0
 			}

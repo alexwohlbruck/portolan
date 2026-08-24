@@ -1288,9 +1288,9 @@ function addLayers() {
     },
     layout: { visibility: 'none' },
   })
-  // yard oracle overlay (<out>.yards.geojson): region outlines, the spine
-  // skeleton the substitution rides, pair spines, entrance points — all
-  // colored per region so adjacent complexes read apart
+  // yard oracle overlay (<out>.yards.geojson): region outlines, the
+  // yard's own tracks and its entrance points — all colored per region
+  // so adjacent complexes read apart
   const regionColor = ['match', ['%', ['get', 'region'], 6],
     0, '#e6550d', 1, '#3182bd', 2, '#31a354', 3, '#756bb1', 4, '#d6616b', 5, '#8c6d31',
     '#888888'] as any
@@ -1310,21 +1310,6 @@ function addLayers() {
     id: 'dbg-yards-track', type: 'line', source: 'yards',
     filter: ['==', ['get', 'kind'], 'yard_track'],
     paint: { 'line-color': '#555', 'line-width': 0.8, 'line-opacity': 0.55 },
-    layout: { visibility: 'none' },
-  })
-  map.addLayer({
-    id: 'dbg-yards-spine', type: 'line', source: 'yards',
-    filter: ['==', ['get', 'kind'], 'yard_spine'],
-    paint: {
-      'line-color': regionColor, 'line-width': 1.2, 'line-opacity': 0.7,
-      'line-dasharray': [2, 2],
-    },
-    layout: { visibility: 'none' },
-  })
-  map.addLayer({
-    id: 'dbg-yards-skel', type: 'line', source: 'yards',
-    filter: ['==', ['get', 'kind'], 'yard_skel'],
-    paint: { 'line-color': regionColor, 'line-width': 2.5, 'line-opacity': 0.9 },
     layout: { visibility: 'none' },
   })
   map.addLayer({
@@ -1840,7 +1825,7 @@ watch(debug, (d) => {
   if (!map) return
   for (const [k, on] of Object.entries(d)) {
     // a toggle owns every dbg-<k>* layer (yards has fill/outline/spine/…)
-    for (const suffix of ['', '-outline', '-track', '-spine', '-skel', '-ent']) {
+    for (const suffix of ['', '-outline', '-track', '-ent']) {
       const id = `dbg-${k}${suffix}`
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none')
     }

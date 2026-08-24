@@ -152,20 +152,16 @@ func TestNYCYards(t *testing.T) {
 			frac, inYard, samples)
 	}
 
-	// Entrances and spines must exist at scale without blowing up.
-	ents, spines := 0, 0
+	// Entrances must exist at scale without blowing up.
+	ents := 0
 	for _, r := range ix.Regions() {
 		ents += len(r.Entrances)
-		spines += len(r.Spines)
 		if len(r.Outline) < 4 {
 			t.Errorf("region %d outline has %d vertices", r.ID, len(r.Outline))
 		}
 	}
-	t.Logf("%d entrances, %d spines across %d regions", ents, spines, len(ix.Regions()))
+	t.Logf("%d entrances across %d regions", ents, len(ix.Regions()))
 	if ents == 0 {
 		t.Error("no entrances detected across all of NYC")
-	}
-	if spines == 0 {
-		t.Error("no spines built across all of NYC")
 	}
 }
