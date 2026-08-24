@@ -72,6 +72,7 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 					f := pointFeature(map[string]any{
 						"kind": "yard_entrance", "region": r.ID, "entrance": k,
 						"heading_deg": deg, "ways": len(e.WayIDs),
+						"terminal": e.Terminal,
 					}, e.Pt, frame)
 					k++
 					return f, true

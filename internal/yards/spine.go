@@ -10,8 +10,10 @@ import (
 
 const (
 	walkStepM      = cellM / 2 // membership sampling pitch along every track
-	entranceMergeM = 40.0      // ring-arc radius that merges boundary crossings
+	entranceMergeM = 40.0      // proximity that merges crossings into one entrance
 	entranceCos    = 0.866     // ~30° heading agreement for a merge
+	termMergeM     = 70.0      // buffer stops sit ragged; a bundle end spreads wider
+	termMinTracks  = 3         // a BUNCH of tracks ending — not every dead-end stub
 	spineSmoothS   = 25.0      // heading low-pass sigma — rule 6, flowing geometry
 	anchorSnapM    = 5.0       // crossing point → graph node tolerance
 	nodeQuantM     = 0.25
@@ -113,14 +115,38 @@ func (ix *Index) buildEntrancesAndSpines(tracks []Track, eff []int) {
 		if rings[ri] == nil {
 			continue
 		}
-		ents, members := clusterEntrances(crossings[ri], rings[ri].Len(), tracks)
-		r.Entrances = ents
 		for _, pc := range pieces[ri] {
 			if pts := subPts(tracks[pc.ti].Line, pc.a0, pc.a1); len(pts) >= 2 {
 				r.Steel = append(r.Steel, geo.NewLine(pts))
 			}
 		}
-		r.Spines, r.SkelNodes, r.Skel = buildSpines(tracks, ents, members, crossings[ri], pieces[ri])
+		if len(pieces[ri]) == 0 {
+			continue
+		}
+		g := buildYardGraph(tracks, pieces[ri])
+		ents, members := clusterEntrances(crossings[ri], rings[ri].Len(), tracks)
+		// anchors: the graph nodes where each entrance's tracks pierce
+		anchors := make([][]int, len(ents))
+		taken := map[int]bool{}
+		for ei := range ents {
+			seen := map[int]bool{}
+			for _, ci := range members[ei] {
+				n, ok := g.nearestNode(crossings[ri][ci].pt, anchorSnapM)
+				if !ok || seen[n] {
+					continue
+				}
+				seen[n] = true
+				anchors[ei] = append(anchors[ei], n)
+				taken[n] = true
+			}
+			sort.Ints(anchors[ei])
+		}
+		// terminals: bundles of track that simply end inside the yard
+		tEnts, tAnchors := terminalEntrances(g, tracks, taken)
+		ents = append(ents, tEnts...)
+		anchors = append(anchors, tAnchors...)
+		r.Entrances = ents
+		r.Spines, r.SkelNodes, r.Skel = buildSpines(g, ents, anchors)
 	}
 }
 
@@ -408,6 +434,94 @@ func buildYardGraph(tracks []Track, pcs []piece) *spineGraph {
 	return g
 }
 
+// terminalEntrances finds bundles of track that END inside the yard — a
+// rail terminal's platform ends, a storage fan's buffers — and makes each
+// bundle one entrance at its averaged endpoint, exactly as if the group
+// were leaving the yard. Only a BUNCH counts (termMinTracks): every
+// storage track in a yard dead-ends somewhere, and one entrance per stub
+// would run a centerline down every siding.
+func terminalEntrances(g *spineGraph, tracks []Track, taken map[int]bool) ([]Entrance, [][]int) {
+	var cands []int
+	for n := range g.pos {
+		if len(g.adj[n]) == 1 && !taken[n] {
+			cands = append(cands, n)
+		}
+	}
+	if len(cands) < termMinTracks {
+		return nil, nil
+	}
+	sort.Ints(cands)
+	head := make(map[int]geo.Pt, len(cands))
+	for _, n := range cands {
+		e := g.edges[g.adj[n][0]]
+		pts := e.pts
+		// outward: along the track, away from the yard's interior
+		if e.b == n {
+			i := max(0, len(pts)-4)
+			head[n] = pts[len(pts)-1].Sub(pts[i]).Unit()
+		} else {
+			i := min(len(pts)-1, 3)
+			head[n] = pts[0].Sub(pts[i]).Unit()
+		}
+	}
+	parent := map[int]int{}
+	var find func(int) int
+	find = func(x int) int {
+		if _, ok := parent[x]; !ok {
+			parent[x] = x
+		}
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
+	for i, a := range cands {
+		for _, b := range cands[i+1:] {
+			if g.pos[a].Dist(g.pos[b]) <= termMergeM && head[a].Dot(head[b]) >= entranceCos {
+				if ra, rb := find(a), find(b); ra != rb {
+					if ra < rb {
+						parent[rb] = ra
+					} else {
+						parent[ra] = rb
+					}
+				}
+			}
+		}
+	}
+	byRoot := map[int][]int{}
+	for _, n := range cands {
+		r := find(n)
+		byRoot[r] = append(byRoot[r], n)
+	}
+	roots := make([]int, 0, len(byRoot))
+	for r := range byRoot {
+		roots = append(roots, r)
+	}
+	sort.Ints(roots)
+	var ents []Entrance
+	var anchors [][]int
+	for _, r := range roots {
+		group := byRoot[r]
+		if len(group) < termMinTracks {
+			continue
+		}
+		sort.Ints(group)
+		var sum, hsum geo.Pt
+		for _, n := range group {
+			sum = sum.Add(g.pos[n])
+			hsum = hsum.Add(head[n])
+		}
+		ents = append(ents, Entrance{
+			Pt:       sum.Scale(1 / float64(len(group))),
+			Heading:  hsum.Unit(),
+			Terminal: true,
+		})
+		anchors = append(anchors, group)
+	}
+	return ents, anchors
+}
+
 // buildSpines lays the region's centerlines. The centerlines form a TREE
 // over the entrances grown through the yard's own steel — never an
 // all-pairs bundle, which is what wound lassos around Jamaica: in a tree
@@ -428,27 +542,11 @@ func buildYardGraph(tracks []Track, pcs []piece) *spineGraph {
 //     centerline path-matches steel end to end with no track jumping;
 //  6. runs are heading-smoothed with their ends pinned, so the geometry
 //     flows through the yard instead of stepping switch to switch.
-func buildSpines(tracks []Track, ents []Entrance, members [][]int, cs []crossing, pcs []piece) ([]Spine, []SkelNode, []SkelEdge) {
-	if len(ents) == 0 || len(pcs) == 0 {
+func buildSpines(g *spineGraph, ents []Entrance, anchors [][]int) ([]Spine, []SkelNode, []SkelEdge) {
+	if len(ents) == 0 || len(g.edges) == 0 {
 		return nil, nil, nil
 	}
-	g := buildYardGraph(tracks, pcs)
-
-	// anchors: where each entrance's member tracks meet the boundary.
-	anchors := make([][]int, len(ents))
 	entOf := map[int]int{}
-	for ei := range ents {
-		seen := map[int]bool{}
-		for _, ci := range members[ei] {
-			n, ok := g.nearestNode(cs[ci].pt, anchorSnapM)
-			if !ok || seen[n] {
-				continue
-			}
-			seen[n] = true
-			anchors[ei] = append(anchors[ei], n)
-		}
-		sort.Ints(anchors[ei])
-	}
 	for ei := range ents {
 		for _, n := range anchors[ei] {
 			if _, taken := entOf[n]; !taken {

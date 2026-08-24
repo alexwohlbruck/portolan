@@ -1332,7 +1332,10 @@ function addLayers() {
     filter: ['==', ['get', 'kind'], 'yard_entrance'],
     paint: {
       'circle-radius': 4.5, 'circle-color': regionColor,
-      'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5,
+      // a terminal bundle end reads as a hollow dot: it is where the
+      // yard stops, not where it connects to the world
+      'circle-stroke-color': ['case', ['get', 'terminal'], '#111', '#fff'],
+      'circle-stroke-width': 1.5,
     },
     layout: { visibility: 'none' },
   })

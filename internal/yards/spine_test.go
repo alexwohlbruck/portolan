@@ -133,15 +133,32 @@ func TestEntrancesAndSpines(t *testing.T) {
 		t.Fatalf("regions = %d, want 1", len(ix.Regions()))
 	}
 	r := ix.Regions()[0]
-	if len(r.Entrances) != 2 {
-		t.Fatalf("entrances = %d, want 2 (through track in and out)", len(r.Entrances))
-	}
+	// two outline crossings (the through track in and out) plus two
+	// terminal bundles (the ladder's own ends, west and east)
 	var west, east *Entrance
+	terms := 0
 	for i := range r.Entrances {
-		if r.Entrances[i].Pt.X < 300 {
-			west = &r.Entrances[i]
+		e := &r.Entrances[i]
+		if e.Terminal {
+			terms++
+			continue
+		}
+		if e.Pt.X < 300 {
+			west = e
 		} else {
-			east = &r.Entrances[i]
+			east = e
+		}
+	}
+	if terms != 2 {
+		t.Errorf("terminal entrances = %d, want 2 (the ladder's two ends)", terms)
+	}
+	for i := range r.Entrances {
+		if e := &r.Entrances[i]; e.Terminal {
+			// the bundle end is the AVERAGE of its tracks' ends, so it
+			// sits inside the ladder's width, not on one rail
+			if e.Pt.Y < 4 || e.Pt.Y > 4+5*4 {
+				t.Errorf("terminal entrance at %v is not inside the bundle", e.Pt)
+			}
 		}
 	}
 	if west == nil || east == nil {

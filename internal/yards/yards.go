@@ -28,11 +28,18 @@ type Track struct {
 	Level   int
 }
 
-// Entrance is a spot where connected track crosses a region's outline.
+// Entrance is a spot where a bundle of track meets the outside world:
+// either where it crosses the region's outline, or — Terminal — where a
+// bunch of parallel tracks simply END inside the yard, as at a rail
+// terminal's platform ends. A terminal is treated exactly like a throat:
+// the node sits at the averaged endpoint of the bundle, and a centerline
+// runs to it, so the yard's corridor reaches its buffers instead of
+// stopping at whichever track happened to be longest.
 type Entrance struct {
-	Pt      geo.Pt   // exactly on the region Outline
-	Heading geo.Pt   // unit tangent pointing OUT of the region
-	WayIDs  []string // crossing ways merged into this entrance, sorted
+	Pt       geo.Pt   // on the outline, or the bundle's averaged end
+	Heading  geo.Pt   // unit tangent pointing OUT of the region
+	WayIDs   []string // ways merged into this entrance, sorted
+	Terminal bool     // a track-bundle end, not an outline crossing
 }
 
 // Spine is a centerline through the yard between two entrances, riding
@@ -521,6 +528,19 @@ func Build(tracks []Track, p Params) *Index {
 		}
 		sort.Strings(r.WayIDs)
 		r.Outline = hullOutline(steel, outlinePadM)
+		if len(r.Outline) >= 3 {
+			// A member way whose score cools mid-yard had its span cut
+			// there, and the hull then sliced across live track — every
+			// such cut minted a false entrance in the middle of the
+			// yard. Re-span each member to its WHOLE passage through the
+			// hull and rebuild: now a way leaves the shape only where it
+			// really leaves the yard.
+			if wider := expandSteel(tracks, tis, st.arcs, r.Outline); len(wider) > 0 {
+				if ring := hullOutline(wider, outlinePadM); len(ring) >= 3 {
+					steel, r.Outline = wider, ring
+				}
+			}
+		}
 		if len(r.Outline) < 3 {
 			// degenerate contour: fall back to the raster trace so the
 			// region still has a consistent footprint

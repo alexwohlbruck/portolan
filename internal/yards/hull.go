@@ -288,6 +288,82 @@ func thinRing(ring []geo.Pt, tol float64) []geo.Pt {
 	return out
 }
 
+// expandSteel re-spans each member way to the full arc intervals it
+// spends INSIDE the ring, keeping any interval that carries hot samples.
+// The hull rebuilt from these covers each track's whole passage through
+// the yard, so the boundary can only cut a track where the track truly
+// exits — no clipped steel, no false mid-yard entrances.
+func expandSteel(tracks []Track, tis []int, arcs map[int][]float64, ring []geo.Pt) []*geo.Line {
+	var out []*geo.Line
+	for _, ti := range tis {
+		l := tracks[ti].Line
+		total := l.Len()
+		if total < 1e-9 {
+			continue
+		}
+		hot := arcs[ti]
+		if len(hot) == 0 {
+			continue
+		}
+		step := cellM / 2
+		type span struct{ a, b float64 }
+		var spans []span
+		open := -1.0
+		prev := 0.0
+		for s := 0.0; ; s += step {
+			if s > total {
+				s = total
+			}
+			in := pointInRing(ring, l.AtArc(s))
+			if in && open < 0 {
+				open = s
+			}
+			if !in && open >= 0 {
+				spans = append(spans, span{open, prev})
+				open = -1
+			}
+			prev = s
+			if s >= total {
+				break
+			}
+		}
+		if open >= 0 {
+			spans = append(spans, span{open, total})
+		}
+		for _, sp := range spans {
+			carries := false
+			for _, h := range hot {
+				if h >= sp.a-step && h <= sp.b+step {
+					carries = true
+					break
+				}
+			}
+			if !carries {
+				continue
+			}
+			// the taper keeps the way's own end just inside the shape
+			a := math.Max(0, sp.a-hullTailM)
+			b := math.Min(total, sp.b+hullTailM)
+			if pts := subPtsRange(l, a, b); len(pts) >= 2 {
+				out = append(out, geo.NewLine(pts))
+			}
+		}
+	}
+	return out
+}
+
+// subPtsRange is subPts without importing the spine file's helper name
+// into the hull's vocabulary — vertices between the arcs, exact ends.
+func subPtsRange(l *geo.Line, a0, a1 float64) []geo.Pt {
+	pts := []geo.Pt{l.AtArc(a0)}
+	for i, arc := range l.ArcTable() {
+		if arc > a0+1e-9 && arc < a1-1e-9 {
+			pts = append(pts, l.Pts[i])
+		}
+	}
+	return append(pts, l.AtArc(a1))
+}
+
 // pointInRing is even-odd ray casting (last→first edge implied).
 func pointInRing(ring []geo.Pt, p geo.Pt) bool {
 	in := false
