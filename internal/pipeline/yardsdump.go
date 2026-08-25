@@ -38,7 +38,7 @@ func pointFeature(props map[string]any, p geo.Pt, frame geo.Frame) feature {
 // collection — the dump always exists, like every other stage artifact.
 func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 	rs := ix.Regions()
-	ri, kind, k := 0, 0, 0 // kind: 0 outline, 1 track, 2 entrances
+	ri, kind, k := 0, 0, 0 // kind: 0 outline, 1 track, 2 centerline, 3 entrances
 	return writeFCSeq(path, func() (feature, bool) {
 		for ri < len(rs) {
 			r := rs[ri]
@@ -65,6 +65,19 @@ func writeYards(path string, ix *yards.Index, frame geo.Frame) error {
 				}
 				kind, k = 2, 0
 			case 2:
+				// the corridor drawn through the yard, entrance to entrance
+				for k < len(r.Centerlines) {
+					cl := r.Centerlines[k]
+					k++
+					if f, ok := lineFeature(map[string]any{
+						"kind": "yard_centerline", "region": r.ID,
+						"from": cl.Ends[0], "to": cl.Ends[1],
+					}, geo.NewLine(cl.Pts), 6, frame); ok {
+						return f, true
+					}
+				}
+				kind, k = 3, 0
+			case 3:
 				if k < len(r.Entrances) {
 					e := r.Entrances[k]
 					deg := int(math.Round(math.Atan2(e.Heading.Y, e.Heading.X) * 180 / math.Pi))

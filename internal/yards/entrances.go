@@ -160,7 +160,7 @@ func (ix *Index) buildEntrances(tracks []Track, eff []int) {
 		ents = append(ents, tEnts...)
 		anchors = append(anchors, tAnchors...)
 		r.Entrances = ents
-		_ = anchors
+		r.Centerlines = buildCenterlines(g, ents, anchors, r.Steel, r.Outline)
 	}
 }
 

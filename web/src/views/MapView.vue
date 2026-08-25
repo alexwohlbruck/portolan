@@ -1313,6 +1313,12 @@ function addLayers() {
     layout: { visibility: 'none' },
   })
   map.addLayer({
+    id: 'dbg-yards-center', type: 'line', source: 'yards',
+    filter: ['==', ['get', 'kind'], 'yard_centerline'],
+    layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+    paint: { 'line-color': regionColor, 'line-width': 2.5, 'line-opacity': 0.95 },
+  })
+  map.addLayer({
     id: 'dbg-yards-ent', type: 'circle', source: 'yards',
     filter: ['==', ['get', 'kind'], 'yard_entrance'],
     paint: {
@@ -1825,7 +1831,7 @@ watch(debug, (d) => {
   if (!map) return
   for (const [k, on] of Object.entries(d)) {
     // a toggle owns every dbg-<k>* layer (yards has fill/outline/spine/…)
-    for (const suffix of ['', '-outline', '-track', '-ent']) {
+    for (const suffix of ['', '-outline', '-track', '-center', '-ent']) {
       const id = `dbg-${k}${suffix}`
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none')
     }

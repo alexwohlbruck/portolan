@@ -835,6 +835,12 @@ onMounted(() => {
       paint: { 'line-color': DET, 'line-width': 1, 'line-opacity': 0.4 },
     })
     map.addLayer({
+      id: 'det-center', type: 'line', source: 'sk-det',
+      filter: ['==', ['get', 'kind'], 'yard_centerline'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': DET, 'line-width': 2.5, 'line-opacity': 0.9 },
+    })
+    map.addLayer({
       id: 'det-ent', type: 'circle', source: 'sk-det',
       filter: ['==', ['get', 'kind'], 'yard_entrance'],
       paint: {

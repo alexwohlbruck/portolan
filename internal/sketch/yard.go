@@ -255,9 +255,10 @@ func ScoreYards(net *Network, det []DetectedYard, frame geo.Frame) *YardResult {
 				}
 			}
 		}
-		// Only the boundary is gated. The detector does not emit yard
-		// centerlines yet — gate CtrCoverPct the day it does, or the
-		// number below is a permanent red that teaches nothing.
+		// Only the boundary is gated. The detector emits centerlines now,
+		// but nothing has been drawn to grade them against yet — ratchet
+		// CtrCoverPct in here the moment a drawing exists, the same way
+		// FailYardIoU ratchets.
 		sc.Fail = sc.IoU < FailYardIoU
 		if sc.Fail {
 			res.Failures++

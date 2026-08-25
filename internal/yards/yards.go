@@ -53,6 +53,10 @@ type Region struct {
 	WayIDs    []string    // ways with hot samples inside, sorted
 	Steel     []*geo.Line // member track clipped to the outline — the yard's own tracks
 	Entrances []Entrance
+	// Centerlines: the corridor drawn through the yard, entrance to
+	// entrance, riding the middle of the bundle rather than any one rail
+	// (centerline.go).
+	Centerlines []Centerline
 }
 
 // Params are the detection dials (pipeline.Dials yard_* keys).

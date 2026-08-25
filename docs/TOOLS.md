@@ -93,8 +93,14 @@ overlaps most:
 - `ent`: computed drawn entrances matched within 40 m, `+n` for detected
   entrances near the yard that nothing drawn explains.
 - `ctr_cov%`: drawn centerline samples with detected centerline within 15 m.
-  Reported but **not gated** — the detector emits no yard centerlines yet;
-  gate it the day it does.
+  Reported but **not gated** yet — the detector emits centerlines, but
+  nothing has been drawn to grade them against. Ratchet it like the IoU
+  once a drawing exists.
+
+The two centerline rules that need **no** drawn ground truth are gated in
+`internal/yards` instead (`TestCenterlineSelfCheck`): every sample must sit
+on real member steel (rule 5) and the geometry must flow (rule 6). Only
+"did the corridor take the *right* path" needs the drawing.
 
 Exit code 1 on any gate failure. Run it after **every** build. CI runs it on
 the NYC fixture.
