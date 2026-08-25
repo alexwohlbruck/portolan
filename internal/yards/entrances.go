@@ -130,11 +130,10 @@ func (ix *Index) buildEntrances(tracks []Track, eff []int) {
 		if rings[ri] == nil {
 			continue
 		}
-		for _, pc := range pieces[ri] {
-			if pts := subPts(tracks[pc.ti].Line, pc.a0, pc.a1); len(pts) >= 2 {
-				r.Steel = append(r.Steel, geo.NewLine(pts))
-			}
-		}
+		// r.Steel is NOT built from these pieces: the walk above is
+		// level-gated, so a region with members at mixed effective levels
+		// would draw almost none of its own track. Build sets it from
+		// every member way clipped to the ring (memberSteel).
 		if len(pieces[ri]) == 0 {
 			continue
 		}

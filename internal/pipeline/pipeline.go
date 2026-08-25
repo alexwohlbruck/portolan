@@ -64,6 +64,7 @@ type Dials struct {
 	YardMinTagM   float64 `json:"yard_min_tag_m"`
 	YardMinMassM  float64 `json:"yard_min_mass_m"`
 	YardPeakUntag float64 `json:"yard_peak_untagged"`
+	YardPadM      float64 `json:"yard_pad_m"`
 
 	FairCutBase float64 `json:"fair_cut_base"`
 	FairGapPx   float64 `json:"fair_gap_px"`
@@ -85,6 +86,10 @@ func DefaultDials() Dials {
 		// peaks at 3 (LESSONS: >4 strands are yards).
 		YardParReach: 30, YardParNear: 12, YardHot: 5,
 		YardMinTagM: 500, YardMinMassM: 2000, YardPeakUntag: 8,
+		// YardPadM: the outline stands this far off the outermost track —
+		// the owner's "a couple of metres of padding". TestNYCYards holds
+		// the ring's p50 distance to its own steel to it.
+		YardPadM: 6,
 		// FairGapPx 4: slot pitch. The ribbon line is 3 px at z15 (metro
 		// weight 1.0), so pitch 4 draws a 1 px visible gap between mates
 		// — the owner's Apple-tight bundle read (was 6 = a 3 px gap).
@@ -96,6 +101,7 @@ func (d Dials) yardParams() yards.Params {
 	return yards.Params{
 		ParReach: d.YardParReach, ParNear: d.YardParNear, Hot: d.YardHot,
 		MinTagM: d.YardMinTagM, MinMassM: d.YardMinMassM, PeakUntag: d.YardPeakUntag,
+		PadM:    d.YardPadM,
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	outlinePadM = 18.0  // the outline hugs the outer tracks by this much
+	outlinePadM = 6.0   // stand-off from the outermost track — "a couple of metres"
 	msGridM     = 6.0   // marching-squares field pitch — boundary smoothness
 	simplifyM   = 1.0   // ring vertex thinning tolerance
 	closeM      = 24.0  // morphological closing radius — gaps under ~2× bridge
@@ -259,33 +259,53 @@ func hullOutline(steel []*geo.Line, pad float64) []geo.Pt {
 	return thinRing(best, simplifyM)
 }
 
-// thinRing drops vertices lying within tol of the chord of their kept
-// neighbours — marching squares emits one vertex per 6 m cell and a
+
+// thinRing drops vertices lying within tol of the chord that would
+// replace them — marching squares emits one vertex per 6 m cell and a
 // straight yard edge doesn't need 80 of them.
+//
+// EVERY skipped vertex is checked against the chord, not just the most
+// recently kept one. The version that checked only the last kept vertex
+// could peel back an entire excursion whenever the running chord happened
+// to pass near it: one Bronx outline came out of a clean 736-vertex
+// contour with a 925 m edge cutting straight across the yard, and 7% of
+// all ring length across NYC sat more than 54 m from any member track.
+// The contour was never the problem; the simplification was.
 func thinRing(ring []geo.Pt, tol float64) []geo.Pt {
-	if len(ring) < 5 {
+	n := len(ring)
+	if n < 5 {
 		return ring
 	}
-	out := make([]geo.Pt, 0, len(ring)/2)
-	for _, p := range ring {
-		for len(out) >= 2 {
-			a, b := out[len(out)-2], out[len(out)-1]
-			ab := p.Sub(a)
-			n2 := ab.Dot(ab)
-			d := 0.0
-			if n2 > 1e-18 {
-				t := math.Max(0, math.Min(1, b.Sub(a).Dot(ab)/n2))
-				d = b.Sub(a.Add(ab.Scale(t))).Norm()
-			}
-			if d < tol {
-				out = out[:len(out)-1]
-			} else {
-				break
-			}
+	out := make([]geo.Pt, 0, n/2)
+	out = append(out, ring[0])
+	for i := 0; i < n-1; {
+		last := i + 1
+		for j := i + 2; j < n && chordHolds(ring[i:j+1], tol); j++ {
+			last = j
 		}
-		out = append(out, p)
+		out = append(out, ring[last])
+		i = last
 	}
 	return out
+}
+
+// chordHolds reports whether every interior vertex of seg lies within tol
+// of the straight chord from its first point to its last.
+func chordHolds(seg []geo.Pt, tol float64) bool {
+	a, b := seg[0], seg[len(seg)-1]
+	ab := b.Sub(a)
+	n2 := ab.Dot(ab)
+	for _, p := range seg[1 : len(seg)-1] {
+		d := p.Dist(a)
+		if n2 > 1e-18 {
+			t := math.Max(0, math.Min(1, p.Sub(a).Dot(ab)/n2))
+			d = p.Sub(a.Add(ab.Scale(t))).Norm()
+		}
+		if d >= tol {
+			return false
+		}
+	}
+	return true
 }
 
 // expandSteel re-spans each member way to the full arc intervals it
@@ -345,6 +365,57 @@ func expandSteel(tracks []Track, tis []int, arcs map[int][]float64, ring []geo.P
 			a := math.Max(0, sp.a-hullTailM)
 			b := math.Min(total, sp.b+hullTailM)
 			if pts := subPtsRange(l, a, b); len(pts) >= 2 {
+				out = append(out, geo.NewLine(pts))
+			}
+		}
+	}
+	return out
+}
+
+// memberSteel is the region's own track: every member way clipped to the
+// arc intervals it spends inside the ring. Unlike expandSteel it asks for
+// no hot samples and adds no tail — this is "what track is in this yard",
+// which is what the overlay draws and what a centerline algorithm has to
+// walk.
+//
+// It is deliberately NOT derived from the entrance walk. That walk is
+// level-gated (a subway under a surface yard is not in it), so a region
+// whose members sit at mixed effective levels drew almost none of its own
+// track: 7% of all NYC ring length had no yard track within 54 m of it,
+// which read as the hull bulging into empty space when the hull was in
+// fact 25 m from real member steel the whole way round.
+func memberSteel(tracks []Track, tis []int, ring []geo.Pt) []*geo.Line {
+	var out []*geo.Line
+	step := cellM / 2
+	for _, ti := range tis {
+		l := tracks[ti].Line
+		total := l.Len()
+		if total < 1e-9 {
+			continue
+		}
+		open := -1.0
+		prev := 0.0
+		for s := 0.0; ; s += step {
+			if s > total {
+				s = total
+			}
+			in := pointInRing(ring, l.AtArc(s))
+			if in && open < 0 {
+				open = s
+			}
+			if !in && open >= 0 {
+				if pts := subPtsRange(l, open, prev); len(pts) >= 2 {
+					out = append(out, geo.NewLine(pts))
+				}
+				open = -1
+			}
+			prev = s
+			if s >= total {
+				break
+			}
+		}
+		if open >= 0 {
+			if pts := subPtsRange(l, open, total); len(pts) >= 2 {
 				out = append(out, geo.NewLine(pts))
 			}
 		}

@@ -1,7 +1,9 @@
 package yards
 
 import (
+	"math"
 	"os"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -97,8 +99,8 @@ func TestNYCYards(t *testing.T) {
 		}
 	}
 	// The hull hugs HOT steel + pad; isolated tagged spurs with no
-	// parallel neighbours correctly sit outside it now, so recall runs a
-	// little below the old dilated-mask footprint (0.885 → ~0.79).
+	// parallel neighbours correctly sit outside it, so recall runs below
+	// the old dilated-mask footprint (0.885 → 0.856 at pad 6).
 	if recall := inM / totM; recall < 0.75 {
 		t.Errorf("tagged-steel recall = %.3f, want >= 0.75", recall)
 	} else {
@@ -160,8 +162,76 @@ func TestNYCYards(t *testing.T) {
 			t.Errorf("region %d outline has %d vertices", r.ID, len(r.Outline))
 		}
 	}
+	reportTightness(t, ix)
 	t.Logf("%d entrances across %d regions", ents, len(ix.Regions()))
 	if ents == 0 {
 		t.Error("no entrances detected across all of NYC")
+	}
+}
+
+// reportTightness measures how closely each outline hugs its own steel:
+// the distance from ring samples to the nearest member track. The owner's
+// spec for the boundary is "find the outermost track and trace it, then
+// add a couple of metres of padding", so this distribution IS the shape
+// requirement, and it needs no drawn ground truth to read.
+//
+// A bulge — ring running far from any track — is the failure this catches:
+// at Hudson Yards the boundary once ran 200 m out over the river.
+func reportTightness(t *testing.T, ix *Index) {
+	t.Helper()
+	var all, allMem []float64
+	worst, worstID := 0.0, 0
+	bulge := 0
+	for _, r := range ix.Regions() {
+		if len(r.Outline) < 3 || len(r.Steel) == 0 {
+			continue
+		}
+		g := geo.NewGrid(r.Steel, 64)
+		for i := range r.Outline {
+			a, b := r.Outline[i], r.Outline[(i+1)%len(r.Outline)]
+			steps := int(a.Dist(b)/8) + 1
+			for k := 0; k < steps; k++ {
+				q := geo.Lerp(a, b, float64(k)/float64(steps))
+				d := math.Min(400, g.NearestDist(q, 400))
+				all = append(all, d)
+				allMem = append(allMem, math.Min(400, ix.memberGrid.NearestDist(q, 400)))
+				if d > worst {
+					worst, worstID = d, r.ID
+				}
+				if d > 3*ix.pad {
+					bulge++
+				}
+			}
+		}
+	}
+	if len(all) == 0 {
+		t.Error("no outline samples to measure")
+		return
+	}
+	sort.Float64s(all)
+	sort.Float64s(allMem)
+	pc := func(v []float64, q float64) float64 { return v[int(q*float64(len(v)-1))] }
+	t.Logf("outline tightness (ring→its own yard track, pad %.0f m): "+
+		"p50 %.1f  p90 %.1f  p99 %.1f  max %.1f (region %d)  bulge>%.0fm %.2f%%",
+		ix.pad, pc(all, 0.5), pc(all, 0.9), pc(all, 0.99), worst, worstID,
+		3*ix.pad, 100*float64(bulge)/float64(len(all)))
+	t.Logf("outline tightness (ring→ANY member way):            "+
+		"p50 %.1f  p90 %.1f  p99 %.1f",
+		pc(allMem, 0.5), pc(allMem, 0.9), pc(allMem, 0.99))
+
+	// The shape requirement, gated. Headroom over the observed values
+	// (p50 8.6, p99 14.7, bulge 0.43% at pad 6) — enough that ordinary
+	// retuning does not trip it, tight enough that a hull which stops
+	// hugging its steel does.
+	if p50 := pc(all, 0.5); p50 > ix.pad+5 {
+		t.Errorf("outline p50 stand-off %.1f m, want <= %.1f — the ring must hug the outer track",
+			p50, ix.pad+5)
+	}
+	if p99 := pc(all, 0.99); p99 > 3.5*ix.pad {
+		t.Errorf("outline p99 stand-off %.1f m, want <= %.1f", p99, 3.5*ix.pad)
+	}
+	if bp := 100 * float64(bulge) / float64(len(all)); bp > 2 {
+		t.Errorf("%.2f%% of ring length is >%.0f m from any of the yard's own track — "+
+			"the shape encloses emptiness", bp, 3*ix.pad)
 	}
 }

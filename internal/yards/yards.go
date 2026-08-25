@@ -63,10 +63,17 @@ type Params struct {
 	MinTagM   float64 // min tagged hot steel to anchor a region (m)
 	MinMassM  float64 // min total hot steel for any region (m)
 	PeakUntag float64 // peak score an untagged-only region must reach
+	// PadM: how far the outline stands off the outermost track. The
+	// owner's spec is "find the outermost track and trace it, then add a
+	// couple of metres of padding to that path", so this is the shape
+	// requirement itself, and TestNYCYards measures the ring against its
+	// own steel to hold it: p50 should land on PadM.
+	PadM float64
 }
 
 func DefaultParams() Params {
-	return Params{ParReach: 30, ParNear: 12, Hot: 5, MinTagM: 500, MinMassM: 2000, PeakUntag: 8}
+	return Params{ParReach: 30, ParNear: 12, Hot: 5, MinTagM: 500, MinMassM: 2000,
+		PeakUntag: 8, PadM: outlinePadM}
 }
 
 const (
@@ -88,6 +95,7 @@ type Index struct {
 	svc        map[string]string // wayID → service tag, "" absent
 	regionWay  map[string]bool   // wayID → hot member of some region
 	memberGrid *geo.Grid
+	pad        float64 // outline stand-off actually used (Params.PadM)
 }
 
 func cellKey(p geo.Pt) [2]int {
@@ -267,6 +275,10 @@ func Build(tracks []Track, p Params) *Index {
 	}
 	grid := geo.NewGrid(lines, 64)
 	eff := effectiveLevels(tracks)
+	pad := p.PadM
+	if pad <= 0 {
+		pad = outlinePadM
+	}
 
 	// Score pass: parallel-proximity per ~20 m sample. hotCells is the
 	// pre-dilation footprint; hots feeds the per-component stats.
@@ -423,6 +435,7 @@ func Build(tracks []Track, p Params) *Index {
 		boundary:   map[[2]int]int32{},
 		svc:        map[string]string{},
 		regionWay:  map[string]bool{},
+		pad:        pad,
 	}
 	for i := range tracks {
 		if tracks[i].Service != "" {
@@ -499,7 +512,7 @@ func Build(tracks []Track, p Params) *Index {
 			flush(prev)
 		}
 		sort.Strings(r.WayIDs)
-		r.Outline = hullOutline(steel, outlinePadM)
+		r.Outline = hullOutline(steel, pad)
 		if len(r.Outline) >= 3 {
 			// A member way whose score cools mid-yard had its span cut
 			// there, and the hull then sliced across live track — every
@@ -508,7 +521,7 @@ func Build(tracks []Track, p Params) *Index {
 			// hull and rebuild: now a way leaves the shape only where it
 			// really leaves the yard.
 			if wider := expandSteel(tracks, tis, st.arcs, r.Outline); len(wider) > 0 {
-				if ring := hullOutline(wider, outlinePadM); len(ring) >= 3 {
+				if ring := hullOutline(wider, pad); len(ring) >= 3 {
 					steel, r.Outline = wider, ring
 				}
 			}
@@ -522,6 +535,7 @@ func Build(tracks []Track, p Params) *Index {
 			}
 			r.Outline = traceOutline(cm, cellM)
 		}
+		r.Steel = memberSteel(tracks, tis, r.Outline)
 		interior, bound := classifyCells(r.Outline, hullSeeds(steel))
 		iks := make([][2]int, 0, len(interior))
 		for c := range interior {
