@@ -156,7 +156,18 @@ function afterHistory(n: Network) {
   net.value = n
   bakeAll(net.value)
   selAnchor.value = -1
-  if (tool.value === 'draw') endDraw(true, false)
+  if (tool.value === 'draw' && drawTarget) {
+    // Undo takes back the last ANCHOR, not the whole shape. Ending the
+    // pen here meant one undo mid-polygon stranded you outside the
+    // drawing with no way back into it.
+    //
+    // `pull` has to go regardless: history restores a parsed copy of the
+    // document, so the Anchor object it points at belongs to a version of
+    // the network that no longer exists, and dragging would edit a ghost.
+    pull = null
+    setPreview(null)
+    if (!refOf(drawTarget.id)) endDraw(true, false) // undone past its creation
+  }
   render()
   window.clearTimeout(saveTimer)
   saveTimer = window.setTimeout(save, 900)
@@ -296,8 +307,14 @@ function hitTest(pt: { x: number; y: number }): Hit | null {
 // ── dragging ──────────────────────────────────────────────────────────
 let drag: any = null
 let altHeld = false
+// Shift is "get out of the way": the pen and the anchor grips both stand
+// down and the map pans, so you can reach the rest of a yard without
+// finishing the shape you are drawing.
+let shiftHeld = false
+const panning = (e?: any) => shiftHeld || !!e?.originalEvent?.shiftKey
 
 function onDown(e: any) {
+  if (panning(e)) return // let the map have the drag
   if (tool.value === 'draw') return drawDown(e)
   if (e.originalEvent.button !== 0) return
   const hit = hitTest(e.point)
@@ -463,7 +480,7 @@ function snapPoint(p: LL): LL {
 }
 
 function drawDown(e: any) {
-  if (e.originalEvent.button !== 0 || !drawTarget) return
+  if (panning(e) || e.originalEvent.button !== 0 || !drawTarget) return
   const r = refOf(drawTarget.id)
   if (!r) return
   e.preventDefault()
@@ -478,6 +495,7 @@ function drawDown(e: any) {
 }
 
 function drawMove(e: any) {
+  if (panning(e)) return // the rubber band would chase the pan
   const cur: LL = [e.lngLat.lng, e.lngLat.lat]
   if (pull) {
     const a = pull.a
@@ -682,6 +700,10 @@ const selLabel = computed(() =>
 // ── keyboard ──────────────────────────────────────────────────────────
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Alt') altHeld = true
+  if (e.key === 'Shift' && !shiftHeld) {
+    shiftHeld = true
+    map?.dragPan.enable()
+  }
   const t = e.target as HTMLElement
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
   const mod = e.metaKey || e.ctrlKey
@@ -714,6 +736,11 @@ function onKey(e: KeyboardEvent) {
 }
 function onKeyUp(e: KeyboardEvent) {
   if (e.key === 'Alt') altHeld = false
+  if (e.key === 'Shift') {
+    shiftHeld = false
+    // the pen owns the drag again, but only while it is actually down
+    if (tool.value === 'draw') map?.dragPan.disable()
+  }
 }
 
 // ── underlays ─────────────────────────────────────────────────────────
@@ -1019,6 +1046,7 @@ watch(mode, () => {
         <div class="mb-1 font-medium text-foreground">Gestures</div>
         <div>click = corner · click-drag = curve · Enter finishes</div>
         <div>drag anchor to move · alt-drag to pull handles</div>
+        <div><b>shift-drag pans</b>, even mid-shape · undo takes back one anchor</div>
         <div>right-click deletes an anchor · dbl-click toggles corner</div>
         <div>click a selected curve to insert an anchor</div>
         <div class="mt-1">d new · y yard · c continue · x split · m merge · ⌫ delete</div>
