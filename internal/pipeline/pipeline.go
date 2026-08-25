@@ -746,14 +746,108 @@ func Sound(o SoundOpts) (*sketch.Result, error) {
 	if len(net.Lines) == 0 {
 		return nil, fmt.Errorf("network is empty")
 	}
-	frame := geo.NewFrame(geo.LL{
-		Lon: net.Lines[0].Coords[0][0], Lat: net.Lines[0].Coords[0][1],
-	})
+	frame, _ := net.Frame()
 	feats, err := LoadBuildFeatures(o.Build, frame)
 	if err != nil {
 		return nil, err
 	}
-	return sketch.Score(net, feats, frame), nil
+	res := sketch.Score(net, feats, frame)
+	// Drawn yards grade the yard detector against the same document, out
+	// of the sidecar the build already writes. A drawing with no yards
+	// costs nothing and reports nothing.
+	if len(net.Yards) > 0 {
+		det, err := LoadYardFeatures(o.Build+".yards.geojson", frame)
+		if err != nil {
+			return nil, fmt.Errorf("yards drawn but no sidecar: %w", err)
+		}
+		if res.Yards = sketch.ScoreYards(net, det, frame); res.Yards != nil {
+			res.Failures += res.Yards.Failures
+		}
+	}
+	return res, nil
+}
+
+// LoadYardFeatures reads a build's .yards.geojson sidecar back into the
+// scorer's shape: one DetectedYard per region, its outline, its entrance
+// points and its centerlines (when the detector emits any).
+func LoadYardFeatures(path string, frame geo.Frame) ([]sketch.DetectedYard, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var fc struct {
+		Features []struct {
+			Props map[string]any  `json:"properties"`
+			Geom  json.RawMessage `json:"geometry"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		return nil, err
+	}
+	byRegion := map[int]*sketch.DetectedYard{}
+	order := []int{}
+	get := func(id int) *sketch.DetectedYard {
+		if d, ok := byRegion[id]; ok {
+			return d
+		}
+		d := &sketch.DetectedYard{ID: fmt.Sprint(id)}
+		byRegion[id] = d
+		order = append(order, id)
+		return d
+	}
+	for _, f := range fc.Features {
+		rid := 0
+		if v, ok := f.Props["region"].(float64); ok {
+			rid = int(v)
+		}
+		var g struct {
+			Type   string          `json:"type"`
+			Coords json.RawMessage `json:"coordinates"`
+		}
+		if err := json.Unmarshal(f.Geom, &g); err != nil {
+			continue
+		}
+		switch f.Props["kind"] {
+		case "yard":
+			var rings [][][2]float64
+			if json.Unmarshal(g.Coords, &rings) != nil || len(rings) == 0 {
+				continue
+			}
+			ring := rings[0]
+			// the sidecar repeats the first vertex; the scorer's rings do not
+			if n := len(ring); n > 1 && ring[0] == ring[n-1] {
+				ring = ring[:n-1]
+			}
+			d := get(rid)
+			d.Outline = d.Outline[:0]
+			for _, c := range ring {
+				d.Outline = append(d.Outline, frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]}))
+			}
+		case "yard_entrance":
+			var c [2]float64
+			if json.Unmarshal(g.Coords, &c) != nil {
+				continue
+			}
+			d := get(rid)
+			d.Entrances = append(d.Entrances, frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]}))
+		case "yard_centerline":
+			var cs [][2]float64
+			if json.Unmarshal(g.Coords, &cs) != nil || len(cs) < 2 {
+				continue
+			}
+			pts := make([]geo.Pt, len(cs))
+			for i, c := range cs {
+				pts[i] = frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]})
+			}
+			d := get(rid)
+			d.Centerlines = append(d.Centerlines, geo.NewLine(pts))
+		}
+	}
+	out := make([]sketch.DetectedYard, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byRegion[id])
+	}
+	return out, nil
 }
 
 func FrameOf(ways []osm.Way) geo.Frame {
@@ -1072,12 +1166,11 @@ func LoadBuildFeatures(path string, frame geo.Frame) ([]sketch.BuildFeature, err
 		for i, c := range f.Geometry.Coords {
 			pts[i] = frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]})
 		}
-		color, _ := f.Props["color"].(string)
 		var rts []string
 		if rs, _ := f.Props["routes"].(string); rs != "" {
 			rts = strings.Split(rs, ",")
 		}
-		out = append(out, sketch.BuildFeature{Color: color, Routes: rts, Line: geo.NewLine(pts)})
+		out = append(out, sketch.BuildFeature{Routes: rts, Line: geo.NewLine(pts)})
 	}
 	return out, nil
 }

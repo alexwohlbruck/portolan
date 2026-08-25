@@ -239,7 +239,7 @@ step. Note that `make nyc` and `tools/feed.sh` append `|| true`, because
 there the score is information rather than a build failure.
 
 ```bash
-portolan sound --network sketches/network-5.json --build build/nyc.geojson
+portolan sound --network sketches/network-mta-subway.json --build build/nyc.geojson
 ```
 
 ---
@@ -525,7 +525,7 @@ tools/feed.sh streets london    # only if you want buses
 
 # CI: build and fail on a gate
 portolan chart --gtfs nyc.zip --rail nyc-rail.geojson --out /tmp/nyc.geojson \
-  && portolan sound --network sketches/network-5.json --build /tmp/nyc.geojson
+  && portolan sound --network sketches/network-mta-subway.json --build /tmp/nyc.geojson
 
 # rebuild a map from its own output, with no OSM and no map-matching
 portolan chart --gtfs nyc.zip \
