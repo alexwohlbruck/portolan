@@ -117,6 +117,11 @@ type Config struct {
 	// hex would otherwise merge into one ribbon. This is the escape
 	// hatch, per route rather than per class.
 	Trunks map[string]string `json:"trunks,omitempty"`
+	// TrunkGroups: per-route colour-trunk SCOPE, keyed like Trunks. The
+	// colour key becomes group+colour, so equal colours in different
+	// groups stay separate ribbons — see style.Entity.TrunkGroup. Absent
+	// leaves law 5 exactly as it was.
+	TrunkGroups map[string]string `json:"trunk_groups,omitempty"`
 	// RouteTypes: per-route/agency GTFS route_type REPAIRS, keyed like
 	// Colors. A feed that mistypes a commuter railway as metro (Mexico
 	// City's Tren Suburbano, route_type 1) drags every downstream stage
@@ -184,6 +189,8 @@ type Set struct {
 	Fonts    map[string]string   `json:"fonts,omitempty"`
 	Bordered map[string]bool     `json:"bordered,omitempty"`
 	Trunks   map[string]string   `json:"trunks,omitempty"`
+	// TrunkGroups: resolved per-route colour-trunk scope (Entity.TrunkGroup).
+	TrunkGroups map[string]string `json:"trunk_groups,omitempty"`
 	// RouteTypes: per-route/agency GTFS route_type repairs, keyed like
 	// Colors — applied at feed load (see style.Entity.RouteType).
 	RouteTypes map[string]int `json:"route_types,omitempty"`
@@ -210,6 +217,8 @@ type Set struct {
 	bRoute   map[string]bool
 	tAgency  map[string]string
 	tRoute   map[string]string
+	gAgency  map[string]string
+	gRoute   map[string]string
 	rtAgency map[string]int
 	rtRoute  map[string]int
 	hAgency2 map[string]bool
@@ -221,18 +230,20 @@ type Set struct {
 // keeps every other default.
 func New(layers ...Config) *Set {
 	s := &Set{Modes: map[string]Resolved{}, Colors: map[string]string{},
-		Names:    map[string]string{},
-		Shapes:   map[string]string{},
-		Fonts:    map[string]string{},
-		Bordered: map[string]bool{},
-		Trunks:   map[string]string{},
-		byAgency: map[string]string{}, byRoute: map[string]string{},
+		Names:       map[string]string{},
+		Shapes:      map[string]string{},
+		Fonts:       map[string]string{},
+		Bordered:    map[string]bool{},
+		Trunks:      map[string]string{},
+		TrunkGroups: map[string]string{},
+		byAgency:    map[string]string{}, byRoute: map[string]string{},
 		nAgency: map[string]string{}, nRoute: map[string]string{},
 		nStop:   map[string]string{},
 		sAgency: map[string]string{}, sRoute: map[string]string{},
 		fAgency: map[string]string{}, fRoute: map[string]string{},
 		bAgency: map[string]bool{}, bRoute: map[string]bool{},
 		tAgency: map[string]string{}, tRoute: map[string]string{},
+		gAgency: map[string]string{}, gRoute: map[string]string{},
 		rtAgency: map[string]int{}, rtRoute: map[string]int{},
 		hAgency2: map[string]bool{}, hRoute2: map[string]bool{}}
 	for name, d := range defaults {
@@ -269,6 +280,9 @@ func New(layers ...Config) *Set {
 		}
 		for k, v := range l.Trunks {
 			s.Trunks[k] = v
+		}
+		for k, v := range l.TrunkGroups {
+			s.TrunkGroups[k] = v
 		}
 		for k, v := range l.RouteTypes {
 			if s.RouteTypes == nil {
@@ -341,6 +355,18 @@ func New(layers ...Config) *Set {
 			s.tAgency[strings.TrimPrefix(key, "agency:")] = val
 		case strings.HasPrefix(key, "route:"):
 			s.tRoute[strings.TrimPrefix(key, "route:")] = val
+		}
+	}
+	// The group is an opaque token, but it is folded like every other
+	// value here: two spellings of one class must not draw two ribbons.
+	for k, v := range s.TrunkGroups {
+		key := strings.ToLower(strings.TrimSpace(k))
+		val := strings.ToLower(strings.TrimSpace(v))
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.gAgency[strings.TrimPrefix(key, "agency:")] = val
+		case strings.HasPrefix(key, "route:"):
+			s.gRoute[strings.TrimPrefix(key, "route:")] = val
 		}
 	}
 	for k, v := range s.RouteTypes {
@@ -585,6 +611,25 @@ func (s *Set) RouteTrunk(routeIDs []string, agencyIDs []string) (string, bool) {
 // that would otherwise run per route per edge.
 func (s *Set) AnyTrunk() bool {
 	return s != nil && (len(s.tRoute) > 0 || len(s.tAgency) > 0)
+}
+
+// RouteTrunkGroup is the per-route colour-trunk scope, then its agency's.
+// See style.Entity.TrunkGroup: it narrows which routes a colour trunk can
+// reach, for a caller whose classes GTFS cannot express.
+func (s *Set) RouteTrunkGroup(routeIDs []string, agencyIDs []string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	if v, ok := lookup(s.gRoute, routeIDs); ok {
+		return v, true
+	}
+	return lookup(s.gAgency, agencyIDs)
+}
+
+// AnyTrunkGroup reports whether any scope is set — the same cheap skip
+// AnyTrunk gives, for the same per-route-per-edge lookup.
+func (s *Set) AnyTrunkGroup() bool {
+	return s != nil && (len(s.gRoute) > 0 || len(s.gAgency) > 0)
 }
 
 // AnyName reports whether any name override exists — the same cheap skip

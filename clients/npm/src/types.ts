@@ -47,6 +47,18 @@ export interface StyleEntity {
    * where colour carries meaning and wrong where it is assigned freely.
    */
   trunk?: "color" | "agency" | "route" | "none";
+  /**
+   * Scopes colour trunking instead of replacing it: a route merges only
+   * with routes carrying the SAME group and the same colour.
+   *
+   * For a network whose classes GTFS cannot express. Route_type is the
+   * only class the engine can see, so an authored network filing two
+   * kinds of railway as route_type 1 gets them merged wherever their
+   * colours collide. Give each kind a group and they stay apart, while
+   * same-kind same-colour routes merge exactly as before. Omit it — as
+   * every real-world feed does — and the key is the bare colour.
+   */
+  trunk_group?: string;
   /** Agencies only: these route colours are line identities, not branch decoration. */
   line_colors?: boolean;
 }

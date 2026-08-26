@@ -175,12 +175,26 @@ func TrunkKey(r gtfs.Route) string {
 	case style.TrunkIntercity:
 		return IntercityKey
 	}
-	// color trunking (law 5): the key IS the color string, byte for byte.
+	// color trunking (law 5): the key IS the color string, byte for byte —
+	// unless the caller scoped it. A trunk group narrows how far a colour
+	// can reach: same colour in a different group is a different ribbon.
+	// Nothing sets it in a real-world feed, so the key stays the bare
+	// colour and NYC and Chicago are unchanged; an authored network whose
+	// classes GTFS cannot express (heavy against light metro, both filed
+	// route_type 1) sets it per route and gets its own classes back.
+	scope := ""
+	if style.Active().AnyTrunkGroup() {
+		if g, ok := style.Active().RouteTrunkGroup(
+			[]string{r.ID, r.ShortName, r.LongName},
+			[]string{r.Agency, AgencyName(r.Agency)}); ok && g != "" {
+			scope = g + "|"
+		}
+	}
 	if hex, ok := colorOverride(r); ok {
-		return hex
+		return scope + hex
 	}
 	if r.Color != "" {
-		return r.Color
+		return scope + r.Color
 	}
 	if r.Agency != "" {
 		return "agency:" + r.Agency // colorless operators must not all merge
