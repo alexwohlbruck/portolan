@@ -1,6 +1,6 @@
 {
   "name": "@alexwohlbruck/portolan",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Automatic transit line maps. Spawns the portolan engine and speaks its build API, with a typed PLNB decoder.",
   "license": "MIT",
   "repository": {
@@ -28,8 +28,11 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "bin",
+    "style",
     "README.md"
   ],
+  "preferUnplugged": true,
   "engines": {
     "node": ">=18"
   },
@@ -42,13 +45,5 @@
   "devDependencies": {
     "typescript": "^5.6.0",
     "@types/node": "^22.0.0"
-  },
-  "optionalDependencies": {
-    "@alexwohlbruck/portolan-darwin-arm64": "0.3.1",
-    "@alexwohlbruck/portolan-darwin-x64": "0.3.1",
-    "@alexwohlbruck/portolan-linux-arm64": "0.3.1",
-    "@alexwohlbruck/portolan-linux-x64": "0.3.1",
-    "@alexwohlbruck/portolan-win32-arm64": "0.3.1",
-    "@alexwohlbruck/portolan-win32-x64": "0.3.1"
   }
 }

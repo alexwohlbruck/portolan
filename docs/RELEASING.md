@@ -146,43 +146,45 @@ up to date with `dev` once, and that merge cuts `v0.1.0`.
 
 `clients/npm` publishes [`@alexwohlbruck/portolan`](https://www.npmjs.com/package/@alexwohlbruck/portolan):
 a typed wrapper that spawns the engine, speaks the build API and decodes
-PLNB. **The engine ships inside it**, one binary per platform as an
-`optionalDependency`, so a consumer gets a new engine by bumping one
+PLNB. **Every platform's engine ships inside it**, under
+`bin/<platform>-<arch>/`, and `resolveBinary()` picks one at run time. One
+package, one publish, and a consumer gets a new engine by bumping one
 dependency.
 
-Its version is the engine's version — they are published together, and
-the wrapper pins its six platform packages to the exact same number. A
-wrapper free to resolve a different engine could pair a decoder with a
-PLNB layout it does not understand, which is the one failure the version
-handshake exists to prevent.
+Its version is the engine's version, necessarily: they are the same
+artifact. That is the point of the universal layout — a wrapper free to
+resolve a *different* engine could pair a decoder with a PLNB layout it
+does not understand, and now it cannot.
 
 ```bash
-make dist                                    # the six archives
+make dist                              # the six archives
 cd clients/npm
-node scripts/build-platform-packages.mjs     # binaries -> platforms/
-npm test                                     # builds a real engine and drives it
-
-for d in platforms/*/; do (cd "$d" && npm publish --access public); done
-npm publish --access public                  # the wrapper LAST
+node scripts/build-universal.mjs       # binaries -> bin/<platform>-<arch>/, style/ once
+npm test                               # builds a real engine and drives it
+npm publish --access public
 ```
 
-Publish the platform packages **before** the wrapper, and do not skip
-`build-platform-packages.mjs` after a version bump. Both mistakes have
-the same shape and it is a nasty one: npm **skips an optional dependency
-it cannot resolve and still reports the install succeeded**. A consumer
-sees `added 1 package, found 0 vulnerabilities`, a lockfile that looks
-right, and a missing-binary error at their first chart call — pointing
-at their install flags rather than at this release.
+**This replaced six `optionalDependencies`** (the esbuild shape: one
+package per platform, `os`/`cpu` gated, npm installing only the match).
+That is leaner per install — ~3.6MB instead of ~22MB — and it cost a
+family of failures that all look like success, because npm **skips an
+optional dependency it cannot resolve and still reports the install
+succeeded**. Publish the wrapper a moment too early, install with
+`--omit=optional`, or install on a machine other than the one that runs,
+and the consumer sees `added 1 package, found 0 vulnerabilities`, a
+lockfile that looks right, and a missing-binary error at their first
+chart call — pointing at their install flags rather than at the release.
+Seven ordered registry writes to avoid ~18MB was the wrong trade.
 
-So `prepublishOnly` runs `scripts/check-publish.mjs`, which refuses to
-publish unless `VERSION`, the wrapper, and all six staged platform
-packages agree, **and** all six versions already exist on the registry.
-It is the runbook above, enforced. `PORTOLAN_SKIP_REGISTRY_CHECK=1`
-drops only the registry leg, for an offline dry run.
+`prepublishOnly` runs `scripts/check-publish.mjs`, which refuses to
+publish unless `VERSION` and the manifest agree, all six binaries are
+staged and of plausible size, `bin/` and `style/` are in `files`, and
+this host's own engine reports the version being published. That last
+one is the only check that cannot be stale.
 
-`node scripts/build-platform-packages.mjs` reads the release archives
-rather than invoking the Go toolchain, so what npm carries is
-byte-identical to what the GitHub release carries.
+`node scripts/build-universal.mjs` reads the release archives rather than
+invoking the Go toolchain, so what npm carries is byte-identical to what
+the GitHub release carries.
 
 ### CI publishes it
 

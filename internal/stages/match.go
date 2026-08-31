@@ -46,6 +46,15 @@ type matchParams struct {
 	GapSwitch  float64 // cost to enter/leave GAP
 	MaxWalk    float64 // cap on intermediate walk length
 	YardEmit   float64 // committing a sample onto tagged yard steel
+	// Distrust: the off-network arc fraction past which a shape stops
+	// being the matcher's ground truth. Gap bridging (LESSONS #8) rests on
+	// the premise that the shape is honest and OSM is locally incomplete;
+	// a shape off the network for a THIRD of its length inverts that
+	// premise — the track exists and the shape lies (the Gold Runner's
+	// road-traced Bakersfield–Sacramento shape: 67% of its arc has no
+	// rail within reach, while its reverse twin rides the BNSF within
+	// 40 m). Honest shapes measure ≤5% even when OSM drops whole branches.
+	Distrust float64
 }
 
 // barredGap keeps the DP solvable where the gap gate closes but the graph is
@@ -86,6 +95,7 @@ func defaultMatchParams() matchParams {
 		// commits to the running track; where yard steel is the ONLY
 		// steel it still beats GapCost=75 per sample and the DP rides it.
 		YardEmit: dial("match_yard_emit", 60),
+		Distrust: dial("match_shape_distrust", 0.33),
 	}
 }
 
@@ -207,13 +217,34 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 	g := buildTrackGraphCached(ways)
 	p := defaultMatchParams()
 
+	m := &matcher{g: g, p: p,
+		usedBy:    map[int]map[string]bool{},
+		usedColor: map[int]map[string]bool{},
+		walks:     map[[2]int]walkRes{}}
+
+	// Every shape is measured against the network before anything matches:
+	// a distrusted shape (see Distrust) may not serve as gap-bridging
+	// truth, because bridging a lying shape draws its lie — the Gold
+	// Runner's road-traced shape turned Stockton–Modesto into 15 km
+	// straight chords while three honest siblings rode the BNSF beside it.
+	off := make([]float64, len(patterns))
+	for i := range patterns {
+		off[i] = m.offNetworkFrac(patterns[i], frame)
+	}
+	trusted := func(i int) bool { return off[i] <= p.Distrust }
+
 	// canonical patterns first: heaviest service defines the shared paths
-	// that later patterns converge onto (owner's rule 1.1)
+	// that later patterns converge onto (owner's rule 1.1). Distrusted
+	// patterns go LAST regardless of service weight, so every liar finds
+	// its route's honest steel already laid down to borrow.
 	order := make([]int, len(patterns))
 	for i := range order {
 		order[i] = i
 	}
 	sort.SliceStable(order, func(a, b int) bool {
+		if ta, tb := trusted(order[a]), trusted(order[b]); ta != tb {
+			return ta
+		}
 		pa, pb := patterns[order[a]], patterns[order[b]]
 		if pa.Trips != pb.Trips {
 			return pa.Trips > pb.Trips
@@ -224,20 +255,138 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 		return pa.ShapeID < pb.ShapeID
 	})
 
-	m := &matcher{g: g, p: p,
-		usedBy:    map[int]map[string]bool{},
-		usedColor: map[int]map[string]bool{},
-		walks:     map[[2]int]walkRes{}}
 	var out []Path
+	var laid []Path // trusted patterns' paths — the guide pool
 	for _, oi := range order {
+		pat := patterns[oi]
 		// ferries match the seaway layer (OSM route=ferry lanes) like
 		// everything else; where the harbor has no mapped lane the gap
 		// machinery chords the crossing exactly as the old bypass did.
-		if path, ok := m.matchOne(patterns[oi], frame); ok {
-			out = append(out, path)
+		var guide []geo.Pt
+		var guideID string
+		if !trusted(oi) {
+			guide, guideID = guideFor(pat, laid, frame)
+			if dbgMatch {
+				println("DISTRUST", pat.Route.ID, pat.ShapeID,
+					"off-network", int(off[oi]*100), "% guide", guideID)
+			}
 		}
+		path, ok := m.matchOne(pat, frame, guide)
+		if !ok {
+			continue
+		}
+		path.Guide = guideID
+		if trusted(oi) {
+			laid = append(laid, path)
+		}
+		out = append(out, path)
 	}
 	return out, nil
+}
+
+// offNetworkFrac: the arc-weighted fraction of a pattern's shape VERTICES
+// with no same-layer track within Reach. Vertices, not resampled chords —
+// a decimated shape's vertices sit on the steel it means (the Gold
+// Runner's 5 km-chord shapes land within 40 m of the BNSF at every
+// vertex, and the chord/confidence machinery handles the spans between),
+// while a road-traced shape parks vertex after vertex on asphalt. Class
+// is NOT checked, only layer: a regional shape hugging subway steel in a
+// shared corridor is still an honest statement of where the train runs.
+func (m *matcher) offNetworkFrac(pat gtfs.Pattern, frame geo.Frame) float64 {
+	if len(pat.Shape) < 2 {
+		return 0
+	}
+	wantLayer := patternLayer(pat.Route.Type)
+	pts := make([]geo.Pt, len(pat.Shape))
+	for i, ll := range pat.Shape {
+		pts[i] = frame.ToXY(ll)
+	}
+	var offArc, total float64
+	for i, q := range pts {
+		w := 0.0
+		if i > 0 {
+			w += q.Dist(pts[i-1]) / 2
+		}
+		if i < len(pts)-1 {
+			w += q.Dist(pts[i+1]) / 2
+		}
+		if w == 0 {
+			continue
+		}
+		near := false
+		m.g.grid.Near(q, m.p.Reach, func(piece int) {
+			if near {
+				return
+			}
+			if wayRailClass != nil &&
+				wayLayer(wayRailClass[m.g.edges[2*piece].Way]) != wantLayer {
+				return
+			}
+			if _, d := m.g.pieces[piece].ProjectArc(q); d <= m.p.Reach {
+				near = true
+			}
+		})
+		total += w
+		if !near {
+			offArc += w
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return offArc / total
+}
+
+// guideFor finds, for a pattern whose own shape is distrusted, the matched
+// path of an honest sibling to ride instead: same route, and both of the
+// pattern's terminals on the sibling's steel (the reverse twin is the
+// usual donor — the Gold Runner's Sacramento-bound shape is road junk, its
+// Bakersfield-bound twin is faithful). Terminals are the only stop
+// positions a Pattern carries, so a same-terminal different-via sibling
+// could in principle mislead — but the pattern's own shape is unusable
+// garbage, and the sibling's steel is the best statement of the route
+// anyone has. No donor found means no guide: the pattern matches on its
+// own shape exactly as before, because a lying shape with no honest
+// sibling is still the only geometry that exists (LESSONS #8 feeds with
+// whole branches missing from OSM must keep bridging).
+func guideFor(pat gtfs.Pattern, laid []Path, frame geo.Frame) ([]geo.Pt, string) {
+	if pat.TermAID == "" || pat.TermBID == "" {
+		return nil, ""
+	}
+	// a terminal sits beside the steel, not on it (platforms, station
+	// throats); a wrong-branch sibling misses by kilometres
+	const termTol = 300.0
+	a, b := frame.ToXY(pat.TermA), frame.ToXY(pat.TermB)
+	best := -1
+	bestMiss := math.Inf(1)
+	for i, p := range laid {
+		if p.Pattern.Route.ID != pat.Route.ID {
+			continue
+		}
+		_, da := p.Line.ProjectArc(a)
+		_, db := p.Line.ProjectArc(b)
+		if da > termTol || db > termTol {
+			continue
+		}
+		if da+db < bestMiss {
+			best, bestMiss = i, da+db
+		}
+	}
+	if best < 0 {
+		return nil, ""
+	}
+	donor := laid[best]
+	pts := donor.Line.Pts
+	arcA, _ := donor.Line.ProjectArc(a)
+	arcB, _ := donor.Line.ProjectArc(b)
+	if arcA > arcB { // donor runs the other way — ride it in reverse
+		rev := make([]geo.Pt, len(pts))
+		for i, q := range pts {
+			rev[len(pts)-1-i] = q
+		}
+		pts = rev
+	}
+	return pts, donor.Pattern.ShapeID
 }
 
 type matcher struct {
@@ -412,10 +561,17 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 	}
 }
 
-func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame) (Path, bool) {
-	pts := make([]geo.Pt, len(pat.Shape))
-	for i, ll := range pat.Shape {
-		pts[i] = frame.ToXY(ll)
+// matchOne matches one pattern. A non-empty guide replaces the pattern's
+// own shape as the DP's observation sequence (guideFor: an honest
+// sibling's already-matched path); the pattern's stops, service and
+// terminals are untouched — only the geometry the match chases changes.
+func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (Path, bool) {
+	pts := guide
+	if len(pts) < 2 {
+		pts = make([]geo.Pt, len(pat.Shape))
+		for i, ll := range pat.Shape {
+			pts[i] = frame.ToXY(ll)
+		}
 	}
 	shape := geo.NewLine(pts)
 	if shape.Len() < 2*m.p.SampleDs {

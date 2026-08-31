@@ -1,0 +1,28 @@
+{
+  "routes": {
+    "Red Line": {
+      "name": "Red"
+    },
+    "Blue Line": {
+      "name": "Blue"
+    },
+    "Brown Line": {
+      "name": "Brown"
+    },
+    "Green Line": {
+      "name": "Green"
+    },
+    "Orange Line": {
+      "name": "Orange"
+    },
+    "Pink Line": {
+      "name": "Pink"
+    },
+    "Purple Line": {
+      "name": "Purple"
+    },
+    "Yellow Line": {
+      "name": "Yellow"
+    }
+  }
+}

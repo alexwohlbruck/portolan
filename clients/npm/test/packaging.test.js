@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -81,64 +81,91 @@ test("every export subpath resolves to a file that exists", () => {
   }
 });
 
-/**
- * The engine packages are optionalDependencies, so npm skips one it
- * cannot resolve WITHOUT failing the install. A wrapper pinned to a
- * version the engine packages do not have installs clean and dies at
- * the first chart call.
- */
-test("VERSION, the wrapper, and every pinned engine agree", () => {
+const TARGETS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-arm64",
+  "win32-x64",
+];
+
+test("VERSION and the manifest agree, and no engine arrives twice", () => {
   const version = readFileSync(join(repoRoot, "VERSION"), "utf8").trim();
   assert.equal(pkg.version, version, "package.json version has drifted from VERSION");
-  const deps = Object.entries(pkg.optionalDependencies ?? {});
-  assert.ok(deps.length > 0, "no engine packages pinned");
-  for (const [name, want] of deps) {
-    assert.equal(want, version, `${name} is pinned to ${want}, not ${version}`);
+  // The engines used to be six pinned optionalDependencies. One surviving a
+  // rebase would resolve a SECOND engine beside the bundled one, and npm
+  // skips an optional dependency it cannot resolve without failing the
+  // install — so the broken shape looks exactly like the working one.
+  assert.equal(pkg.optionalDependencies, undefined, "engines ship inside this package now");
+});
+
+/**
+ * `files` is the whole contract for what reaches the registry. dist/ has
+ * always been there; bin/ and style/ are new, gitignored, and staged rather
+ * than committed — precisely the combination that publishes an empty package
+ * without one word of complaint.
+ */
+test("bin/ and style/ are in files, or the package ships with no engine", () => {
+  for (const dir of ["dist", "bin", "style"]) {
+    assert.ok(pkg.files.includes(dir), `"${dir}" is missing from package.json files`);
   }
 });
 
 /**
- * Staged output under platforms/ is gitignored, so it is only as fresh
- * as the last generator run — and publishing it stale is precisely the
- * failure above. Skips when nothing is staged (a checkout that has not
- * run `make dist`); asserts agreement when something is.
+ * Staged binaries are gitignored, so they are only as fresh as the last
+ * generator run. Skips when nothing is staged (a checkout that has not run
+ * `make dist`); asserts every target is present and sane when anything is.
  */
-test("staged platform packages, if present, are at this version", () => {
-  const version = pkg.version;
-  let dirs = [];
+test("staged binaries, if present, cover every target at this version", () => {
+  let keys = [];
   try {
-    dirs = readdirSync(join(pkgRoot, "platforms"));
+    keys = readdirSync(join(pkgRoot, "bin")).filter((d) => !d.startsWith("."));
   } catch {
     return; // nothing staged
   }
-  for (const d of dirs) {
-    if (d.startsWith(".")) continue;
-    const staged = JSON.parse(
-      readFileSync(join(pkgRoot, "platforms", d, "package.json"), "utf8"),
-    );
-    assert.equal(
-      staged.version,
-      version,
-      `platforms/${d} is staged at ${staged.version}, not ${version} — ` +
-        `re-run scripts/build-platform-packages.mjs before publishing`,
-    );
+  if (keys.length === 0) return;
+
+  for (const key of TARGETS) {
+    assert.ok(keys.includes(key), `bin/ is staged but has nothing for ${key}`);
+    const exe = key.startsWith("win32-") ? "portolan.exe" : "portolan";
+    const path = join(pkgRoot, "bin", key, exe);
+    assert.ok(existsSync(path), `bin/${key}/${exe} is missing`);
+    // a truncated extraction ships as happily as a real binary
+    assert.ok(statSync(path).size > 1_000_000, `bin/${key}/${exe} is implausibly small`);
   }
+
+  // Only this host's engine can be executed, and it is the one that can
+  // prove bin/ is not stale: a --version that disagrees with the manifest
+  // is a mismatched engine whatever the files claim.
+  const self = `${process.platform}-${process.arch}`;
+  if (!TARGETS.includes(self)) return;
+  const reported = execFileSync(join(pkgRoot, "bin", self, "portolan"), ["version"], {
+    encoding: "utf8",
+  }).trim();
+  assert.ok(
+    reported.includes(pkg.version),
+    `bin/${self} reports "${reported}", not ${pkg.version} — re-run build-universal.mjs`,
+  );
 });
 
 /** The guard itself has to actually block; a check that always passes is worse than none. */
-test("check-publish rejects a stale platform stage", () => {
-  const run = (env) =>
+test("check-publish accepts a staged tree and rejects an unstaged one", () => {
+  const run = () =>
     execFileSync("node", [join(pkgRoot, "scripts", "check-publish.mjs")], {
       cwd: pkgRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env },
     });
-  // no network in the harness, and the registry leg is covered by the
-  // release runbook — this asserts the local-drift leg
-  try {
-    run({ PORTOLAN_SKIP_REGISTRY_CHECK: "1" });
-  } catch (err) {
-    assert.fail(`check-publish rejected a good tree:\n${err.stderr || err.message}`);
+
+  const stagedTree = existsSync(join(pkgRoot, "bin", `${process.platform}-${process.arch}`));
+  if (stagedTree) {
+    try {
+      run();
+    } catch (err) {
+      assert.fail(`check-publish rejected a staged tree:\n${err.stderr || err.message}`);
+    }
+  } else {
+    assert.throws(run, "check-publish passed a tree with no binaries staged");
   }
 });

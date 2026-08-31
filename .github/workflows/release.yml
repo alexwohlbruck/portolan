@@ -9,10 +9,13 @@
 # install, and no signing — which is why this is one short job and not
 # parchment's matrix of macOS and Android builders.
 #
-# GITHUB_TOKEN creates the release. The npm job additionally needs an
-# NPM_TOKEN secret with publish rights to the @alexwohlbruck scope; it is
-# a separate job, so a missing token costs the packages and not the
-# release.
+# GITHUB_TOKEN creates the release. The npm job needs NO secret at all —
+# it publishes through trusted publishing, claiming a short-lived
+# credential with this run's OIDC identity. That identity is registered on
+# the package's settings page at npmjs.com against this repository and
+# tag-release.yml; change either and publishing stops until the
+# registration is updated to match. npm is a separate job, so a
+# registration that has drifted costs the package and not the release.
 
 name: Release
 
@@ -123,13 +126,22 @@ jobs:
           retention-days: 1
 
   npm:
-    name: Publish npm packages
+    name: Publish npm package
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # npm provenance: signs the packages against this workflow run, so a
-      # consumer can see which commit produced the binary they are running.
+      # TRUSTED PUBLISHING. There is no NPM_TOKEN: npm mints a short-lived
+      # credential from this run's OIDC identity, having been told on the
+      # package's own settings page which repository and workflow may claim
+      # it. A secret that leaks can publish from anywhere; an identity
+      # cannot. Provenance is signed against the same identity, and comes
+      # for free rather than by flag.
+      #
+      # id-token:write must ALSO be granted by tag-release.yml, which calls
+      # this workflow — a workflow_call inherits the caller's permissions,
+      # and a job asking for more than the caller holds fails the entire run
+      # at startup with no log worth reading.
       id-token: write
     steps:
       - uses: actions/checkout@v6
@@ -146,6 +158,14 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+
+      # Node 22 bundles npm 10, which has no idea OIDC exists — it would
+      # look for a token, find none, and fail as though unauthenticated.
+      # Trusted publishing needs 11.5.1 or later.
+      - name: npm new enough to speak OIDC
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       - name: Download every archive
         uses: actions/download-artifact@v4
@@ -167,13 +187,13 @@ jobs:
             exit 1
           fi
 
-      - name: Stage the platform packages from the released archives
+      - name: Stage the engines from the released archives
         working-directory: clients/npm
         run: |
           npm ci
           # Reads the ARCHIVES rather than rebuilding, so what npm carries is
           # byte-identical to what the GitHub release carries.
-          node scripts/build-platform-packages.mjs --dist ../../artifacts
+          node scripts/build-universal.mjs --dist ../../artifacts
 
       - name: Test
         working-directory: clients/npm
@@ -181,37 +201,29 @@ jobs:
 
       - name: Publish
         working-directory: clients/npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < ../../VERSION)"
+          NAME="$(node -p "require('./package.json').name")"
 
-          # Already-published versions are SKIPPED rather than retried. npm
-          # forbids republishing a version, so without this a re-run of a
-          # partially-failed release could never get past the first package.
-          publish() {
-            local dir="$1" name
-            name="$(node -p "require('./${dir}/package.json').name")"
-            if npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
-              echo "  already on the registry: ${name}@${VERSION}"
-              return 0
-            fi
-            echo "  publishing ${name}@${VERSION}"
-            npm publish "${dir}" --access public --provenance
-          }
+          # Already-published versions are SKIPPED rather than retried: npm
+          # forbids republishing a version, so a re-run of a release that
+          # failed AFTER the publish would otherwise never get past it.
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "  already on the registry: ${NAME}@${VERSION}"
+            exit 0
+          fi
 
-          # The six engines FIRST. npm skips an optional dependency it cannot
-          # resolve and still calls the install a success, so a wrapper that
-          # went out ahead of them would install cleanly and fail at the
-          # consumer's first chart call. The wrapper's own prepublishOnly
-          # (check-publish.mjs) refuses to go out until all six are live —
-          # this ordering is what lets that check pass.
-          for dir in platforms/*/; do
-            publish "${dir%/}"
-          done
-
-          publish .
+          # One package, carrying every platform's engine. This used to be
+          # seven writes in a required order, and the ordering was load-
+          # bearing: six optionalDependencies that npm skips SILENTLY when
+          # they are missing, so a wrapper published a moment too early
+          # installed clean and died at the consumer's first chart call.
+          # No --provenance: trusted publishing attests automatically, and
+          # passing the flag on top is how you get a run that demands a token
+          # it was never given.
+          echo "  publishing ${NAME}@${VERSION}"
+          npm publish --access public
 
   release:
     name: Publish GitHub Release

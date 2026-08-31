@@ -82,6 +82,19 @@ type Entity struct {
 	// merges by colour, which is right where colour carries meaning
 	// and wrong where a caller assigns colours arbitrarily.
 	Trunk string `json:"trunk,omitempty"`
+	// TrunkGroup SCOPES colour trunking instead of replacing it. Law 5's
+	// key is the colour ALONE, so two routes that share a hex merge even
+	// when they are different kinds of railway — right for a feed whose
+	// colours mean one thing, wrong for a caller whose classes are its own
+	// and invisible to GTFS. A game files both its heavy and light metro
+	// as route_type 1; Amtrak's NEC and PATH's Newark service are
+	// genuinely different railways that happen to share #D43E2D.
+	//
+	// A route carrying a group merges only with routes carrying the SAME
+	// group and the same colour. Trunk still decides the POLICY; this only
+	// narrows the colour policy's reach. Empty — every real-world feed —
+	// leaves the key the bare colour, byte for byte.
+	TrunkGroup string `json:"trunk_group,omitempty"`
 	// RouteType REPAIRS a feed's route_type where the agency mistyped it —
 	// Mexico City files the Tren Suburbano (a commuter railway) as
 	// route_type 1, and everything downstream then demands metro-class
@@ -150,6 +163,12 @@ func (d Doc) Config() Config {
 					c.Trunks = map[string]string{}
 				}
 				c.Trunks[key] = e.Trunk
+			}
+			if e.TrunkGroup != "" {
+				if c.TrunkGroups == nil {
+					c.TrunkGroups = map[string]string{}
+				}
+				c.TrunkGroups[key] = e.TrunkGroup
 			}
 			if e.RouteType != nil {
 				if c.RouteTypes == nil {

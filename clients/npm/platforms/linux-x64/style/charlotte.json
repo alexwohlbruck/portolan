@@ -1,0 +1,12 @@
+{
+  "routes": {
+    "501": {
+      "name": "Blue",
+      "color": "0067B1"
+    },
+    "510": {
+      "name": "Gold",
+      "color": "CBA052"
+    }
+  }
+}

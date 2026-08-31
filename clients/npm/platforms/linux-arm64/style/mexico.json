@@ -1,0 +1,13 @@
+{
+  "agencies": {
+    "METRO": {
+      "shape": "notch"
+    }
+  },
+  "routes": {
+    "B_CMX0700L1": {
+      "route_type": 2,
+      "name": "Tren Suburbano"
+    }
+  }
+}

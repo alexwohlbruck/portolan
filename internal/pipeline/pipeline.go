@@ -993,13 +993,17 @@ func writePaths(path string, paths []stages.Path, frame geo.Frame) error {
 					gaps++
 				}
 			}
-			if f, ok := lineFeature(map[string]any{
+			props := map[string]any{
 				"kind": "path", "route": p.Pattern.Route.ID,
 				"label": p.Pattern.Route.ShortName,
 				"color": p.Pattern.Route.Color, "shape": p.Pattern.ShapeID,
 				"trips": p.Pattern.Trips, "gaps": gaps,
 				"len_m": int(p.Line.Len()),
-			}, p.Line, 8, frame); ok {
+			}
+			if p.Guide != "" {
+				props["guide"] = p.Guide
+			}
+			if f, ok := lineFeature(props, p.Line, 8, frame); ok {
 				return f, true
 			}
 		}

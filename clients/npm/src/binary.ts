@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,31 +5,50 @@ import { fileURLToPath } from "node:url";
 /**
  * Finding the engine.
  *
- * The binary ships INSIDE the package, one npm package per platform,
- * pulled in as an optionalDependency — the same shape esbuild uses.
- * npm installs only the one matching the host, so a version bump of
- * `@alexwohlbruck/portolan` ships a new engine with no separate fetch
- * step and nothing to keep in sync.
+ * All six binaries ship INSIDE this package, under `bin/<platform>-<arch>/`.
+ * One package, one publish, one thing to install — and the engine can never
+ * disagree with the wrapper about its version, because they are the same
+ * artifact.
+ *
+ * WHY NOT THE optionalDependency SPLIT (which this replaced): six sibling
+ * packages with `os`/`cpu` gates is the esbuild shape, and it is genuinely
+ * leaner per install — npm resolves the one matching the host and skips the
+ * rest. It costs a chain of failure modes that all look like success. npm
+ * SKIPS an optional dependency it cannot resolve and still calls the install
+ * clean, so a half-finished publish, an `--omit=optional`, or an install on a
+ * different platform than the one that runs all produce a working install
+ * that dies at the first chart call. Publishing needs the six to go out
+ * before the wrapper, and each is a separate registry write. For an engine
+ * this size, paying ~22MB per install to make every one of those failures
+ * impossible is the better trade.
  *
  * Deliberately NOT a postinstall download: that breaks offline installs,
- * air-gapped CI, and — the case that matters here — signed and notarized
- * application bundles, where a binary that appeared after signing is
- * exactly what the OS refuses to run.
+ * air-gapped CI, `--ignore-scripts`, and — the case that matters here —
+ * signed and notarized application bundles, where a binary that appeared
+ * after signing is exactly what the OS refuses to run.
  *
  * Resolution order, first hit wins:
  *   1. an explicit path passed by the caller
  *   2. $PORTOLAN_BIN                     — dev override, or a bundled copy
- *   3. the per-platform optional dependency
+ *   3. bin/<platform>-<arch>/ inside this package
  */
 
-const PLATFORMS: Record<string, string> = {
-  "darwin-arm64": "@alexwohlbruck/portolan-darwin-arm64",
-  "darwin-x64": "@alexwohlbruck/portolan-darwin-x64",
-  "linux-arm64": "@alexwohlbruck/portolan-linux-arm64",
-  "linux-x64": "@alexwohlbruck/portolan-linux-x64",
-  "win32-arm64": "@alexwohlbruck/portolan-win32-arm64",
-  "win32-x64": "@alexwohlbruck/portolan-win32-x64",
-};
+/**
+ * Node's spelling of every target that has a build. Note the naming seam:
+ * Node says `x64` where Go says `amd64`, for the same architecture. These
+ * keys are NODE's, because `process.platform`/`process.arch` are what
+ * choose between them; the release archives use Go's, because GOOS/GOARCH
+ * are what built them. The mapping lives in scripts/build-universal.mjs
+ * and nowhere else, which is the point.
+ */
+const SUPPORTED = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-arm64",
+  "win32-x64",
+];
 
 export class BinaryNotFoundError extends Error {
   constructor(message: string) {
@@ -39,48 +57,37 @@ export class BinaryNotFoundError extends Error {
   }
 }
 
-/**
- * The engine package resolved, but at a different version than this
- * wrapper. Never retry it — it will resolve identically every time.
- *
- * Extends BinaryNotFoundError so an existing catch still covers it.
- */
-export class EngineVersionMismatchError extends BinaryNotFoundError {
-  constructor(
-    message: string,
-    readonly wanted: string,
-    readonly found: string,
-  ) {
-    super(message);
-    this.name = "EngineVersionMismatchError";
-  }
+/** This package's own root — `bin/` and `style/` sit beside `dist/`. */
+function packageRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..");
 }
 
 /** This package's own version, or "" if the manifest cannot be read. */
 function selfVersion(): string {
   try {
-    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version ?? "";
+    return JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")).version ?? "";
   } catch {
     return "";
   }
 }
 
-/** `darwin-arm64` etc. Node's names, not Go's — see the note in resolveBinary. */
+/** `darwin-arm64` etc. Node's names, not Go's — see the note on SUPPORTED. */
 export function platformKey(): string {
   return `${process.platform}-${process.arch}`;
 }
 
 /**
- * Locate the portolan executable.
+ * The curation documents that ship with the engine.
  *
- * Note the naming seam: Node says `x64` where Go says `amd64`, for the
- * same architecture. The per-platform package names use NODE's spelling
- * because npm resolves them by `process.platform`/`process.arch`; the
- * release archives use Go's because `GOOS`/`GOARCH` are what built them.
- * The mapping lives in scripts/build-platform-packages.mjs and nowhere
- * else, which is the point.
+ * The engine reads `./style` relative to its WORKING DIRECTORY, not to the
+ * binary, so it does not find this on its own — pass it as `styleDir` (or
+ * `cwd`) if you want the shipped curation rather than raw feed colours.
  */
+export function styleDir(): string {
+  return join(packageRoot(), "style");
+}
+
+/** Locate the portolan executable for this host. */
 export function resolveBinary(explicit?: string): string {
   if (explicit) {
     if (!existsSync(explicit)) {
@@ -97,50 +104,26 @@ export function resolveBinary(explicit?: string): string {
   }
 
   const key = platformKey();
-  const pkg = PLATFORMS[key];
-  if (!pkg) {
+  if (!SUPPORTED.includes(key)) {
     throw new BinaryNotFoundError(
-      `portolan has no build for ${key}. Supported: ${Object.keys(PLATFORMS).join(", ")}. ` +
+      `portolan has no build for ${key}. Supported: ${SUPPORTED.join(", ")}. ` +
         `Point PORTOLAN_BIN at a binary you built yourself if you have one.`,
     );
   }
+
   const exe = process.platform === "win32" ? "portolan.exe" : "portolan";
-  const require = createRequire(import.meta.url);
-  try {
-    // resolve the package's manifest rather than a JS entry point: these
-    // packages contain a binary and nothing importable
-    const manifest = require.resolve(`${pkg}/package.json`);
-    const path = join(manifest, "..", "bin", exe);
-    if (!existsSync(path)) {
-      throw new BinaryNotFoundError(`${pkg} is installed but has no bin/${exe}`);
-    }
-    // The two are published together and pinned to an exact version, so a
-    // mismatch means something resolved an engine this wrapper was never
-    // tested against — a stale lockfile, a forced resolution, or a
-    // publish where only one half went out. Say which two versions, and
-    // say it here: the alternative is a PLNB layout error three calls
-    // later, or worse, no error at all.
-    const want = selfVersion();
-    const got = JSON.parse(readFileSync(manifest, "utf8")).version ?? "unknown";
-    if (want && got !== want) {
-      throw new EngineVersionMismatchError(
-        `@alexwohlbruck/portolan ${want} needs engine ${want}, but ${pkg}@${got} is installed. ` +
-          `Delete node_modules and the lockfile and reinstall, or set PORTOLAN_BIN to ` +
-          `a matching binary.`,
-        want,
-        got,
-      );
-    }
-    return path;
-  } catch (err) {
-    if (err instanceof BinaryNotFoundError) throw err;
+  const path = join(packageRoot(), "bin", key, exe);
+  if (!existsSync(path)) {
+    // The binaries are committed to the PUBLISHED package, not to the repo,
+    // so the ordinary way to see this is running from a source checkout that
+    // has not staged them yet. A published package missing one is a broken
+    // publish — the `files` field or the staging step, not the consumer.
     throw new BinaryNotFoundError(
-      `${pkg} is not installed. It is an optionalDependency, so npm SKIPS it silently ` +
-        `when it cannot be resolved and the install still reports success. Usual causes: ` +
-        `that version was never published (check \`npm view ${pkg} versions\`), the ` +
-        `install ran with --no-optional, or it ran on a different platform than this one ` +
-        `(npm resolves optional deps at install time, not run time). ` +
-        `Reinstall on this machine, or set PORTOLAN_BIN.`,
+      `@alexwohlbruck/portolan ${selfVersion()} has no bin/${key}/${exe}. ` +
+        `In a source checkout, stage the binaries first: ` +
+        `make dist && node clients/npm/scripts/build-universal.mjs. ` +
+        `In an installed package this is a broken publish — reinstall, or set PORTOLAN_BIN.`,
     );
   }
+  return path;
 }
