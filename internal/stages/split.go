@@ -130,7 +130,17 @@ func dbgNet(tag string, net *Network) {
 			L += geo.NewLine(e.Pts).Len()
 		}
 	}
-	fmt.Printf("DBGNET %-14s %3d edges %8.0f m\n", tag, len(net.Edges), L)
+	knots := 0
+	for _, e := range net.Edges {
+		for i := 2; i < len(e.Pts); i++ {
+			a := e.Pts[i-1].Sub(e.Pts[i-2])
+			b := e.Pts[i].Sub(e.Pts[i-1])
+			if a.Norm() > 0 && b.Norm() > 0 && a.Unit().Dot(b.Unit()) < 0 {
+				knots++
+			}
+		}
+	}
+	fmt.Printf("DBGNET %-14s %3d edges %8.0f m %5d knots>90\n", tag, len(net.Edges), L, knots)
 }
 func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	setLevelIndex(tracks)
@@ -712,6 +722,19 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	}
 	trimEdgeEnds(net)
 	compactNodes(net)
+	// The last line of defense, and an INVARIANT rather than a repair:
+	// no edge leaves SPLIT with a fold knot. Refine unfolds its own
+	// output, but it is not the only writer of edge geometry — seam
+	// blends, node welds, end trims and lens midlines all move vertices
+	// after the last refine — and FAIR densifies whatever survives here
+	// into drawn ink. Steel never turns 90° at one vertex at these
+	// sampling steps; anything that does is an artifact, whoever made it.
+	for ei := range net.Edges {
+		e := &net.Edges[ei]
+		if len(e.Pts) >= 3 {
+			e.Pts = geo.Unfold(e.Pts, 90)
+		}
+	}
 	dbgNet("final", net)
 	return net, nil
 }

@@ -279,6 +279,43 @@ func TurnDeg(a, b, c Pt) float64 {
 	return math.Acos(d) * 180 / math.Pi
 }
 
+// Unfold removes fold knots: interior vertices whose turn exceeds
+// maxDeg. At the sampling steps this codebase draws at (metres, not
+// tens of metres), no physical railway turns 90° at a single vertex —
+// the tightest steel on earth (a ~15 m tram curve) reads ~25° per
+// vertex at a 6 m step. A sharper turn is always an artifact: a
+// refinement offset that outran its base line's curvature, a weld
+// seam pointing at a stale node, a lens midline crossing its pair.
+// Deleting the vertex collapses the knot onto its chord, which is the
+// same answer the vote-blanking machinery gives an unstable pocket —
+// bridge it straight — applied in position space. Endpoints are never
+// touched. Runs to a fixpoint: a multi-vertex curl exposes a new
+// reversal each time its tip is cut, so one pass is not enough; the
+// pass cap only bounds the pathological all-knot line.
+func Unfold(pts []Pt, maxDeg float64) []Pt {
+	for pass := 0; pass < 16; pass++ {
+		if len(pts) < 3 {
+			return pts
+		}
+		out := pts[:0:0]
+		out = append(out, pts[0])
+		changed := false
+		for i := 1; i < len(pts)-1; i++ {
+			if TurnDeg(out[len(out)-1], pts[i], pts[i+1]) > maxDeg {
+				changed = true
+				continue
+			}
+			out = append(out, pts[i])
+		}
+		out = append(out, pts[len(pts)-1])
+		pts = out
+		if !changed {
+			return pts
+		}
+	}
+	return pts
+}
+
 // SmoothTurning low-passes a polyline in the TURNING-ANGLE domain: it
 // smooths the sequence of segment headings over arc length and rebuilds
 // the line from the smoothed headings, keeping every segment's length.

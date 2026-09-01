@@ -166,4 +166,12 @@ func TestRefineNeverGrowsTheLine(t *testing.T) {
 		t.Fatalf("refinement grew the line: %.0f m in, %.0f m out (limit %.0f)",
 			cl.Len(), got.Len(), lim)
 	}
+	// and the line that comes back contains no fold knots — the length
+	// gate bounds the damage, the unfold pass removes it. An authored
+	// Chicago Green showed why both matter: on a 35.8 km megachain a
+	// percentage-sized length allowance passed ~700 m of local knots per
+	// call while total growth stayed "small".
+	if turn := geo.MaxTurnDeg(got.Pts); turn > 90 {
+		t.Fatalf("refinement left a fold knot: max turn %.0f°", turn)
+	}
 }
