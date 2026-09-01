@@ -21,7 +21,7 @@ import (
 // unrepresentable, by construction.
 
 var (
-	mergeDist = 18.0 // kiss-rule mate range (dial: split_merge_dist)
+	mergeDist = 16.0 // kiss-rule mate range (dial: split_merge_dist)
 	mergeRun  = 60.0 // sustained-parallelism minimum (dial: split_merge_run)
 	// Cross-SERVICE corridors merge only when they have already refined
 	// onto the same group median — sustained co-location this tight is
@@ -51,7 +51,7 @@ const (
 var looseTwins = false
 
 func bundleParallelEdges(net *Network) int {
-	mergeDist = dial("split_merge_dist", 18)
+	mergeDist = dial("split_merge_dist", 16)
 	mergeRun = dial("split_merge_run", 60)
 	coMergeDist = dial("split_co_merge_dist", 4)
 	merges := 0
