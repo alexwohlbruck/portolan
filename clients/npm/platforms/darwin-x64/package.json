@@ -1,0 +1,23 @@
+{
+  "name": "@alexwohlbruck/portolan-darwin-x64",
+  "version": "0.3.1",
+  "description": "portolan engine binary for darwin x64.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexwohlbruck/portolan.git",
+    "directory": "clients/npm"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "style",
+    "README.md"
+  ],
+  "preferUnplugged": true
+}

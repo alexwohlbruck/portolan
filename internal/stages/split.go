@@ -120,7 +120,6 @@ func edgeFamily(e *Edge) int {
 	return 0
 }
 
-
 func dbgNet(tag string, net *Network) {
 	if os.Getenv("PORTOLAN_DBGNET") == "" {
 		return
@@ -436,7 +435,14 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// buses landed).
 	var riddenTracks []bundle.Track
 	for _, t := range tracks {
-		if usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
+		// TAGGED yard steel never votes even when MATCH rode it (genuine
+		// through-running pays the penalty and rides, but a platform track
+		// is not a corridor median). Untagged in-region steel that is
+		// ridden is the corridor itself passing the yard — it keeps its
+		// vote, which is what protects a false-positive region over a
+		// ridden trunk.
+		if usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" &&
+			!isYardWay(t.ID) {
 			riddenTracks = append(riddenTracks, t)
 		}
 	}
@@ -465,7 +471,11 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// so the South Ferry law holds.
 	var unriddenTracks []bundle.Track
 	for _, t := range tracks {
-		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" {
+		// Unridden in-region steel — tagged or not — is exactly the
+		// ladder that drowns twin votes; excluding it cannot hurt a
+		// ridden trunk by construction (this pool is unridden only).
+		if !usedWays[t.ID] && wayRailClass[t.ID] != "street" && wayRailClass[t.ID] != "seaway" &&
+			!yardSteel(t.ID) {
 			unriddenTracks = append(unriddenTracks, t)
 		}
 	}
@@ -1399,10 +1409,14 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool
 			// notion only holds where there IS a pair — with several
 			// candidates alongside, "the twin" is ambiguous and admitting
 			// one drags the median into the ladder (the 9 Av/West End
-			// 4-to-7-track structure kinked 45 deg). Those sites need the
-			// yard rule, not a twin; until then the corridor keeps its
-			// tuned behaviour there.
-			if cand > 1 {
+			// 4-to-7-track structure kinked 45 deg). The yard rule has
+			// arrived: inside a detected region the accumulator stays
+			// cleared even where pool exclusion has emptied twinLines and
+			// the density count would read calm. The count stays as the
+			// fallback for yards the detector misses; both signals only
+			// SUPPRESS, so their union can only move toward the tuned
+			// corridor behaviour.
+			if yardIx.InYard(q) || cand > 1 {
 				clear(cur)
 				cand = 0
 			}
@@ -1530,12 +1544,15 @@ func edgeMates(cl *geo.Line, strandLines []*geo.Line,
 }
 
 // trackCount estimates the physical strand count of the group (median over a
-// few cross-sections).
+// few cross-sections). A probe inside a yard region measures the yard, not
+// the corridor — the published count inherited ladder widths on every edge
+// that merely passed one — so in-region probes stand down unless the edge
+// genuinely lives in the yard (then they are all it has).
 func trackCount(cl *geo.Line, members []*geo.Line, rp bundle.Params) int {
 	if len(members) == 0 {
 		return 1
 	}
-	var counts []int
+	var counts, all []int
 	for _, f := range []float64{0.3, 0.5, 0.7} {
 		at := cl.Len() * f
 		q := cl.AtArc(at)
@@ -1548,7 +1565,14 @@ func trackCount(cl *geo.Line, members []*geo.Line, rp bundle.Params) int {
 				}
 			}
 		}
-		counts = append(counts, len(bundle.Strands(offs, rp.StrandGap)))
+		n := len(bundle.Strands(offs, rp.StrandGap))
+		all = append(all, n)
+		if !yardIx.InYard(q) {
+			counts = append(counts, n)
+		}
+	}
+	if len(counts) == 0 {
+		counts = all
 	}
 	sort.Ints(counts)
 	return counts[len(counts)/2]

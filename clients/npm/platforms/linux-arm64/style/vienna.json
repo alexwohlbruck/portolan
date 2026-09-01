@@ -1,0 +1,19 @@
+{
+  "routes": {
+    "U1": {
+      "shape": "square"
+    },
+    "U2": {
+      "shape": "square"
+    },
+    "U3": {
+      "shape": "square"
+    },
+    "U4": {
+      "shape": "square"
+    },
+    "U6": {
+      "shape": "square"
+    }
+  }
+}

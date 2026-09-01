@@ -144,6 +144,10 @@ type Config struct {
 	// attaching OSM ids, which is what a city with hand-curated station
 	// names wants.
 	OSMStopNames *bool `json:"osm_stop_names,omitempty"`
+	// Yards: detect yard regions and hand the stages the oracle. Nil
+	// inherits (default on); a feed whose detection misfires can switch
+	// it off and keep the legacy density heuristics everywhere.
+	Yards *bool `json:"yards,omitempty"`
 }
 
 // defaults are the shipped behaviour: change these and every city moves.
@@ -202,6 +206,8 @@ type Set struct {
 	Caterpillars bool `json:"caterpillars"`
 	// OSMStopNames: resolved on/off for adopting matched OSM stop names.
 	OSMStopNames bool `json:"osm_stop_names"`
+	// Yards: resolved on/off for yard-region detection.
+	Yards bool `json:"yards"`
 
 	// lookup tables for overrides, lowercased; built by New.
 	byAgency map[string]string
@@ -262,6 +268,7 @@ func New(layers ...Config) *Set {
 	s.BulletOrder = BulletsColor
 	s.Caterpillars = true
 	s.OSMStopNames = true
+	s.Yards = true
 	for _, l := range layers {
 		for k, v := range l.Colors {
 			s.Colors[k] = v
@@ -304,6 +311,9 @@ func New(layers ...Config) *Set {
 		}
 		if l.OSMStopNames != nil {
 			s.OSMStopNames = *l.OSMStopNames
+		}
+		if l.Yards != nil {
+			s.Yards = *l.Yards
 		}
 	}
 	for k, v := range s.Colors {

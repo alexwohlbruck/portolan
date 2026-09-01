@@ -1,0 +1,23 @@
+{
+  "name": "@alexwohlbruck/portolan-linux-arm64",
+  "version": "0.3.1",
+  "description": "portolan engine binary for linux arm64.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexwohlbruck/portolan.git",
+    "directory": "clients/npm"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin",
+    "style",
+    "README.md"
+  ],
+  "preferUnplugged": true
+}

@@ -6,48 +6,66 @@ binary (`portolan atlas`), documented, and tested. The loop:
 
 ```
 draw ground truth  ─►  build  ─►  sound (score)  ─►  look (windows)  ─►  fix a stage  ─►  repeat
-   (atlas /sketch)     chart        gates+spikes      before/after
+  (console /sketch)    chart        gates+spikes      before/after
 ```
 
-## 1 · Sketch editor (`portolan atlas` → `/sketch`)
+## 1 · Sketch editor (console → `/console/sketch`)
 
-A network-level bezier editor (Leaflet, single embedded HTML — `web/editor.html`,
-ported from barrelman). The owner hand-draws the ideal map per feed; the
-drawing **is** the definition of correct.
+A bezier editor in the console (`web/src/views/SketchView.vue`, model in
+`web/src/lib/sketch.ts`). The owner hand-draws the ideal map per feed; the
+drawing **is** the definition of correct. Two modes over one document:
+
+**Network** — the route centerlines, as before.
+
+**Yards** — a yard is a **closed** bezier boundary traced round the outer
+tracks, plus the **centerlines** that run through it. Entrances are *not*
+drawn: they are computed where a centerline crosses the boundary, single-link
+clustered so a whole ladder reads as one entrance at its average point, with
+the heading turned inward. That rule lives twice — `entrancesOf` in
+`lib/sketch.ts` for live feedback, `(*Yard).Entrances` in `internal/sketch`
+for scoring — and the two must stay in step.
 
 Semantics (hard-won; don't regress them):
 - **Illustrator pen**: click = corner anchor (no forward direction);
   click-drag = place *and* pull mirrored curvature handles.
 - Handles are angle-locked and length-independent; smooth/broken is decided
   at dragstart; **alt** breaks the pair. Catmull-Rom auto-handles on plain
-  anchors.
+  anchors — **wrapping** on a closed curve, or the ring would corner at its
+  arbitrary first anchor.
 - `C` continues a line from either end; split/merge/reverse; insert-anchor on
-  segment click; undo/redo per anchor.
-- **Interlining**: one drawn line carries multiple routes (color swatch
-  chips, true DB hexes per feed).
-- OpenRailwayMap overlay for tracing; locations are camera bookmarks only —
+  segment click; undo/redo per anchor. A ring cannot split or merge.
+- **No colour.** The drawing states where track goes, and that is all it is
+  graded on. Ink is fixed: red = drawn, blue = what the detector produced
+  (toggleable underlay, straight off the build's `.yards.geojson`), amber =
+  computed entrance.
+- Basemap + build underlay for tracing; locations are camera bookmarks only —
   one continuous network per feed.
-- Debounced **autosave, atomic write** to `sketches/network-<feed>.json`.
-  The file on disk is the owner's work product: treat it as precious, never
-  regenerate it, and score against a *committed* snapshot while it's
-  mid-edit.
+- Debounced **autosave, atomic write** through `internal/sketch.Save` to the
+  path the registry's `network` field names (falling back to
+  `sketches/network-<feed>.json`). **Go owns the schema**: the POST is
+  decoded into the model and re-encoded, so a field the model does not carry
+  cannot reach disk.
+- The file is **committed beside the code it grades**, so a geometry change
+  and the ground truth it was tuned against land in one diff. Save writes one
+  anchor per line and each baked path on one line, which is the split between
+  hand work and machine output. The file on disk is the owner's work product:
+  treat it as precious and never regenerate it.
 
 Implementation scar tissue: never rebuild the edit layer inside a drag
-handler (corrupts Leaflet Draggables — we removed Draggables entirely; one
-map-level pointer pipeline hit-tests the model in container px).
+handler; one map-level pointer pipeline hit-tests the model in container px.
 
 ## 2 · The scorer (`portolan sound`)
 
 Grades a build against the drawn network. Geometry-first (owner: "don't take
-the line colors into so much consideration"); color is a diagnostic column.
+the line colors into so much consideration") — colour is not recorded in the
+drawing at all, so nothing can be graded on it.
 
 Per drawn line (**forward** — is the drawing matched?):
-- `dev`: sample every ~5 m → distance to nearest build feature of any color
+- `dev`: sample every ~5 m → distance to the nearest build feature
   (mean / p90 / max). Compute true-nearest *plus* a buffer query — bbox
   queries alone return phantom misses on long diagonal features.
 - `cover`: % of samples with a feature within 25 m (a hole = missing
   segment).
-- `col%`: % whose nearest feature carries the line's color (not gated).
 
 Corridor-wide (**reverse**): build features riding drawn corridors
 (median distance < 30 m), their deviation = **wobble** (only samples still
@@ -62,6 +80,27 @@ spike locations** — a number you can't navigate to is a number you won't fix.
 
 Also enforced: per-color km conservation (±1%), zero self-intersections,
 turn-σ on named curves (polygonalization detector).
+
+**Yards** (only when the drawing has any) grade the detector out of the
+build's `.yards.geojson` sidecar. Each drawn yard is matched to the region it
+overlaps most:
+- `IoU`: intersection over union of the two boundaries, by 2 m scanline
+  raster. This is the headline number — the owner's target is **0.98**.
+  `FailYardIoU` is a **ratchet**: raise it as the detector earns it, never
+  lower it to make a build pass.
+- `bnd_p90` / `bnd_max`: symmetric boundary deviation in metres (one-sided,
+  a blob that swallows the drawing would score perfectly).
+- `ent`: computed drawn entrances matched within 40 m, `+n` for detected
+  entrances near the yard that nothing drawn explains.
+- `ctr_cov%`: drawn centerline samples with detected centerline within 15 m.
+  Reported but **not gated** yet — the detector emits centerlines, but
+  nothing has been drawn to grade them against. Ratchet it like the IoU
+  once a drawing exists.
+
+The two centerline rules that need **no** drawn ground truth are gated in
+`internal/yards` instead (`TestCenterlineSelfCheck`): every sample must sit
+on real member steel (rule 5) and the geometry must flow (rule 6). Only
+"did the corridor take the *right* path" needs the drawing.
 
 Exit code 1 on any gate failure. Run it after **every** build. CI runs it on
 the NYC fixture.

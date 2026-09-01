@@ -152,7 +152,7 @@ func printUsage(w io.Writer) {
 examples:
   portolan chart --gtfs nyc.zip --rail nyc-rail.geojson --out nyc.geojson
   portolan chart --gtfs feed.zip --corridors corridors.geojson --out build.geojson
-  portolan sound --network sketches/network-5.json --build nyc.geojson
+  portolan sound --network sketches/network-mta-subway.json --build nyc.geojson
   portolan atlas
 
 docs:
@@ -557,7 +557,7 @@ jagged the result is.
 Exits 0 when every gate passes and 1 when any gate fails, so it can be
 the check in a CI job or a Makefile.`,
 	example: []string{
-		"portolan sound --network sketches/network-5.json --build build/nyc.geojson",
+		"portolan sound --network sketches/network-mta-subway.json --build build/nyc.geojson",
 	},
 	flags: func(fs *flag.FlagSet) any {
 		s := &soundFlags{}

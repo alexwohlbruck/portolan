@@ -28,9 +28,6 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/tiles"
 )
 
-//go:embed editor.html
-var editorHTML []byte
-
 //go:embed map.html
 var mapHTML []byte
 
@@ -188,7 +185,6 @@ func (s *Server) Handler() http.Handler {
 		body := asset(name, embedded)
 		if inject {
 			body = bytes.ReplaceAll(body, []byte("%LOCS%"), locations())
-			body = bytes.ReplaceAll(body, []byte("%SWATCHES%"), []byte(swatchesJSON))
 		}
 		if nav {
 			body = append(append([]byte(nil), body...),
@@ -197,9 +193,12 @@ func (s *Server) Handler() http.Handler {
 		return body
 	}
 	mux := http.NewServeMux()
+	// The standalone bezier editor lived here. It painted per-route colour
+	// swatches into a schema that no longer has colour, and keyed them by
+	// pre-rename feed ids — saving through it would quietly drop every
+	// label. The console owns sketching now.
 	mux.HandleFunc("/sketch", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(render("editor.html", editorHTML, true, true))
+		http.Redirect(w, r, "/console/sketch", http.StatusFound)
 	})
 	mux.HandleFunc("/map", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -268,7 +267,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("/api/build-delta", s.buildDelta)
 	mux.HandleFunc("/api/rail.geojson", s.fileFor(func(f FeedCfg) string { return f.Rail }))
-	for _, st := range []string{"strands", "support", "graph", "nodes", "trackcenter", "paths", "stations"} {
+	for _, st := range []string{"strands", "support", "graph", "nodes", "trackcenter", "paths", "stations", "yards"} {
 		stage := st
 		mux.HandleFunc("/api/"+stage+".geojson",
 			s.fileFor(func(f FeedCfg) string { return f.Out + "." + stage + ".geojson" }))
@@ -801,12 +800,20 @@ func (s *Server) runStatus(w http.ResponseWriter, r *http.Request) {
 
 // ---- sketch storage ------------------------------------------------------
 
+// path resolves a feed's sketch document. The registry's `network` field
+// wins — it is what the SCORER reads, and an editor that writes anywhere
+// else is an editor whose work never gets graded. (It silently did, for
+// every feed whose key had been renamed since the drawing was made.)
 func (s *Server) path(feed string) (string, error) {
 	feed = strings.TrimSpace(feed)
 	if feed == "" || strings.ContainsAny(feed, "/\\.") {
 		return "", fmt.Errorf("bad feed %q", feed)
 	}
-	return filepath.Join(s.config().Sketches, "network-"+feed+".json"), nil
+	cfg := s.config()
+	if fc, ok := cfg.Feeds[feed]; ok && fc.Network != "" {
+		return fc.Network, nil
+	}
+	return filepath.Join(cfg.Sketches, "network-"+feed+".json"), nil
 }
 
 func (s *Server) network(w http.ResponseWriter, r *http.Request) {
@@ -819,20 +826,20 @@ func (s *Server) network(w http.ResponseWriter, r *http.Request) {
 		}
 		raw, err := os.ReadFile(p)
 		if err != nil {
-			raw = []byte(`{"lines":[]}`)
+			raw = []byte(`{"lines":[],"yards":[]}`)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(raw)
 	case http.MethodPost:
-		var doc struct {
-			Feed string `json:"feed"`
-		}
-		raw := json.RawMessage{}
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		// Decode through the sketch model and re-encode: Go owns the
+		// schema, so a field the model does not carry cannot reach disk —
+		// which is how colour stays gone no matter what a stale tab POSTs.
+		var doc sketch.Network
+		if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		if err := json.Unmarshal(raw, &doc); err != nil || doc.Feed == "" {
+		if doc.Feed == "" {
 			http.Error(w, "body must carry feed", 400)
 			return
 		}
@@ -841,12 +848,8 @@ func (s *Server) network(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		tmp := p + ".tmp"
-		if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		if err := os.Rename(tmp, p); err != nil {
+		doc.Updated = time.Now().Format("2006-01-02 15:04:05")
+		if err := sketch.Save(p, &doc); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
