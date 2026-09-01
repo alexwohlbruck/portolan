@@ -168,6 +168,39 @@ func TestDeadEndTailKeepsTerminatorHours(t *testing.T) {
 	}
 }
 
+// The un-cuttable stub: SPLIT bounded the platform piece with its own
+// junction (Penn's ladder), the margins forbid any interior cut, and the
+// cover pulled back to a stop near the piece's start leaves the midpoint
+// dry — the whole single piece recomputes to zero. At a dead end it must
+// keep its covers' hours instead.
+func TestUncuttableStubKeepsHours(t *testing.T) {
+	line := func(x0, x1 float64) *geo.Line {
+		var pts []geo.Pt
+		for x := x0; x <= x1; x += 25 {
+			pts = append(pts, geo.Pt{X: x, Y: 0})
+		}
+		return geo.NewLine(pts)
+	}
+	pat := gtfs.Pattern{Route: gtfs.Route{ID: "L"}, ShapeID: "s"}
+	var day gtfs.Mask168
+	day = day.Set(0, 9)
+	SetPatternActs(map[string]gtfs.Mask168{"L\x1fs": day})
+	defer SetPatternActs(nil)
+	// 200 m platform piece; the path tip lands 150 m in, its terminal
+	// STOP projects 30 m in — inside the 120 m cut margin, so no cut
+	seg := Segment{Kind: "steady", Routes: []string{"L"},
+		Acts: []string{day.Hex()}, Line: line(0, 200)}
+	paths := []Path{{Pattern: pat, Line: line(-500, 150)}}
+	terms := [][2]geo.Pt{{{X: -500, Y: 0}, {X: 30, Y: 0}}}
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, terms, geo.Frame{}, nil)
+	if len(out) != 1 {
+		t.Fatalf("want 1 piece (no room to cut), got %d", len(out))
+	}
+	if out[0].Acts[0] != day.Hex() {
+		t.Fatalf("dead-end stub must keep its covers' hours: %s", out[0].Acts[0])
+	}
+}
+
 // ...but a tail that CONTINUES into a junction stays dark outside its
 // patterns' hours — the weekend M's tail past Essex St is the Jamaica
 // line's trackage, not the M's platform. The same cut as above, with

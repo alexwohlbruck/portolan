@@ -460,27 +460,33 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt,
 		// zeros — the weekend M's tail past Essex St is the Jamaica
 		// line's trackage, not the M's platform — and a window-clip end
 		// is a cut, not a terminus.
-		if pr != nil && len(pieces) > 1 {
-			inherit := func(pi int, outerArc, innerArc float64) {
+		if pr != nil {
+			inherit := func(pi int, outerArc float64, matches func(pathCover) bool) {
 				if nearClip(s.Line.AtArc(outerArc)) {
 					return
 				}
 				ns := &pieces[pi]
 				checked, dead := false, false
 				for ri := range s.Routes {
-					if !pr.trusted[ri] || ri >= len(ns.Acts) {
+					if !pr.trusted[ri] || ri >= len(ns.Acts) || ri >= len(orig) {
 						continue
 					}
 					if m, ok := gtfs.ParseMask168(ns.Acts[ri]); !ok || !m.Empty() {
 						continue
 					}
+					// refine-only, still: inherited hours may restore what
+					// the recompute took, never add what SPLIT had not
+					before, ok := gtfs.ParseMask168(orig[ri])
+					if !ok || before.Empty() {
+						continue
+					}
 					var inh gtfs.Mask168
 					for _, cv := range pr.covers[ri] {
-						if math.Abs(cv.a-innerArc) <= tcDedupeM+1 ||
-							math.Abs(cv.b-innerArc) <= tcDedupeM+1 {
+						if matches(cv) {
 							inh = inh.Or(cv.mask)
 						}
 					}
+					inh = inh.And(before)
 					if inh.Empty() {
 						continue
 					}
@@ -495,8 +501,28 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt,
 					anyDiffers = true
 				}
 			}
-			inherit(0, 0, bounds[1])
-			inherit(len(pieces)-1, L, bounds[len(bounds)-2])
+			if len(pieces) > 1 {
+				near := func(arc float64) func(pathCover) bool {
+					return func(cv pathCover) bool {
+						return math.Abs(cv.a-arc) <= tcDedupeM+1 ||
+							math.Abs(cv.b-arc) <= tcDedupeM+1
+					}
+				}
+				inherit(0, 0, near(bounds[1]))
+				inherit(len(pieces)-1, L, near(bounds[len(bounds)-2]))
+			} else if anyDiffers {
+				// The un-cuttable stub is the same case with no cut to
+				// anchor on: SPLIT bounded the platform piece with a
+				// junction of its own (Penn's ladder, the ACL throat at
+				// Philadelphia), the 120 m margins forbid any interior
+				// cut, and the pulled-back covers leave the midpoint dry —
+				// the recompute zeroes the whole piece. Every cover here
+				// is a train that reaches this piece, so at a dead end it
+				// keeps their union.
+				all := func(pathCover) bool { return true }
+				inherit(0, L, all)
+				inherit(0, 0, all)
+			}
 		}
 		if len(pieces) == 1 && !anyDiffers {
 			out = append(out, *s) // recompute matched the original — no-op
