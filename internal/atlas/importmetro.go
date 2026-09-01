@@ -151,3 +151,105 @@ func (s *Server) importMetro(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
+
+// deleteImport removes an uploaded save: the portolan.json entry and every
+// file the importer wrote for it. The exact inverse of the import above,
+// and deliberately no more than that — a build output or a sketch drawn
+// over the save is the user's work, so those go too only because the feed
+// they belong to is going.
+//
+// GUARDED to entries the importer made (FeedCfg.Imported). The console
+// only offers delete on those, but the endpoint cannot trust that: this is
+// the one route that removes a config entry and files from the checkout,
+// and a mistyped key must not be able to unregister the MTA. The marker is
+// set by the importer alone, so a curated feed can never match.
+func (s *Server) deleteImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "POST or DELETE", 405)
+		return
+	}
+	key := strings.TrimSpace(r.URL.Query().Get("feed"))
+	if key == "" {
+		http.Error(w, "missing ?feed=", 400)
+		return
+	}
+	fc, ok := s.config().Feeds[key]
+	if !ok {
+		http.Error(w, "no such feed: "+key, 404)
+		return
+	}
+	if !fc.Imported {
+		http.Error(w, key+" is a curated feed, not an uploaded save — refusing to delete", 403)
+		return
+	}
+
+	// Serialize with import: both read-modify-write portolan.json, and the
+	// file sweep below must not race a re-import of the same key.
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+
+	if err := s.editConfig(func(doc map[string]any) error {
+		feeds, _ := doc["feeds"].(map[string]any)
+		if feeds == nil {
+			return fmt.Errorf("config has no feeds map")
+		}
+		delete(feeds, key)
+		return nil
+	}); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	// Paths come from the ENTRY, not from a rebuilt guess at what the
+	// importer would have written: a hand-edited entry pointing somewhere
+	// else must take its own files, and only its own.
+	cfgAbs, _ := filepath.Abs(s.cfgPath)
+	repo := filepath.Dir(cfgAbs)
+	inRepo := func(p string) (string, bool) {
+		if p == "" {
+			return "", false
+		}
+		abs := p
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(repo, p)
+		}
+		abs = filepath.Clean(abs)
+		// never escape the checkout, whatever the entry says
+		rel, err := filepath.Rel(repo, abs)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return "", false
+		}
+		return abs, true
+	}
+	var removed []string
+	drop := func(p string) {
+		abs, ok := inRepo(p)
+		if !ok {
+			return
+		}
+		if err := os.RemoveAll(abs); err == nil {
+			if rel, err := filepath.Rel(repo, abs); err == nil {
+				removed = append(removed, rel)
+			}
+		}
+	}
+	// the importer writes data/sb/<key>/{gtfs,rail.geojson}; drop the feed
+	// DIRECTORY rather than the two paths, so nothing is orphaned
+	if abs, ok := inRepo(fc.GTFS); ok {
+		drop(filepath.Dir(abs))
+	}
+	drop(fc.Rail)
+	drop(filepath.Join("style", key+".json"))
+	drop(fc.Network)
+	// build outputs: <out> plus the sidecars chart writes beside it
+	if abs, ok := inRepo(fc.Out); ok {
+		matches, _ := filepath.Glob(abs + "*")
+		for _, m := range matches {
+			drop(m)
+		}
+	}
+	drop(filepath.Join("build", "tiles", key))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"key": key, "removed": removed})
+}

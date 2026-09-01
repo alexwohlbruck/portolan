@@ -8,15 +8,21 @@
 // Global is a context, not a feed. Metro areas are group builds — several
 // feeds charted as one graph so their routes bundle on shared track — and
 // they replace their members in the world map, so they belong above the
-// agencies they absorb, not filed alphabetically among them.
+// agencies they absorb, not filed alphabetically among them. Uploaded
+// Subway Builder saves are not agencies at all: they are the player's own
+// networks, they arrive and go on the user's schedule rather than the
+// roster's, and they are the only entries here that can be DELETED — so
+// they get their own heading at the top rather than being scattered
+// through 1,499 real operators that happen to sort near them.
 import { computed, ref, watch } from 'vue'
 import {
   ComboboxRoot, ComboboxAnchor, ComboboxTrigger, ComboboxInput, ComboboxPortal,
   ComboboxContent, ComboboxViewport, ComboboxGroup, ComboboxLabel, ComboboxItem,
   ComboboxItemIndicator, ComboboxEmpty,
 } from 'reka-ui'
-import { ChevronDown, Check, Search, Globe, Building2 } from 'lucide-vue-next'
-import { feeds, feed, GLOBAL } from '@/lib/store'
+import { ChevronDown, Check, Search, Globe, Building2, Gamepad2, Trash2, Loader2 } from 'lucide-vue-next'
+import { feeds, feed, GLOBAL, refreshFeeds } from '@/lib/store'
+import { api } from '@/lib/api'
 
 // Rendering every match is what made the old list janky; past this many
 // the answer is a better search term, not a longer list.
@@ -31,14 +37,17 @@ const query = ref('')
 const blank = () => ''
 watch(open, () => { query.value = '' })
 
-const metros = computed(() => feeds.value.filter((f) => f.members?.length))
-const agencies = computed(() => feeds.value.filter((f) => !f.members?.length))
+const saves = computed(() => feeds.value.filter((f) => f.imported))
+const metros = computed(() => feeds.value.filter((f) => !f.imported && f.members?.length))
+const agencies = computed(() => feeds.value.filter((f) => !f.imported && !f.members?.length))
 
 const label = (f: { id: string; name?: string }) => f.name || f.id
 const hit = (f: { id: string; name?: string }, q: string) =>
   label(f).toLowerCase().includes(q) || f.id.toLowerCase().includes(q)
 
 const q = computed(() => query.value.trim().toLowerCase())
+const shownSaves = computed(() =>
+  q.value ? saves.value.filter((f) => hit(f, q.value)) : saves.value)
 const shownMetros = computed(() =>
   q.value ? metros.value.filter((f) => hit(f, q.value)) : metros.value)
 const matched = computed(() =>
@@ -47,11 +56,35 @@ const shownAgencies = computed(() => matched.value.slice(0, CAP))
 const hidden = computed(() => matched.value.length - shownAgencies.value.length)
 const showGlobal = computed(() => !q.value || 'global'.includes(q.value))
 const empty = computed(() =>
-  !showGlobal.value && !shownMetros.value.length && !shownAgencies.value.length)
+  !showGlobal.value && !shownSaves.value.length && !shownMetros.value.length &&
+  !shownAgencies.value.length)
 
 const current = computed(() => feeds.value.find((f) => f.id === feed.value))
 const currentLabel = computed(() =>
   feed.value === GLOBAL ? 'Global' : current.value ? label(current.value) : 'Pick a feed…')
+
+// Deleting a save removes its inputs, its build and any sketch drawn over
+// it — work that cannot be recovered from the checkout, only by uploading
+// the .metro again — so it asks first. The picker stays OPEN through the
+// round trip: closing it on click would hide the row that is mid-delete.
+const deleting = ref('')
+async function removeSave(f: { id: string; name?: string }, ev: Event) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  if (deleting.value) return
+  if (!confirm(`Delete “${label(f)}”?\n\nRemoves the imported feed, its build and any sketch drawn over it. Re-upload the .metro to get it back.`)) return
+  deleting.value = f.id
+  try {
+    await api.deleteMetroImport(f.id)
+    // If the open feed was the one deleted, refreshFeeds falls back to the
+    // first entry on its own — it already handles a stale persisted id.
+    await refreshFeeds()
+  } catch (e) {
+    alert(`Could not delete ${label(f)}: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    deleting.value = ''
+  }
+}
 
 const itemClass =
   'relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground'
@@ -111,6 +144,35 @@ const labelClass =
             <Globe class="mr-2 size-4 shrink-0 text-muted-foreground" />
             Global
           </ComboboxItem>
+
+          <ComboboxGroup v-if="shownSaves.length">
+            <ComboboxLabel :class="labelClass">Subway Builder saves</ComboboxLabel>
+            <ComboboxItem
+              v-for="f in shownSaves"
+              :key="f.id"
+              :value="f.id"
+              :class="[itemClass, 'pr-1']"
+            >
+              <span class="absolute left-2 flex size-4 items-center justify-center">
+                <ComboboxItemIndicator><Check class="size-4" /></ComboboxItemIndicator>
+              </span>
+              <Gamepad2 class="mr-2 size-4 shrink-0 text-muted-foreground" />
+              <span class="truncate">{{ label(f) }}</span>
+              <button
+                type="button"
+                :disabled="!!deleting"
+                :aria-label="`Delete ${label(f)}`"
+                :title="`Delete ${label(f)}`"
+                class="ml-auto flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                @click="removeSave(f, $event)"
+                @pointerdown.stop.prevent
+                @keydown.enter.stop
+              >
+                <Loader2 v-if="deleting === f.id" class="size-3.5 animate-spin" />
+                <Trash2 v-else class="size-3.5" />
+              </button>
+            </ComboboxItem>
+          </ComboboxGroup>
 
           <ComboboxGroup v-if="shownMetros.length">
             <ComboboxLabel :class="labelClass">Metro areas</ComboboxLabel>
