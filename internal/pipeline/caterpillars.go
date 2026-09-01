@@ -159,6 +159,14 @@ const (
 	catStraightDeg   = 7.0 // max heading change across the chain window
 	catEndClearM     = 180.0
 	catStationClearM = 160.0
+	// Merging two chains is claiming they ride ONE corridor, so the test
+	// is corridor-shaped: generous along the travel direction (extents
+	// mismatch along the line), a bundle's width across it, and near-
+	// parallel tangents. catMergeCrossM absorbs the drift a straight-ish
+	// corridor accumulates between two anchors; the next street over is
+	// an order of magnitude farther out.
+	catMergeCrossM   = 25.0
+	catMergeAlignDot = 0.87 // cos ~30°: siblings run parallel, crossings do not
 )
 
 // bulletWidthPx mirrors the viewer's bulletCanvas: a circle for 1–2
@@ -633,14 +641,30 @@ func BuildCaterpillars(segs []stages.Segment, sts []Station, routes map[string]g
 		}
 		host := props[i]
 		mergeR := 60.0 + float64(len(host.roster))*20
+		// host travel frame in frame coords (+y north); tm is px-space
+		// (+y south), so y flips back
+		tf := geo.Pt{X: host.tm.X, Y: -host.tm.Y}
 		for j := i + 1; j < len(props); j++ {
 			if used[j] || props[j].band != host.band {
 				continue
 			}
-			if props[j].pt.Dist(host.pt) > mergeR {
+			// A plain radius here reached the next street over: the LIRR's
+			// roster grew mergeR past 150 m and its chain swallowed Fulton
+			// St's A/C whole (and the Lexington 4/5/6 the J). Decompose
+			// instead — far ALONG the corridor is the case this merge
+			// exists for, far ACROSS it is a different line.
+			d := props[j].pt.Sub(host.pt)
+			if math.Abs(d.Dot(tf)) > mergeR {
 				continue
 			}
-			flip := host.tm.Dot(props[j].tm) < 0
+			if math.Abs(d.X*tf.Y-d.Y*tf.X) > catMergeCrossM {
+				continue
+			}
+			dot := host.tm.Dot(props[j].tm)
+			if math.Abs(dot) < catMergeAlignDot {
+				continue // a crossing, not a sibling ribbon
+			}
+			flip := dot < 0
 			for _, e := range props[j].roster {
 				if flip {
 					e.lat = -e.lat
