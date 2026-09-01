@@ -585,18 +585,25 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 				strandCounts = append(strandCounts, countAt[i])
 			}
 		}
-		// street vote sets flap at threshold cliffs — a couplet partner
+		// vote sets flap at threshold cliffs — a couplet partner
 		// breathing across the roadway gauge, a far rail sliding along the
-		// reach boundary — with 10–30 m periods that the ±12 m window
+		// reach boundary — with 10–30 m periods that a ±12 m window
 		// passes straight through (Berlin M1 read [0,16.8]→[0]→[0,16.8]
 		// and drew an 8 m sawtooth). A ±60 m majority window kills the
 		// alternation while leaving regime CHANGES (real divergences,
 		// which hold their new offset for hundreds of metres) intact;
 		// slopeLimit below ramps whatever step survives.
-		medianW := 2
-		if p.SwitchTolerant {
-			medianW = 10
-		}
+		//
+		// This was street-only for a while, with metro deferred to an
+		// all-modes centering session — and metro paid for the wait. A
+		// game-authored NYC put the 1's two directional strands 5–22 m
+		// apart, breathing across StrandGap and the kiss guards, and the
+		// ±12 m window let the flap through as a standing wave: the F
+		// drew a sine through 2 Av, and the wave's folds fed the growth
+		// runaway gated below. The wide window measured at or below the
+		// unrefined baseline on both (2 Av turnsum 4,912°→1,918°, the
+		// 1's corridor 26,231°→201°), with every codified law green.
+		medianW := 10
 		filt := medianFilter(offStar, has, medianW)
 		// offset must never exceed the base line's local turn radius:
 		// street pair-centering can ask for 8-10 m of lateral move, and
@@ -670,7 +677,30 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// heading and an arc is a linear ramp, both reproduced exactly —
 		// while a weld kink is a STEP in the series, which is precisely
 		// what a low-pass rounds off. Same job, no erosion.
-		cur = geo.NewLine(geo.SmoothTurning(out, p.FinishSigma))
+		next := geo.NewLine(geo.SmoothTurning(out, p.FinishSigma))
+		// A lateral refinement conserves arc length to first order — a
+		// centering move slides the line SIDEWAYS. An iteration that
+		// hands back a materially LONGER line has therefore not centered
+		// anything: its offsets outran the local turn radius and the
+		// polyline folded (the street clamp above names this exact
+		// failure). Folds are not self-limiting here, they COMPOUND —
+		// the fold is in `cur` next iteration, densified into more
+		// samples whose normals flip across it, and `moved` never drops
+		// below the convergence break while the vote set is unstable. On
+		// a game-authored NYC (two directional strands breathing 5–22 m
+		// apart under a metro edge, which has no radius clamp) five
+		// iterations per call across six refine calls took the 1's
+		// 12 km corridor to 766 km of scribble between 137 St and
+		// 145 St. Growth IS the fold signature, so gate on it directly:
+		// keep the last stable line and stop. The 2% + 30 m allowance
+		// clears every legitimate call measured (a full NYC build's
+		// biggest honest iteration moves total length 0.05%) and the
+		// free-end tip correction, which extends arc by probe-span
+		// metres, not by percent.
+		if next.Len() > cur.Len()*1.02+30 {
+			break
+		}
+		cur = next
 		if moved < 0.3 {
 			break
 		}
