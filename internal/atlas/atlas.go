@@ -81,6 +81,8 @@ type Server struct {
 
 	locMu sync.Mutex
 
+	importMu sync.Mutex // one .metro import at a time — the script rewrites portolan.json
+
 	runMu   sync.Mutex
 	running bool
 	runLog  []string
@@ -368,6 +370,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/style/config", s.styleConfigAPI)
 	mux.HandleFunc("/api/routes", s.routesAPI)
 	mux.HandleFunc("/console/", s.console)
+	mux.HandleFunc("/api/import/metro", s.importMetro)
 	mux.HandleFunc("/api/run", s.run)
 	mux.HandleFunc("/api/run/status", s.runStatus)
 	mux.HandleFunc("/api/score", s.score)
