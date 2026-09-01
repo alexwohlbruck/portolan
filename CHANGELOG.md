@@ -5,6 +5,39 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.1
+
+### Centerline refinement stops folding
+
+Two rendering failures off one game-authored NYC network — a route
+drawing a sine wave through a station, and another drawing 766 km of
+scribble across four blocks — were one instability at two amplitudes.
+Present since at least 0.3.2; that network is simply the first to hold
+the trigger geometry at scale.
+
+A corridor whose two directional tracks sit 5-22 m apart and BREATHE
+crosses `StrandGap` and the kiss guards repeatedly, so the median's
+vote set never settles. The metro median filter's short window passed
+that flap through as a standing wave; where the wave outran the local
+turn radius the polyline folded, and a fold compounds — it is in the
+base line next iteration, densified into more samples whose normals
+flip across it, while `moved` never falls to the convergence break.
+
+- The ±60 m majority window over the offset series now runs for EVERY
+  mode. It was street-only, with metro deferred to an all-modes
+  centering session; the flap is a breathing-separation phenomenon, not
+  a street one.
+- `bundle.Refine` refuses any iteration that grows the line by more
+  than 2% + 30 m. A lateral centering move conserves arc length, so
+  growth is the fold signature: keep the last stable line and stop.
+
+**Consumers who pin pixels**: metro centerlines are smoother through
+sections where the track group's separation varies, and a corridor that
+was previously drawn folded is now drawn as a line. Measured on the
+failing network — turning sum 4,912° → 1,918° at the sine, 26,231° →
+201° at the scribble, and drawn-vs-matched-path alignment from 35.3 m
+mean (175.6 m worst) to 5.8 m mean (8.5 m worst).
+
 ## 0.4.0
 
 ### Yards are first-class regions
