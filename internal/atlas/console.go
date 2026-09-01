@@ -102,15 +102,18 @@ type cityJSON struct {
 	// Members marks a GROUP build — several feeds charted as one graph so
 	// their routes bundle on shared track. The console lists these apart
 	// from ordinary feeds; they are metro areas, not agencies.
-	Members []string    `json:"members,omitempty"`
-	Status  *cityStatus `json:"status,omitempty"`
+	Members []string `json:"members,omitempty"`
+	// Imported marks an uploaded .metro save: the console groups these
+	// apart from the real-world roster and offers to delete them.
+	Imported bool        `json:"imported,omitempty"`
+	Status   *cityStatus `json:"status,omitempty"`
 }
 
 func (s *Server) cityJSONOf(id string, fc FeedCfg, dirs dirIndex) cityJSON {
 	c := cityJSON{
 		ID: id, Name: fc.Name, GTFS: fc.GTFS, Rail: fc.Rail, Streets: fc.Streets,
 		Stops: fc.Stops, Out: fc.Out, Network: fc.Network, BBox: fc.BBox,
-		Members: fc.Members,
+		Members: fc.Members, Imported: fc.Imported,
 	}
 	st := &cityStatus{Rail: statOf(fc.Rail)}
 	for _, p := range strings.Split(fc.GTFS, ",") {

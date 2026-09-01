@@ -64,6 +64,10 @@ export interface Feed {
   /** a GROUP build: the feed keys charted together as one graph, so their
    *  routes bundle on shared track. Present only on metro-area entries. */
   members?: string[]
+  /** an uploaded Subway Builder .metro save, registered by the importer
+   *  rather than curated by hand. The picker files these under their own
+   *  heading and offers to delete them; nothing else may be deleted. */
+  imported?: boolean
   /** server-computed: which inputs actually exist on disk */
   status?: FeedStatus
 }
@@ -199,6 +203,14 @@ export const api = {
       method: 'POST',
       body: file,
     }),
+
+  /** Delete an uploaded save: its portolan.json entry and every file the
+   *  importer wrote for it. Server-side guarded to `imported` feeds. */
+  deleteMetroImport: (feed: string) =>
+    req<{ key: string; removed: string[] }>(
+      `/api/import/metro/delete?feed=${encodeURIComponent(feed)}`,
+      { method: 'POST' },
+    ),
 
   run: (feed: string, cmd: 'chart' | 'sound', scenario?: string) =>
     req<null>(
