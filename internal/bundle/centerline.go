@@ -612,21 +612,30 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// Eberswalder drew 175° reversal knots from exactly this — MATCH
 		// clean, votes stable, geometry folded). Clamp to 0.8R; the
 		// gaussian and slope limit below ramp the clamped pockets.
-		if p.SwitchTolerant {
-			for i := 1; i < n-1; i++ {
-				if !has[i] || filt[i] == 0 {
-					continue
-				}
-				a, b, c := pts[i-1], pts[i], pts[i+1]
-				ab, bc, ca := a.Dist(b), b.Dist(c), c.Dist(a)
-				// 4*area via cross product; R = abc/(4K), huge when collinear
-				k4 := 2 * math.Abs((b.X-a.X)*(c.Y-a.Y)-(b.Y-a.Y)*(c.X-a.X))
-				if k4 < 1e-9 {
-					continue
-				}
-				if lim := 0.8 * ab * bc * ca / k4; math.Abs(filt[i]) > lim {
-					filt[i] = math.Copysign(lim, filt[i])
-				}
+		//
+		// EVERY mode, not just street. The fold is a property of offset
+		// against curvature, not of what runs on the rail: a metro vote
+		// flap that survives the majority window folds exactly the same
+		// way (an authored Chicago Green seeded its scramble at the
+		// first curve its wave crossed), and once one fold exists the
+		// next iteration inherits it as base geometry. This clamp is
+		// also what makes refinement SELF-STABILIZING: a wiggle that
+		// does form gives the line small local radii, which clamp the
+		// following iteration's offsets toward zero instead of feeding
+		// them.
+		for i := 1; i < n-1; i++ {
+			if !has[i] || filt[i] == 0 {
+				continue
+			}
+			a, b, c := pts[i-1], pts[i], pts[i+1]
+			ab, bc, ca := a.Dist(b), b.Dist(c), c.Dist(a)
+			// 4*area via cross product; R = abc/(4K), huge when collinear
+			k4 := 2 * math.Abs((b.X-a.X)*(c.Y-a.Y)-(b.Y-a.Y)*(c.X-a.X))
+			if k4 < 1e-9 {
+				continue
+			}
+			if lim := 0.8 * ab * bc * ca / k4; math.Abs(filt[i]) > lim {
+				filt[i] = math.Copysign(lim, filt[i])
 			}
 		}
 		// Stiffness scales with corridor width. On a wide interlocking
@@ -669,6 +678,15 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 			}
 			out[i] = pts[i].Add(nrm.Scale(o))
 		}
+		// The moved line must not contain fold knots before the finish
+		// smoother sees it: SmoothTurning keeps segment lengths, so a
+		// 150° reversal knot survives smoothing as a curl and is base
+		// geometry for the next iteration. The radius clamp above makes
+		// folds rare; it cannot make them impossible (it bounds the
+		// offset against the BASE line's curvature, and a varying
+		// offset series adds curvature of its own), so enforce the
+		// invariant directly — steel never turns 90° in one 6 m step.
+		out = geo.Unfold(out, 90)
 		// Finish smoothing runs in the TURNING-ANGLE domain
 		// (geo.SmoothTurning): smoothing POSITIONS is curvature-biased
 		// and pulled ~8 m off the SW Loop's R17 corner over five passes,
@@ -688,16 +706,24 @@ func Refine(cl *geo.Line, members []*geo.Line, p Params) *geo.Line {
 		// samples whose normals flip across it, and `moved` never drops
 		// below the convergence break while the vote set is unstable. On
 		// a game-authored NYC (two directional strands breathing 5–22 m
-		// apart under a metro edge, which has no radius clamp) five
+		// apart under a metro edge, which then had no radius clamp) five
 		// iterations per call across six refine calls took the 1's
 		// 12 km corridor to 766 km of scribble between 137 St and
 		// 145 St. Growth IS the fold signature, so gate on it directly:
-		// keep the last stable line and stop. The 2% + 30 m allowance
-		// clears every legitimate call measured (a full NYC build's
-		// biggest honest iteration moves total length 0.05%) and the
-		// free-end tip correction, which extends arc by probe-span
-		// metres, not by percent.
-		if next.Len() > cur.Len()*1.02+30 {
+		// keep the last stable line and stop.
+		//
+		// The allowance is ABSOLUTE, deliberately not a percentage. A
+		// fold is local — a few hundred metres of knot in one spot — so
+		// a percentage scales the leak with edge length: 2% of an
+		// authored Chicago Green's 35.8 km megachain let ~700 m of
+		// scramble through per call and the calls compound. Honest
+		// growth does not scale with length at all: centering moves
+		// sideways (a full NYC build's biggest honest iteration moves
+		// total length 0.05%), and the one legitimate arc-adding move,
+		// the free-end tip correction, is bounded by SpanProbe metres
+		// per end. 2×SpanProbe covers both ends with the measured
+		// honest-growth margin underneath it.
+		if next.Len() > cur.Len()+2*p.SpanProbe {
 			break
 		}
 		cur = next
