@@ -611,10 +611,12 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	// redundant transitions (the Bowling Green fork tine). A deg-2 node
 	// between identical route sets carries zero information: contract.
 	contractChains(net)
+	dbgNet("post-contract", net)
 	// fragments were median-refined separately, so their joints survive
 	// contraction as kinks mid-edge — refine the merged edges as whole
 	// strands once more.
 	refineEdges(net, strandLines, sgrid, strandTram, twinLines, tgrid, twinTram, p, rp, streetRoute)
+	dbgNet("post-refine2", net)
 	// ---- junction nodes at the meet of their corridors' centerlines
 	for ni := range net.Nodes {
 		placeNodeAtMeet(net, ni, p)
@@ -710,6 +712,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 	}
 	trimEdgeEnds(net)
 	compactNodes(net)
+	dbgNet("final", net)
 	return net, nil
 }
 

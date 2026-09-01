@@ -1,7 +1,9 @@
 package bundle
 
 import (
+	"encoding/json"
 	"math"
+	"os"
 	"testing"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
@@ -116,5 +118,52 @@ func TestRefineKissImmunity(t *testing.T) {
 		if p.X > 420 && p.X < 580 && math.Abs(p.Y-4.0) > 1.0 {
 			t.Fatalf("kiss dragged centerline: y=%.2f at x=%.0f", p.Y, p.X)
 		}
+	}
+}
+
+// The fold runaway: refinement must hand back a line, not a longer one.
+//
+// The fixture is a real Refine call captured from a game-authored NYC
+// build — the 1's 12 km corridor edge with its two directional strands,
+// which breathe 5–22 m apart. The median's vote set never settles on
+// that geometry, `moved` never reaches the convergence break, and one
+// unguarded iteration folds the polyline past its local turn radius.
+// Folds compound across iterations and across Split's six refine calls:
+// this exact edge reached 766 km of scribble between 137 St and 145 St,
+// and the same instability at lower amplitude drew the F's sine wave
+// through 2 Av. Arc length is the fold signature — a lateral centering
+// move cannot legitimately grow the line, so refuse any iteration that
+// does.
+func TestRefineNeverGrowsTheLine(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/refine-fold-nyc.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d struct {
+		CL      [][2]float64   `json:"cl"`
+		Members [][][2]float64 `json:"members"`
+		Free    [2]bool        `json:"free"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	toLine := func(ps [][2]float64) *geo.Line {
+		pts := make([]geo.Pt, len(ps))
+		for i, q := range ps {
+			pts[i] = geo.Pt{X: q[0], Y: q[1]}
+		}
+		return geo.NewLine(pts)
+	}
+	cl := toLine(d.CL)
+	var members []*geo.Line
+	for _, m := range d.Members {
+		members = append(members, toLine(m))
+	}
+	p := DefaultParams()
+	p.FreeStart, p.FreeEnd = d.Free[0], d.Free[1]
+	got := Refine(cl, members, p)
+	if lim := cl.Len()*1.05 + 60; got.Len() > lim {
+		t.Fatalf("refinement grew the line: %.0f m in, %.0f m out (limit %.0f)",
+			cl.Len(), got.Len(), lim)
 	}
 }
