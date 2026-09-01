@@ -62,7 +62,8 @@
         40.92
       ],
       "out": "build/nyc-ferry.geojson",
-      "network": "sketches/network-nyc-ferry.json"
+      "network": "sketches/network-nyc-ferry.json",
+      "onestop": "f-dr5r-nycferry"
     },
     "roosevelt-tram": {
       "name": "Roosevelt Island Tram",
@@ -382,7 +383,8 @@
         51.3,
         0.25,
         51.72
-      ]
+      ],
+      "chart_args": "--allow-unmatched"
     },
     "paris": {
       "name": "Paris",
@@ -398,7 +400,8 @@
         48.98
       ],
       "streets": "build/paris-streets.geojson",
-      "onestop": "f-u09-paris~metro~bus~tram"
+      "onestop": "f-u09-paris~metro~bus~tram",
+      "chart_args": "--allow-unmatched"
     },
     "berlin": {
       "name": "Berlin",
@@ -472,7 +475,8 @@
         -79.1,
         43.88
       ],
-      "onestop": "f-dpz8-ttc"
+      "onestop": "f-dpz8-ttc",
+      "chart_args": "--allow-unmatched"
     },
     "vienna": {
       "name": "Vienna",
@@ -10865,7 +10869,8 @@
         -79.073,
         43.96
       ],
-      "onestop": "f-dpz8-ttc~surface"
+      "onestop": "f-dpz8-ttc~surface",
+      "chart_args": "--allow-unmatched"
     },
     "barrietransit": {
       "name": "barrietransit",
