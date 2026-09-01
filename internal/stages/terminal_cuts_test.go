@@ -46,7 +46,7 @@ func TestCutSegmentsAtTerminals(t *testing.T) {
 		{Pattern: short, Line: line(-500, 700)}, // terminates 700 m in
 		{Pattern: tip, Line: line(1950, 2500)},  // tip-touches the far end
 	}
-	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil)
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil, geo.Frame{}, nil)
 	if len(out) != 2 {
 		t.Fatalf("want 2 pieces, got %d: %+v", len(out), out)
 	}
@@ -79,7 +79,7 @@ func TestCutsKeepUnmaskedRoutesIntact(t *testing.T) {
 	seg := Segment{Kind: "steady", Routes: []string{"X"},
 		Acts: []string{"deadbeef"}, Line: line(0, 2000)}
 	paths := []Path{{Pattern: gtfs.Pattern{Route: gtfs.Route{ID: "X"}, ShapeID: "s"}, Line: line(-100, 900)}}
-	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil)
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil, geo.Frame{}, nil)
 	if len(out) != 1 || out[0].Acts[0] != "deadbeef" {
 		t.Fatalf("unmasked route must pass through untouched: %+v", out)
 	}
@@ -113,7 +113,7 @@ func TestCutsSynchronizeAcrossRibbons(t *testing.T) {
 		{Pattern: mShort, Line: line(-500, 700)},
 		{Pattern: jFull, Line: line(-500, 2500)},
 	}
-	out := CutSegmentsAtTerminals([]Segment{jSeg, mSeg}, paths, nil)
+	out := CutSegmentsAtTerminals([]Segment{jSeg, mSeg}, paths, nil, geo.Frame{}, nil)
 	if len(out) != 4 {
 		t.Fatalf("both ribbons must split identically: want 4 pieces, got %d", len(out))
 	}
@@ -129,11 +129,12 @@ func TestCutsSynchronizeAcrossRibbons(t *testing.T) {
 	}
 }
 
-// A tail beyond the terminal stop that NO pattern rides is KEPT but
-// carries zero hours: at real terminals the "overshoot" is often the
-// platforms themselves, so the geometry stays (the terminus clamp caps
-// its tip) while any timestamp renders it dark.
-func TestRelayTailGoesDark(t *testing.T) {
+// A tail beyond the terminal stop at the line's TRUE TIP keeps its
+// terminating pattern's hours: the overshoot is the platforms (Atlantic
+// Terminal) or the relay track its trains stand on, the marker clamp
+// puts the station dot at the drawn tip, and a zero-hour tail there
+// opens a gap between ink and dot under any service-time filter.
+func TestDeadEndTailKeepsTerminatorHours(t *testing.T) {
 	line := func(x0, x1 float64) *geo.Line {
 		var pts []geo.Pt
 		for x := x0; x <= x1; x += 50 {
@@ -152,7 +153,7 @@ func TestRelayTailGoesDark(t *testing.T) {
 	// whole) but the terminal STOP is at 1600 — the last 400 m is tail
 	paths := []Path{{Pattern: pat, Line: line(-500, 2000)}}
 	terms := [][2]geo.Pt{{{X: -500, Y: 0}, {X: 1600, Y: 0}}}
-	out := CutSegmentsAtTerminals([]Segment{seg}, paths, terms)
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, terms, geo.Frame{}, nil)
 	if len(out) != 2 {
 		t.Fatalf("want 2 pieces (tail kept), got %d", len(out))
 	}
@@ -162,8 +163,52 @@ func TestRelayTailGoesDark(t *testing.T) {
 	if out[0].Acts[0] != day.Hex() {
 		t.Fatalf("service piece acts: %s", out[0].Acts[0])
 	}
-	if m, ok := gtfs.ParseMask168(out[1].Acts[0]); !ok || !m.Empty() {
-		t.Fatalf("tail must carry ZERO hours: %s", out[1].Acts[0])
+	if out[1].Acts[0] != day.Hex() {
+		t.Fatalf("dead-end tail must keep its terminator's hours: %s", out[1].Acts[0])
+	}
+}
+
+// ...but a tail that CONTINUES into a junction stays dark outside its
+// patterns' hours — the weekend M's tail past Essex St is the Jamaica
+// line's trackage, not the M's platform. The same cut as above, with
+// the route carrying on beyond the segment end.
+func TestJunctionTailGoesDark(t *testing.T) {
+	line := func(x0, x1 float64) *geo.Line {
+		var pts []geo.Pt
+		for x := x0; x <= x1; x += 50 {
+			pts = append(pts, geo.Pt{X: x, Y: 0})
+		}
+		return geo.NewLine(pts)
+	}
+	pat := gtfs.Pattern{Route: gtfs.Route{ID: "L"}, ShapeID: "s"}
+	var day gtfs.Mask168
+	day = day.Set(0, 9)
+	SetPatternActs(map[string]gtfs.Mask168{"L\x1fs": day})
+	defer SetPatternActs(nil)
+	seg := Segment{Kind: "steady", Routes: []string{"L"},
+		Acts: []string{day.Hex()}, Line: line(0, 2000)}
+	// the route leaves the segment end heading north: a continuation,
+	// so the end is a junction seam, not a terminus
+	var north []geo.Pt
+	for y := 0.0; y <= 600; y += 50 {
+		north = append(north, geo.Pt{X: 2000, Y: y})
+	}
+	cont := Segment{Kind: "steady", Routes: []string{"L"},
+		Acts: []string{day.Hex()}, Line: geo.NewLine(north)}
+	paths := []Path{{Pattern: pat, Line: line(-500, 2000)}}
+	terms := [][2]geo.Pt{{{X: -500, Y: 0}, {X: 1600, Y: 0}}}
+	out := CutSegmentsAtTerminals([]Segment{seg, cont}, paths, terms, geo.Frame{}, nil)
+	var tail *Segment
+	for i := range out {
+		if out[i].Line.Len() < 500 && math.Abs(out[i].Line.Pts[0].Y) < 1 {
+			tail = &out[i]
+		}
+	}
+	if tail == nil {
+		t.Fatalf("tail piece missing: %d pieces", len(out))
+	}
+	if m, ok := gtfs.ParseMask168(tail.Acts[0]); !ok || !m.Empty() {
+		t.Fatalf("junction tail must carry ZERO hours: %s", tail.Acts[0])
 	}
 }
 
@@ -195,7 +240,7 @@ func TestCutsPullBackToTerminalStop(t *testing.T) {
 		{},                                // full: unknown ends (far away anyway)
 		{{X: -500, Y: 0}, {X: 700, Y: 0}}, // short: terminal STOP at x=700
 	}
-	out := CutSegmentsAtTerminals([]Segment{seg}, paths, terms)
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, terms, geo.Frame{}, nil)
 	if len(out) != 2 {
 		t.Fatalf("want 2 pieces, got %d", len(out))
 	}
@@ -252,7 +297,7 @@ func TestCutsKeepHoursNoPatternCanExplain(t *testing.T) {
 		// the rush pattern short-turns 700 m in and does ride the line
 		{Pattern: rush, Line: line(-500, 700, 0)},
 	}
-	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil)
+	out := CutSegmentsAtTerminals([]Segment{seg}, paths, nil, geo.Frame{}, nil)
 	for _, sg := range out {
 		if sg.Acts[0] != always.Hex() {
 			t.Fatalf("a 24/7 railway lost its hours to a rush-only pattern: %s", sg.Acts[0])
@@ -262,7 +307,7 @@ func TestCutsKeepHoursNoPatternCanExplain(t *testing.T) {
 	// and once that pattern is back ON the centerline, refinement runs
 	// again: the far piece keeps only the all-day hours
 	paths[0].Line = line(-500, 2500, 0)
-	out = CutSegmentsAtTerminals([]Segment{seg}, paths, nil)
+	out = CutSegmentsAtTerminals([]Segment{seg}, paths, nil, geo.Frame{}, nil)
 	if len(out) != 2 {
 		t.Fatalf("want 2 pieces once reconstructible, got %d", len(out))
 	}

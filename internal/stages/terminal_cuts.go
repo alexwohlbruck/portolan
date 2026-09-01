@@ -41,6 +41,10 @@ const (
 	tcRideM    = 40.0  // a sample this close to a path counts as ridden
 	tcMarginM  = 120.0 // interior cuts keep clear of the segment ends
 	tcDedupeM  = 60.0  // cuts closer than this collapse into one
+	// dead-end test, same dials as the marker clamp in stations.go
+	tcTouchM = 25.0 // endpoint coincidence at a junction seam
+	tcProbeM = 60.0 // how far along a touching segment to look
+	tcAsideM = 30.0 // within this, a toucher is a sibling ending alongside
 )
 
 // pathCover is one pattern's coverage of one segment: the arc interval
@@ -87,7 +91,20 @@ func explains(acts []string, ri int, explained gtfs.Mask168) bool {
 // trackage (plus the trim margin), so the honest cut is at the stop —
 // the weekend M's drawn tail ends AT Essex St, not 300 m past it in
 // the junction throat. Zero points mean unknown; the path tip stands in.
-func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []Segment {
+//
+// frame and bbox mark window-cut line ends, exactly as in SnapStations:
+// a tail at the window edge is a clip, not a terminus, and never
+// inherits hours.
+func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt,
+	frame geo.Frame, bbox []float64) []Segment {
+	nearClip := func(p geo.Pt) bool { return false }
+	if len(bbox) == 4 {
+		nearClip = func(p geo.Pt) bool {
+			ll := frame.ToLL(p)
+			return ll.Lon < bbox[0]-0.015 || ll.Lon > bbox[2]+0.015 ||
+				ll.Lat < bbox[1]-0.015 || ll.Lat > bbox[3]+0.015
+		}
+	}
 	if patternActs == nil {
 		return segs
 	}
@@ -319,6 +336,66 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 		prepBySeg[prep[i].si] = &prep[i]
 	}
 
+	// Continuation index for the dead-end test: band+route → segments
+	// that could carry the line onward. Transitions count — consecutive
+	// steady pieces do not touch at junctions, the transition bridges
+	// the seam, and without them every junction seam reads as a dead
+	// end (the marker clamp in stations.go learned the same lesson).
+	type bandRoute struct {
+		band  int
+		route string
+	}
+	cont := map[bandRoute][]int{}
+	for i := range segs {
+		s := &segs[i]
+		if s.Line == nil {
+			continue
+		}
+		switch s.Kind {
+		case "steady", "bridge", "transition":
+		default:
+			continue
+		}
+		for _, r := range s.Routes {
+			k := bandRoute{s.BandMin, r}
+			cont[k] = append(cont[k], i)
+		}
+	}
+	// deadEnd reports whether the segment's end at endArc is a true tip
+	// of these routes' network: nothing carrying them touches the end
+	// point and leads away. A sibling ribbon ending alongside is the
+	// bundle's own tip, not a way out.
+	deadEnd := func(si int, endArc float64) bool {
+		s := &segs[si]
+		endPt := s.Line.AtArc(endArc)
+		for _, r := range s.Routes {
+			for _, sj := range cont[bandRoute{s.BandMin, r}] {
+				if sj == si {
+					continue
+				}
+				o := segs[sj].Line
+				tArc := -1.0
+				if o.Pts[0].Dist(endPt) < tcTouchM {
+					tArc = 0
+				} else if o.Pts[len(o.Pts)-1].Dist(endPt) < tcTouchM {
+					tArc = o.Len()
+				}
+				if tArc < 0 {
+					continue
+				}
+				probeArc := math.Min(tcProbeM, o.Len())
+				if tArc > 0 {
+					probeArc = math.Max(0, o.Len()-tcProbeM)
+				}
+				if _, d := s.Line.ProjectArc(o.AtArc(probeArc)); d < tcAsideM {
+					continue // ending alongside, not leading away
+				}
+				return false
+			}
+		}
+		return true
+	}
+
 	for si := range segs {
 		s := &segs[si]
 		if (s.Kind != "steady" && s.Kind != "bridge") || s.Line == nil {
@@ -366,15 +443,60 @@ func CutSegmentsAtTerminals(segs []Segment, paths []Path, terms [][2]geo.Pt) []S
 					}
 				}
 			}
-			// tail pieces with all-zero hours are KEPT (dark under any
-			// timestamp, visible on the union): at terminals like
-			// Atlantic the "overshoot" is the platforms themselves —
-			// the GTFS stop point sits at one end of them — and the
-			// terminus clamp walks the chain to cap the true tip.
 			ns := *s
 			ns.Acts = acts
 			ns.Line = subLine(s.Line, lo, hi)
 			pieces = append(pieces, ns)
+		}
+		// A terminating pattern OCCUPIES its overshoot: the piece past
+		// the last stop is the platforms at Atlantic Terminal, the relay
+		// tail at Rockaway Blvd — trackage its trains stand on whenever
+		// they run. The recompute zeroes that tail, and a zero tail at
+		// the line's true tip opens a gap under any service-time filter,
+		// because the marker clamp has put the station dot at the drawn
+		// tip and the ink now stops short of it. So a zero-hour TAIL at
+		// a DEAD END inherits the hours of the covers ending at its
+		// boundary cut. A tail that continues into a junction keeps its
+		// zeros — the weekend M's tail past Essex St is the Jamaica
+		// line's trackage, not the M's platform — and a window-clip end
+		// is a cut, not a terminus.
+		if pr != nil && len(pieces) > 1 {
+			inherit := func(pi int, outerArc, innerArc float64) {
+				if nearClip(s.Line.AtArc(outerArc)) {
+					return
+				}
+				ns := &pieces[pi]
+				checked, dead := false, false
+				for ri := range s.Routes {
+					if !pr.trusted[ri] || ri >= len(ns.Acts) {
+						continue
+					}
+					if m, ok := gtfs.ParseMask168(ns.Acts[ri]); !ok || !m.Empty() {
+						continue
+					}
+					var inh gtfs.Mask168
+					for _, cv := range pr.covers[ri] {
+						if math.Abs(cv.a-innerArc) <= tcDedupeM+1 ||
+							math.Abs(cv.b-innerArc) <= tcDedupeM+1 {
+							inh = inh.Or(cv.mask)
+						}
+					}
+					if inh.Empty() {
+						continue
+					}
+					if !checked {
+						dead = deadEnd(si, outerArc)
+						checked = true
+					}
+					if !dead {
+						return
+					}
+					ns.Acts[ri] = inh.Hex()
+					anyDiffers = true
+				}
+			}
+			inherit(0, 0, bounds[1])
+			inherit(len(pieces)-1, L, bounds[len(bounds)-2])
 		}
 		if len(pieces) == 1 && !anyDiffers {
 			out = append(out, *s) // recompute matched the original — no-op

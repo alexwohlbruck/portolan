@@ -629,7 +629,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 			terms[i][1] = frame.ToXY(pat.TermB)
 		}
 	}
-	segs = stages.CutSegmentsAtTerminals(segs, in.rail, terms)
+	segs = stages.CutSegmentsAtTerminals(segs, in.rail, terms, frame, o.BBox)
 	logf("terminal cuts: %d segments → %d (%.1fs)", nb, len(segs), time.Since(t0).Seconds())
 	if len(o.BBox) == 4 || len(o.Exclude) > 0 {
 		nb = len(segs)
