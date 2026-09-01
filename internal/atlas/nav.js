@@ -20,7 +20,7 @@
       (active ? '#2c2c34' : 'transparent');
     return a;
   };
-  bar.append(link('/map', 'map'), link('/sketch', 'sketch'));
+  bar.append(link('/map', 'map'), link('/console/sketch', 'sketch'));
 
   const feedSel = document.createElement('select');
   feedSel.style.cssText = 'background:#222;color:#ddd;border:1px solid #333;' +

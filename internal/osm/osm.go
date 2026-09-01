@@ -41,9 +41,20 @@ var aerialValues = map[string]bool{
 // Bridge tracks reach Broadway only through one, and dropping it forced
 // whole patterns onto the wrong track pair and into phantom gap bridges.
 func Load(path string) ([]Way, error) {
+	regular, _, err := LoadWithService(path)
+	return regular, err
+}
+
+// LoadWithService reads the extract ONCE and splits rail ways into the
+// regular-service pool (exactly Load's output — same order, same synthetic
+// f<i> ids) and the service pool: yard/siding/spur trackage that the strand
+// and twin pools must never see but the yard detector and the match graph
+// want. One parse — the extract is tens of MB and every feed pays for a
+// re-read.
+func LoadWithService(path string) (regular, service []Way, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var fc struct {
 		Features []struct {
@@ -56,9 +67,8 @@ func Load(path string) ([]Way, error) {
 		} `json:"features"`
 	}
 	if err := json.Unmarshal(raw, &fc); err != nil {
-		return nil, fmt.Errorf("osm: %s: %w", path, err)
+		return nil, nil, fmt.Errorf("osm: %s: %w", path, err)
 	}
-	var out []Way
 	for i, f := range fc.Features {
 		if f.Geometry.Type != "LineString" {
 			continue
@@ -81,9 +91,6 @@ func Load(path string) ([]Way, error) {
 				continue
 			}
 		}
-		if s := tags["service"]; s != "" && s != "crossover" {
-			continue
-		}
 		var coords [][]float64
 		if err := json.Unmarshal(f.Geometry.Coords, &coords); err != nil {
 			continue
@@ -99,9 +106,14 @@ func Load(path string) ([]Way, error) {
 		if id == "<nil>" || id == "" {
 			id = "f" + strconv.Itoa(i)
 		}
-		out = append(out, Way{ID: id, Coords: lls, Tags: tags})
+		w := Way{ID: id, Coords: lls, Tags: tags}
+		if s := tags["service"]; s != "" && s != "crossover" {
+			service = append(service, w)
+		} else {
+			regular = append(regular, w)
+		}
 	}
-	return out, nil
+	return regular, service, nil
 }
 
 // streetValues: highway classes buses ride. Service ways, footways and

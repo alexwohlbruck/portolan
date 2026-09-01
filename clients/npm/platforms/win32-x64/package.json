@@ -1,0 +1,23 @@
+{
+  "name": "@alexwohlbruck/portolan-win32-x64",
+  "version": "0.3.1",
+  "description": "portolan engine binary for win32 x64.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexwohlbruck/portolan.git",
+    "directory": "clients/npm"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "style",
+    "README.md"
+  ],
+  "preferUnplugged": true
+}

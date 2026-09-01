@@ -24,7 +24,7 @@ import (
 // a GAP state bridges with shape geometry (OSM is incomplete — LESSONS #8).
 
 type matchParams struct {
-	SampleDs   float64 // shape sample spacing
+	SampleDs float64 // shape sample spacing
 	// MaxSamples caps samples per pattern by widening the spacing on long
 	// shapes: memory for the emission and DP tables is linear in samples,
 	// and at 20 m a 3,900 km intercity pattern is 195k samples — gigabytes
@@ -45,6 +45,7 @@ type matchParams struct {
 	GapFree    float64 // GAP exists only where no usable track is this close
 	GapSwitch  float64 // cost to enter/leave GAP
 	MaxWalk    float64 // cap on intermediate walk length
+	YardEmit   float64 // committing a sample onto tagged yard steel
 	// Distrust: the off-network arc fraction past which a shape stops
 	// being the matcher's ground truth. Gap bridging (LESSONS #8) rests on
 	// the premise that the shape is honest and OSM is locally incomplete;
@@ -65,12 +66,12 @@ func defaultMatchParams() matchParams {
 		SampleDs:   20,
 		MaxSamples: int(dial("match_max_samples", 20_000)),
 		Reach:      dial("match_reach", 90),
-		MaxCand:  int(dial("match_cands", 14)),
-		WHead:    dial("match_w_head", 35),
-		WTurn:    dial("match_w_turn", 0.8),
-		WWalk:    0.3,
-		WHop:     2.0,
-		UTurnPen: 150,
+		MaxCand:    int(dial("match_cands", 14)),
+		WHead:      dial("match_w_head", 35),
+		WTurn:      dial("match_w_turn", 0.8),
+		WWalk:      0.3,
+		WHop:       2.0,
+		UTurnPen:   150,
 		// affinity-scaled convergence (owner's rule 1.1): a route's own
 		// directions MUST land on one track even across a wide 4-track
 		// viaduct (25), same-color services bundle at ~18, and unrelated
@@ -87,7 +88,14 @@ func defaultMatchParams() matchParams {
 		GapFree:   dial("match_gap_free", 45),
 		GapSwitch: 40,
 		MaxWalk:   dial("match_max_walk", 350),
-		Distrust:  dial("match_shape_distrust", 0.33),
+		// YardEmit: committing a SAMPLE onto tagged yard steel. Outside
+		// the confidence weight like classPen — a hard fact about the
+		// steel. It dominates the adjacent-track advantage (w·Δd + bonus
+		// ≤ ~45), so a sample beside both yard and running steel always
+		// commits to the running track; where yard steel is the ONLY
+		// steel it still beats GapCost=75 per sample and the DP rides it.
+		YardEmit: dial("match_yard_emit", 60),
+		Distrust: dial("match_shape_distrust", 0.33),
 	}
 }
 
@@ -190,6 +198,14 @@ const classPen = 100.0
 
 const crossoverPen = 120.0
 const levelJumpPen = 300.0
+
+// servicePen: riding TAGGED yard steel as a walk intermediate. Above
+// crossoverPen (a crossover is normal switching; a yard walk is an
+// exceptional movement) and far below a gap, so genuine through-running
+// on yard track (Suburbano's terminal throat) still beats GAP while no
+// mainline detour under ~700 m per yard piece ever loses to a yard
+// shortcut.
+const servicePen = 220.0
 
 // Match path-matches each GTFS pattern onto the mode-appropriate OSM layer
 // (rails for trains, roads for buses, sea routes for ferries). Owner's
@@ -464,7 +480,24 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 	})
 	sort.Slice(near, func(a, b int) bool { return near[a].d < near[b].d })
 	if len(near) > maxCand {
-		near = near[:maxCand]
+		// Yard steel must not saturate the candidate slots: at a terminal
+		// ladder dozens of yard pieces sit nearer the shape than the
+		// running track — the MaxCand saturation failure again, in steel.
+		// Stable partition of the already-sorted slice: running track
+		// first, yard steel after, each half in distance order — so yard
+		// steel stays representable wherever it is the ONLY steel.
+		part := make([]pc, 0, len(near))
+		for _, c := range near {
+			if !m.g.isYard[2*c.piece] {
+				part = append(part, c)
+			}
+		}
+		for _, c := range near {
+			if m.g.isYard[2*c.piece] {
+				part = append(part, c)
+			}
+		}
+		near = part[:maxCand]
 	}
 	hasCompat := false
 	if wayRailClass != nil {
@@ -509,6 +542,9 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 			pen := 0.0
 			if !compat {
 				pen = classPen
+			}
+			if m.g.isYard[2*c.piece] {
+				pen += m.p.YardEmit
 			}
 			// the class penalty stays OUTSIDE the confidence weight: an
 			// incompatible rail class is a hard fact about the steel, not a
@@ -781,6 +817,9 @@ func (m *matcher) walk(u, v int, maxWalk float64) walkRes {
 				c += el*p.WWalk + p.WHop
 				if g.isXover[nx] {
 					c += crossoverPen
+				}
+				if g.isYard[nx] {
+					c += servicePen
 				}
 				if g.lvl[lab.edge]*g.lvl[nx] < 0 {
 					c += levelJumpPen

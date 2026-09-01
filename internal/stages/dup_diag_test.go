@@ -17,7 +17,7 @@ func TestDupDiag(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame := frameOf(ways)
-	net, err := sketch.LoadNetwork("../../sketches/network-5.json")
+	net, err := sketch.LoadNetwork("../../sketches/network-mta-subway.json")
 	if err != nil {
 		t.Skip(err)
 	}
@@ -57,10 +57,7 @@ func TestDupDiag(t *testing.T) {
 			pts[i] = frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]})
 		}
 		l := geo.NewLine(pts)
-		lbl := ""
-		for _, r := range dl.Routes {
-			lbl += r.Label + "+"
-		}
+		lbl := dl.Label
 		printed := 0
 		nDup, nTot := 0, 0
 		for _, q := range l.Resample(5) {

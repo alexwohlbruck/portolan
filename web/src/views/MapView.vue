@@ -163,7 +163,7 @@ const KINDS: [string, any][] = [
 // creation: the tile-mode time filter combines with it via ['all', …]
 // and detaches by restoring exactly this, so recombination is lossless
 const structuralFilter = new Map<string, any>()
-const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false })
+const debug = ref({ paths: false, trackcenter: false, nodes: false, rail: false, yards: false })
 
 // The layer picker starts folded to a single button: expanded it covers a
 // third of a phone screen, and the toggles are an occasional tool, not
@@ -1288,6 +1288,48 @@ function addLayers() {
     },
     layout: { visibility: 'none' },
   })
+  // yard oracle overlay (<out>.yards.geojson): region outlines, the
+  // yard's own tracks and its entrance points — all colored per region
+  // so adjacent complexes read apart
+  const regionColor = ['match', ['%', ['get', 'region'], 6],
+    0, '#e6550d', 1, '#3182bd', 2, '#31a354', 3, '#756bb1', 4, '#d6616b', 5, '#8c6d31',
+    '#888888'] as any
+  map.addLayer({
+    id: 'dbg-yards', type: 'fill', source: 'yards',
+    filter: ['==', ['get', 'kind'], 'yard'],
+    paint: { 'fill-color': regionColor, 'fill-opacity': 0.14 },
+    layout: { visibility: 'none' },
+  })
+  map.addLayer({
+    id: 'dbg-yards-outline', type: 'line', source: 'yards',
+    filter: ['==', ['get', 'kind'], 'yard'],
+    paint: { 'line-color': regionColor, 'line-width': 1.5, 'line-opacity': 0.8 },
+    layout: { visibility: 'none' },
+  })
+  map.addLayer({
+    id: 'dbg-yards-track', type: 'line', source: 'yards',
+    filter: ['==', ['get', 'kind'], 'yard_track'],
+    paint: { 'line-color': '#555', 'line-width': 0.8, 'line-opacity': 0.55 },
+    layout: { visibility: 'none' },
+  })
+  map.addLayer({
+    id: 'dbg-yards-center', type: 'line', source: 'yards',
+    filter: ['==', ['get', 'kind'], 'yard_centerline'],
+    layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+    paint: { 'line-color': regionColor, 'line-width': 2.5, 'line-opacity': 0.95 },
+  })
+  map.addLayer({
+    id: 'dbg-yards-ent', type: 'circle', source: 'yards',
+    filter: ['==', ['get', 'kind'], 'yard_entrance'],
+    paint: {
+      'circle-radius': 4.5, 'circle-color': regionColor,
+      // a terminal bundle end reads as a hollow dot: it is where the
+      // yard stops, not where it connects to the world
+      'circle-stroke-color': ['case', ['get', 'terminal'], '#111', '#fff'],
+      'circle-stroke-width': 1.5,
+    },
+    layout: { visibility: 'none' },
+  })
 }
 
 // ── tile mode (docs: `portolan tiles`) ─────────────────────────────────
@@ -1788,8 +1830,11 @@ function hydrateSymbols() {
 watch(debug, (d) => {
   if (!map) return
   for (const [k, on] of Object.entries(d)) {
-    const id = `dbg-${k}`
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none')
+    // a toggle owns every dbg-<k>* layer (yards has fill/outline/spine/…)
+    for (const suffix of ['', '-outline', '-track', '-center', '-ent']) {
+      const id = `dbg-${k}${suffix}`
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none')
+    }
   }
 }, { deep: true })
 
@@ -1826,7 +1871,7 @@ async function reload() {
     // debug overlays are per-feed artifacts. In global they empty rather
     // than fetch — no /api/*.geojson?feed=global may ever fire.
     if (isGlobal.value) {
-      for (const name of ['rail', 'paths', 'trackcenter', 'nodes']) {
+      for (const name of ['rail', 'paths', 'trackcenter', 'nodes', 'yards']) {
         map.getSource(name)?.setData({ type: 'FeatureCollection', features: [] })
       }
     } else {
@@ -1835,6 +1880,7 @@ async function reload() {
         ['paths', `/api/paths.geojson?feed=${feed.value}`],
         ['trackcenter', `/api/trackcenter.geojson?feed=${feed.value}`],
         ['nodes', `/api/nodes.geojson?feed=${feed.value}`],
+        ['yards', `/api/yards.geojson?feed=${feed.value}`],
       ] as const) {
         map.getSource(name)?.setData(url)
       }
@@ -1954,7 +2000,7 @@ onMounted(async () => {
     for (const b of BANDS) {
       map.addSource(`build-${b.key}`, { type: 'geojson', data: empty, lineMetrics: true })
     }
-    for (const n of ['rail', 'paths', 'trackcenter', 'nodes', 'stations']) {
+    for (const n of ['rail', 'paths', 'trackcenter', 'nodes', 'stations', 'yards']) {
       map.addSource(n, { type: 'geojson', data: empty })
     }
     styleSet.value = feed.value ? await api.style(feed.value).catch(() => null) : null

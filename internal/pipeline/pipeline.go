@@ -25,6 +25,7 @@ import (
 	"github.com/alexwohlbruck/portolan/internal/sketch"
 	"github.com/alexwohlbruck/portolan/internal/stages"
 	"github.com/alexwohlbruck/portolan/internal/style"
+	"github.com/alexwohlbruck/portolan/internal/yards"
 )
 
 // Dials — tuning parameters surfaced in the atlas UI. Stage authors: add
@@ -55,6 +56,16 @@ type Dials struct {
 
 	OrderSep float64 `json:"order_sep"`
 
+	// Yard detection (internal/yards). yard_par_reach ≥ 32 pushes the
+	// cross-section queries off their capped fast path — correct, slow.
+	YardParReach  float64 `json:"yard_par_reach"`
+	YardParNear   float64 `json:"yard_par_near"`
+	YardHot       float64 `json:"yard_hot"`
+	YardMinTagM   float64 `json:"yard_min_tag_m"`
+	YardMinMassM  float64 `json:"yard_min_mass_m"`
+	YardPeakUntag float64 `json:"yard_peak_untagged"`
+	YardPadM      float64 `json:"yard_pad_m"`
+
 	FairCutBase float64 `json:"fair_cut_base"`
 	FairGapPx   float64 `json:"fair_gap_px"`
 	FairMaxTurn float64 `json:"fair_max_turn"`
@@ -70,10 +81,27 @@ func DefaultDials() Dials {
 		SplitMinRefine: 40, SplitMaxRefine: 250_000, SplitMateMax: 12, SplitMateRun: 60,
 		SplitMergeDist: 12, SplitMergeRun: 60, SplitCoMergeDist: 4,
 		OrderSep: 8,
+		// Yard dials: calibrated on the NYC fixture — every known yard
+		// detected at hot 5 while the 4-track Queens Blvd express corridor
+		// peaks at 3 (LESSONS: >4 strands are yards).
+		YardParReach: 30, YardParNear: 12, YardHot: 5,
+		YardMinTagM: 500, YardMinMassM: 2000, YardPeakUntag: 8,
+		// YardPadM: the outline stands this far off the outermost track —
+		// the owner's "a couple of metres of padding". TestNYCYards holds
+		// the ring's p50 distance to its own steel to it.
+		YardPadM: 6,
 		// FairGapPx 4: slot pitch. The ribbon line is 3 px at z15 (metro
 		// weight 1.0), so pitch 4 draws a 1 px visible gap between mates
 		// — the owner's Apple-tight bundle read (was 6 = a 3 px gap).
 		FairCutBase: 60, FairGapPx: 4, FairMaxTurn: 30, FairFilletR: 30,
+	}
+}
+
+func (d Dials) yardParams() yards.Params {
+	return yards.Params{
+		ParReach: d.YardParReach, ParNear: d.YardParNear, Hot: d.YardHot,
+		MinTagM: d.YardMinTagM, MinMassM: d.YardMinMassM, PeakUntag: d.YardPeakUntag,
+		PadM:    d.YardPadM,
 	}
 }
 
@@ -223,13 +251,16 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	}
 	t0 := time.Now()
 
-	ways, err := osm.Load(o.Rail)
+	ways, svcWays, err := osm.LoadWithService(o.Rail)
 	if err != nil {
 		return err
 	}
 	if len(ways) == 0 {
 		return fmt.Errorf("no regular-service rail ways in %s", o.Rail)
 	}
+	// The projection center comes from the REGULAR pool only — service
+	// ways joining FrameOf would shift every emitted coordinate in every
+	// existing build by rounding.
 	frame := FrameOf(ways)
 	xover := map[string]bool{}
 	for _, w := range ways {
@@ -264,6 +295,38 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		streetTracks = toTracks(sways)
 		ways = append(ways, sways...)
 	}
+	// Yard regions: service steel plus the regular pool feed the detector;
+	// neither the strand pool nor the frame ever see service ways. The
+	// service tracks DO join the match graph below (under penalty) so
+	// genuine through-running on yard steel can ride — and therefore the
+	// class and level maps must know them too, or classCompat sees ""
+	// (always compatible) and a yard tunnel reads as surface.
+	var yix *yards.Index
+	var svcTracks []bundle.Track
+	if style.Active().Yards {
+		ty := time.Now()
+		svcTracks = toTracks(svcWays)
+		yt := make([]yards.Track, 0, len(tracks)+len(svcTracks))
+		for i := range tracks {
+			yt = append(yt, yards.Track{ID: tracks[i].ID, Line: tracks[i].Line,
+				Service: ways[i].Tags["service"], Level: tracks[i].Level})
+		}
+		for i, st := range svcTracks {
+			yt = append(yt, yards.Track{ID: st.ID, Line: st.Line,
+				Service: svcWays[i].Tags["service"], Level: st.Level})
+		}
+		yix = yards.Build(yt, d.yardParams())
+		steel := 0.0
+		for _, r := range yix.Regions() {
+			steel += r.TrackLen
+		}
+		logf("chart: %d yard regions, %.0f km yard steel (%.1fs)",
+			len(yix.Regions()), steel/1000, time.Since(ty).Seconds())
+	}
+	stages.SetYards(yix)
+	if err := writeYards(o.Out+".yards.geojson", yix, frame); err != nil {
+		return err
+	}
 	lvls := map[string]int{}
 	for _, t := range tracks {
 		if t.Level != 0 {
@@ -275,9 +338,17 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 			lvls[t.ID] = t.Level
 		}
 	}
+	for _, t := range svcTracks {
+		if t.Level != 0 {
+			lvls[t.ID] = t.Level
+		}
+	}
 	stages.SetWayLevels(lvls)
 	cls := map[string]string{}
 	for _, w := range ways {
+		cls[w.ID] = w.Tags["railway"]
+	}
+	for _, w := range svcWays {
 		cls[w.ID] = w.Tags["railway"]
 	}
 	stages.SetWayRailClass(cls)
@@ -399,9 +470,12 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	mode.SetLineAgencies(la)
 	stages.SetAgencyNames(feed.Agencies)
 	mode.SetAgencyNames(feed.Agencies)
+	// Rail first, then streets, then service steel: appending keeps every
+	// rail piece id identical to a build without the extra layers.
 	matchTracks := tracks
-	if len(streetTracks) > 0 {
-		matchTracks = append(append([]bundle.Track{}, tracks...), streetTracks...)
+	if len(streetTracks) > 0 || len(svcTracks) > 0 {
+		matchTracks = append(append(append([]bundle.Track{},
+			tracks...), streetTracks...), svcTracks...)
 	}
 	paths, err := stages.Match(rail, matchTracks, frame)
 	if err != nil {
@@ -678,14 +752,108 @@ func Sound(o SoundOpts) (*sketch.Result, error) {
 	if len(net.Lines) == 0 {
 		return nil, fmt.Errorf("network is empty")
 	}
-	frame := geo.NewFrame(geo.LL{
-		Lon: net.Lines[0].Coords[0][0], Lat: net.Lines[0].Coords[0][1],
-	})
+	frame, _ := net.Frame()
 	feats, err := LoadBuildFeatures(o.Build, frame)
 	if err != nil {
 		return nil, err
 	}
-	return sketch.Score(net, feats, frame), nil
+	res := sketch.Score(net, feats, frame)
+	// Drawn yards grade the yard detector against the same document, out
+	// of the sidecar the build already writes. A drawing with no yards
+	// costs nothing and reports nothing.
+	if len(net.Yards) > 0 {
+		det, err := LoadYardFeatures(o.Build+".yards.geojson", frame)
+		if err != nil {
+			return nil, fmt.Errorf("yards drawn but no sidecar: %w", err)
+		}
+		if res.Yards = sketch.ScoreYards(net, det, frame); res.Yards != nil {
+			res.Failures += res.Yards.Failures
+		}
+	}
+	return res, nil
+}
+
+// LoadYardFeatures reads a build's .yards.geojson sidecar back into the
+// scorer's shape: one DetectedYard per region, its outline, its entrance
+// points and its centerlines (when the detector emits any).
+func LoadYardFeatures(path string, frame geo.Frame) ([]sketch.DetectedYard, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var fc struct {
+		Features []struct {
+			Props map[string]any  `json:"properties"`
+			Geom  json.RawMessage `json:"geometry"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		return nil, err
+	}
+	byRegion := map[int]*sketch.DetectedYard{}
+	order := []int{}
+	get := func(id int) *sketch.DetectedYard {
+		if d, ok := byRegion[id]; ok {
+			return d
+		}
+		d := &sketch.DetectedYard{ID: fmt.Sprint(id)}
+		byRegion[id] = d
+		order = append(order, id)
+		return d
+	}
+	for _, f := range fc.Features {
+		rid := 0
+		if v, ok := f.Props["region"].(float64); ok {
+			rid = int(v)
+		}
+		var g struct {
+			Type   string          `json:"type"`
+			Coords json.RawMessage `json:"coordinates"`
+		}
+		if err := json.Unmarshal(f.Geom, &g); err != nil {
+			continue
+		}
+		switch f.Props["kind"] {
+		case "yard":
+			var rings [][][2]float64
+			if json.Unmarshal(g.Coords, &rings) != nil || len(rings) == 0 {
+				continue
+			}
+			ring := rings[0]
+			// the sidecar repeats the first vertex; the scorer's rings do not
+			if n := len(ring); n > 1 && ring[0] == ring[n-1] {
+				ring = ring[:n-1]
+			}
+			d := get(rid)
+			d.Outline = d.Outline[:0]
+			for _, c := range ring {
+				d.Outline = append(d.Outline, frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]}))
+			}
+		case "yard_entrance":
+			var c [2]float64
+			if json.Unmarshal(g.Coords, &c) != nil {
+				continue
+			}
+			d := get(rid)
+			d.Entrances = append(d.Entrances, frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]}))
+		case "yard_centerline":
+			var cs [][2]float64
+			if json.Unmarshal(g.Coords, &cs) != nil || len(cs) < 2 {
+				continue
+			}
+			pts := make([]geo.Pt, len(cs))
+			for i, c := range cs {
+				pts[i] = frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]})
+			}
+			d := get(rid)
+			d.Centerlines = append(d.Centerlines, geo.NewLine(pts))
+		}
+	}
+	out := make([]sketch.DetectedYard, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byRegion[id])
+	}
+	return out, nil
 }
 
 func FrameOf(ways []osm.Way) geo.Frame {
@@ -1008,12 +1176,11 @@ func LoadBuildFeatures(path string, frame geo.Frame) ([]sketch.BuildFeature, err
 		for i, c := range f.Geometry.Coords {
 			pts[i] = frame.ToXY(geo.LL{Lon: c[0], Lat: c[1]})
 		}
-		color, _ := f.Props["color"].(string)
 		var rts []string
 		if rs, _ := f.Props["routes"].(string); rs != "" {
 			rts = strings.Split(rs, ",")
 		}
-		out = append(out, sketch.BuildFeature{Color: color, Routes: rts, Line: geo.NewLine(pts)})
+		out = append(out, sketch.BuildFeature{Routes: rts, Line: geo.NewLine(pts)})
 	}
 	return out, nil
 }
