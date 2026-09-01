@@ -90,6 +90,15 @@ export interface ScenariosResp {
   grid?: string[][]
 }
 
+/** /api/import/metro result — the feed the save became. */
+export interface MetroImport {
+  key: string
+  name: string
+  city?: string | null
+  tables: number
+  features: number
+}
+
 export interface RunStatus {
   running: boolean
   done: boolean
@@ -181,6 +190,15 @@ export const api = {
     }
     return (await r.json()) as TileJSON
   },
+
+  /** POST a Subway Builder .metro save; the server converts it via the
+   *  game repo's importer and registers the feed. Slow (seconds) — the
+   *  script boots tsx and runs the game's exportFeed. */
+  importMetro: (file: File) =>
+    req<MetroImport>(`/api/import/metro?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      body: file,
+    }),
 
   run: (feed: string, cmd: 'chart' | 'sound', scenario?: string) =>
     req<null>(
