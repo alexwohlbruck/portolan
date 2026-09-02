@@ -20,6 +20,13 @@ import (
 // under the El) into one ribbon group. Brief kisses (< mergeRun) remain
 // unrepresentable, by construction.
 
+// Every dialled value below is written THREE times — here, in the dial()
+// call that opens bundleParallelEdges, and in pipeline.DefaultDials. The
+// pipeline always installs DefaultDials before a run, and dial() prefers
+// any non-zero tuned value, so DEFAULTDIALS IS THE ONE THAT DECIDES and
+// the two literals here are documentation. Changing only these is a
+// silent no-op: mergeDist was moved 12 → 18 → 16 that way and every
+// build stayed byte-identical. Change all three together.
 var (
 	mergeDist = 16.0 // kiss-rule mate range (dial: split_merge_dist)
 	mergeRun  = 60.0 // sustained-parallelism minimum (dial: split_merge_run)
