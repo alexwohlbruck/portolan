@@ -20,8 +20,15 @@ import (
 // under the El) into one ribbon group. Brief kisses (< mergeRun) remain
 // unrepresentable, by construction.
 
+// Every dialled value below is written THREE times — here, in the dial()
+// call that opens bundleParallelEdges, and in pipeline.DefaultDials. The
+// pipeline always installs DefaultDials before a run, and dial() prefers
+// any non-zero tuned value, so DEFAULTDIALS IS THE ONE THAT DECIDES and
+// the two literals here are documentation. Changing only these is a
+// silent no-op: mergeDist was moved 12 → 18 → 16 that way and every
+// build stayed byte-identical. Change all three together.
 var (
-	mergeDist = 12.0 // kiss-rule mate range (dial: split_merge_dist)
+	mergeDist = 16.0 // kiss-rule mate range (dial: split_merge_dist)
 	mergeRun  = 60.0 // sustained-parallelism minimum (dial: split_merge_run)
 	// Cross-SERVICE corridors merge only when they have already refined
 	// onto the same group median — sustained co-location this tight is
@@ -51,7 +58,7 @@ const (
 var looseTwins = false
 
 func bundleParallelEdges(net *Network) int {
-	mergeDist = dial("split_merge_dist", 12)
+	mergeDist = dial("split_merge_dist", 16)
 	mergeRun = dial("split_merge_run", 60)
 	coMergeDist = dial("split_co_merge_dist", 4)
 	merges := 0

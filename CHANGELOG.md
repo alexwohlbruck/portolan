@@ -5,6 +5,54 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.3
+
+### The bundling mate range now reaches the bundler
+
+`split_merge_dist` — the kiss-rule range within which two sustained-parallel
+edges are read as one visual corridor — is 16 m, up from 12 m.
+
+It was supposed to move a release ago and did not. The value is written in
+three places: a package var in `bundle_edges.go`, the `dial()` default beside
+it, and `pipeline.DefaultDials`. The pipeline installs `DefaultDials` before
+every run and `dial()` prefers any non-zero tuned value, so `DefaultDials` is
+the only one that decides — and it still said 12 while the other two were
+moved to 18 and then to 16. Both intermediate values were inert: builds made
+with them are byte-identical to 0.4.2, every output file, on both benchmark
+networks. All three literals now agree, with a comment at the var block
+naming which one wins.
+
+**Consumers who pin pixels**: geometry moves on every network, because a
+wider mate range bundles track pairs that were previously drawn as separate
+ribbons. Measured on NYC subway — 1,413 drawn features to 1,443 (+2.1%) with
+total ink flat at 2,065 km (+0.03%), so this is corridors being restacked
+rather than track appearing or vanishing. It also takes a gate off the
+`sound` score: the sharpest on-corridor turn drops from 51 degrees to 39,
+clearing the jaggedness gate, while alignment to the reference network is
+unchanged at sub-metre scale (forward mean 2.4 m to 2.5 m, p90 4.7 m to
+4.8 m).
+
+The effect is concentrated where tracks genuinely run 12-16 m apart, which
+is why this is a patch rather than a redraw: Chicago CTA over the same
+range is 1,060 features before and after, with ink flat to five significant
+figures at 2,184 km. Expect movement on dense multi-track trunks and almost
+none elsewhere.
+
+### Uploaded saves are their own group in the atlas
+
+Three things the workbench's `.metro` upload was missing once there was more
+than one of them in the feed picker: uploaded saves now sort under their own
+heading rather than among the 1,499 real agencies, they are named from the
+uploaded filename rather than the save header (every Subway Builder save is
+called "Current Game", so two uploads listed as two identical rows and the
+second silently overwrote the first), and they can be deleted —
+`POST /api/import/metro/delete?feed=<key>` removes the config entry and every
+file the importer wrote. Deletion is guarded server-side on an explicit
+`imported` marker, not the key prefix, so no curated feed can be removed.
+
+The workbench does not ship in the release archives, so this reaches you only
+from a repo checkout.
+
 ## 0.4.1
 
 ### Centerline refinement stops folding

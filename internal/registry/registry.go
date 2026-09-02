@@ -45,6 +45,13 @@ type FeedCfg struct {
 	// Onestop: the feed's Transitland onestop id — how sync asks whether
 	// the feed changed upstream. Empty means sync skips the feed.
 	Onestop string `json:"onestop,omitempty"`
+	// Imported marks a feed the console MADE, not one a human curated:
+	// a Subway Builder .metro save uploaded through /api/import/metro.
+	// Its inputs live under data/sb/<key>/ and were written by the
+	// importer, so the console may list it apart from the real-world
+	// roster and may DELETE it — neither of which is safe to infer from
+	// a key prefix, which a hand-written entry could also carry.
+	Imported bool `json:"imported,omitempty"`
 }
 
 // PrimaryGTFS: the first feed of the comma list — scenarios and mtime

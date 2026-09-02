@@ -79,7 +79,7 @@ func DefaultDials() Dials {
 		MatchBonusRoute: 25, MatchBonusColor: 18, MatchBonusOther: 12,
 		MatchGapCost: 75, MatchGapFree: 45,
 		SplitMinRefine: 40, SplitMaxRefine: 250_000, SplitMateMax: 12, SplitMateRun: 60,
-		SplitMergeDist: 12, SplitMergeRun: 60, SplitCoMergeDist: 4,
+		SplitMergeDist: 16, SplitMergeRun: 60, SplitCoMergeDist: 4,
 		OrderSep: 8,
 		// Yard dials: calibrated on the NYC fixture — every known yard
 		// detected at hot 5 while the 4-track Queens Blvd express corridor
