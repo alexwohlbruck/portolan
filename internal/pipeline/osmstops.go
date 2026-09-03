@@ -47,7 +47,31 @@ type OSMStop struct {
 	Name    string
 	LL      geo.LL
 	Classes map[string]bool // portolan class names this stop can serve
+	// Station: this object is the station as a PLACE
+	// (public_transport=station, railway=station, amenity=ferry_terminal),
+	// rather than a stop_position — a point on the track where a train
+	// halts. Both carry the station's name and sit metres apart, so
+	// distance cannot tell them apart, but only one of them is somewhere a
+	// rider can be sent.
+	Station bool
 	toks    []string
+}
+
+// osmStopIsStation reports whether an OSM object is the station itself
+// rather than a stopping point on the rails inside it.
+func osmStopIsStation(p map[string]any) bool {
+	s := func(k string) string {
+		v, _ := p[k].(string)
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+	switch s("public_transport") {
+	case "station":
+		return true
+	case "stop_position", "platform":
+		return false
+	}
+	return s("railway") == "station" || s("railway") == "halt" ||
+		s("amenity") == "ferry_terminal" || s("aerialway") == "station"
 }
 
 // osmStopClasses reads the class of an OSM stop from its tags. A stop can
@@ -152,6 +176,7 @@ func LoadOSMStops(path string) ([]OSMStop, error) {
 			ID: f.ID, Name: name,
 			LL:      geo.LL{Lon: f.Geometry.Coordinates[0], Lat: f.Geometry.Coordinates[1]},
 			Classes: osmStopClasses(f.Props),
+			Station: osmStopIsStation(f.Props),
 			toks:    nameTokens(name),
 		})
 	}
@@ -380,6 +405,11 @@ func needSim(d float64) float64 {
 	return t * osmSimAtRange
 }
 
+// osmStationBonus outranks roughly 20 m of distance: enough that a station
+// node beats a stop_position across the platform, not enough to reach past
+// a genuinely nearer station.
+const osmStationBonus = 0.13
+
 // MatchOSMStops pairs stations with OSM stops and returns the accepted
 // matches, best-first. It does not mutate the stations — the caller
 // decides whether a match renames anything (ApplyOSMStopMatches).
@@ -445,6 +475,18 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 			// proximity dominates the ranking too; the name only orders
 			// candidates that are similarly close
 			score := 0.65*(1-d/osmMatchRadiusM) + 0.35*sim
+			// ...but a station outranks a stopping point that is merely
+			// nearer. Both carry the station's name and sit metres apart, so
+			// without this the winner is whichever the feed's coordinate
+			// happened to land beside: Clark St matched its station node and
+			// Jay St–MetroTech matched one of its six stop_positions, and the
+			// panel called them different kinds of place. Only the station is
+			// somewhere a rider can be sent. A bonus rather than a filter —
+			// plenty of stations are mapped with no station node at all, and
+			// a stop_position is a better answer there than none.
+			if stops[oi].Station {
+				score += osmStationBonus
+			}
 			cands = append(cands, cand{si, oi, score, d, sim})
 		}
 	}
