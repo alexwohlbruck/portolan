@@ -279,6 +279,9 @@ func Build(o Opts) (Stats, error) {
 		return st, err
 	}
 
+	if err := writeStopIndex(o, points); err != nil {
+		return st, err
+	}
 	if err := writeRouteIndex(o, points); err != nil {
 		return st, err
 	}
@@ -840,6 +843,59 @@ func writeRouteIndex(o Opts, points []point) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(o.Out, "routes.json"), raw, 0o644)
+}
+
+// writeStopIndex emits <out>/stops.json: every GTFS stop the pyramid draws,
+// keyed by its "<feed-onestop>:<stop_id>" pair, naming the OSM object the
+// station it belongs to was matched to.
+//
+// The match itself already happens — osmstops.go pairs each drawn station
+// with the OSM object that is really the same place, one-to-one on name,
+// mode class and distance, so a consumer "can look the station up by its
+// OSM id" (its words). Until now that answer only existed inside the tiles,
+// as a property on a symbol, reachable only by fetching the tile covering
+// the point and reading the feature back.
+//
+// That is no use to a panel holding a feed id. Parchment had to search for
+// the station by name instead, and a name cannot tell three stations called
+// "Chambers St" apart: from the J/Z platform it opened the A/C/E one 428m
+// away. Proximity cannot either — the nearest mapped node to that platform
+// is Brooklyn Bridge–City Hall, 33m through the passageway. Only this join
+// is exact, so this publishes it beside routes.json, which exists for the
+// same reason.
+//
+// A station with no confident OSM match contributes nothing, which keeps
+// "not matched" distinguishable from "matched to nothing".
+func writeStopIndex(o Opts, points []point) error {
+	stops := map[string]string{}
+	for _, p := range points {
+		switch str(p.props["ftype"]) {
+		case "station", "marker":
+			osm := str(p.props["osm"])
+			if osm == "" {
+				continue
+			}
+			for _, pair := range strings.Split(str(p.props["gtfs_ids"]), ";") {
+				pair = strings.TrimSpace(pair)
+				// First writer wins: a station and its markers carry the same
+				// pairs, and they agree.
+				if pair != "" && stops[pair] == "" {
+					stops[pair] = osm
+				}
+			}
+		}
+	}
+	if len(stops) == 0 {
+		return nil // nothing to say; no file rather than an empty one
+	}
+	raw, err := json.MarshalIndent(stops, "", " ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(o.Out, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(o.Out, "stops.json"), raw, 0o644)
 }
 
 func splitCSV(s string) []string {
