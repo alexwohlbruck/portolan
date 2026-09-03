@@ -405,14 +405,10 @@ func needSim(d float64) float64 {
 	return t * osmSimAtRange
 }
 
-// osmStationBonus outranks roughly 20 m of distance: enough that a station
-// node beats a stop_position across the platform, not enough to reach past
-// a genuinely nearer station.
-const osmStationBonus = 0.13
-
 // MatchOSMStops pairs stations with OSM stops and returns the accepted
-// matches, best-first. It does not mutate the stations — the caller
-// decides whether a match renames anything (ApplyOSMStopMatches).
+// matches: the station-node matches best-first, then the fallback matches
+// best-first. It does not mutate the stations — the caller decides whether
+// a match renames anything (ApplyOSMStopMatches).
 func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch {
 	if len(sts) == 0 || len(stops) == 0 {
 		return nil
@@ -475,18 +471,6 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 			// proximity dominates the ranking too; the name only orders
 			// candidates that are similarly close
 			score := 0.65*(1-d/osmMatchRadiusM) + 0.35*sim
-			// ...but a station outranks a stopping point that is merely
-			// nearer. Both carry the station's name and sit metres apart, so
-			// without this the winner is whichever the feed's coordinate
-			// happened to land beside: Clark St matched its station node and
-			// Jay St–MetroTech matched one of its six stop_positions, and the
-			// panel called them different kinds of place. Only the station is
-			// somewhere a rider can be sent. A bonus rather than a filter —
-			// plenty of stations are mapped with no station node at all, and
-			// a stop_position is a better answer there than none.
-			if stops[oi].Station {
-				score += osmStationBonus
-			}
 			cands = append(cands, cand{si, oi, score, d, sim})
 		}
 	}
@@ -502,18 +486,35 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 	usedS := make([]bool, len(sts))
 	usedO := make([]bool, len(stops))
 	var out []StopMatch
-	for _, c := range cands {
-		if usedS[c.si] || usedO[c.oi] {
-			continue
+	// Assignment runs twice: stations claim first, and only the feed stations
+	// left over fall back to a stop_position or platform. A stop_position is a
+	// point on the track where a train halts, not a place a rider can be sent
+	// — it carries the station's name and sits metres from the station node,
+	// so on score alone the winner is whichever the feed's coordinate happened
+	// to land beside. That is why Clark St matched its station node while Jay
+	// St–MetroTech, which has six stop_positions, matched one of those, and the
+	// panel called two of the same kind of place by different names.
+	//
+	// A fallback rather than a filter: plenty of stations are mapped with no
+	// station node at all, and a stop_position is a better answer there than
+	// none. It stays gated on radius, class and name similarity like any other
+	// candidate, so the second pass cannot reach further than the first.
+	assign := func(stationPass bool) {
+		for _, c := range cands {
+			if stops[c.oi].Station != stationPass || usedS[c.si] || usedO[c.oi] {
+				continue
+			}
+			usedS[c.si], usedO[c.oi] = true, true
+			out = append(out, StopMatch{
+				Station: c.si, OSM: stops[c.oi].ID,
+				FeedName: sts[c.si].Name, OSMName: stops[c.oi].Name,
+				Dist: c.dist, Sim: c.sim,
+				LostInfo: lostInfo(stoks[c.si], stops[c.oi].toks, idf, osmVocab),
+			})
 		}
-		usedS[c.si], usedO[c.oi] = true, true
-		out = append(out, StopMatch{
-			Station: c.si, OSM: stops[c.oi].ID,
-			FeedName: sts[c.si].Name, OSMName: stops[c.oi].Name,
-			Dist: c.dist, Sim: c.sim,
-			LostInfo: lostInfo(stoks[c.si], stops[c.oi].toks, idf, osmVocab),
-		})
 	}
+	assign(true)
+	assign(false)
 	return out
 }
 
