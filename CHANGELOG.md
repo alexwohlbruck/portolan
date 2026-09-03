@@ -5,6 +5,45 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.5
+
+### A stop matches the station, not the rails
+
+`MatchOSMStops` scored candidates on distance and name similarity alone,
+with no term for what kind of OSM object a candidate was. A `stop_position`
+— a point on the track where a train halts — carries the station's name and
+sits metres from the station node, so the winner was whichever the feed's
+coordinate happened to land beside. Clark St, with one station node and two
+stop_positions, matched the station; Jay St–MetroTech, with two station
+nodes and six stop_positions, matched a stop_position. Downstream that is
+the difference between calling a place a subway station and calling it a
+subway stopping location.
+
+Assignment now runs in two passes. Station-type objects
+(`public_transport=station`, `railway=station|halt`, `amenity=ferry_terminal`,
+`aerialway=station`) are assigned first, and only the feed stations left over
+fall back to a stop_position or platform. A fallback rather than a filter:
+plenty of stations are mapped with no station node at all, and a
+stop_position is a better answer there than none. The second pass stays gated
+on radius, class and name similarity like any other candidate, so it cannot
+reach further than the first, and each pass still assigns greedily by score,
+so two adjacent stations each take their own node.
+
+**Consumers who pin station ids**: `Station.OSMID` changes wherever a
+stop_position was previously winning, and the adopted station name may change
+with it. No drawn geometry moves.
+
+## 0.4.4
+
+### The GTFS stop to OSM object join is published
+
+Shipped in 0.4.4 without notes. A build now writes `<out>/stops.json`
+alongside the route index, mapping `<feed-onestop>:<stop_id>` to the OSM
+object the matcher chose — `"node/597928315"`. A client holding a feed's own
+stop id had no way to reach the OSM object portolan had already identified,
+and was left to re-find it by name and coordinates, which cannot tell three
+stations called Chambers St apart.
+
 ## 0.4.3
 
 ### The bundling mate range now reaches the bundler
