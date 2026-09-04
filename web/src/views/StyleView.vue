@@ -198,6 +198,69 @@ function addName(key: string, name: string) {
   nameAddOpen.value = false
 }
 
+// ── direction labels ──────────────────────────────────────────────────
+// GTFS carries direction_id — an opaque 0/1 — and nothing that says what it
+// means. A rider at Grand Central is reading a sign that says UPTOWN, not one
+// that says Woodlawn, so the name is curation like colour. Set it on an
+// agency to cover its whole network, on a route to say something truer for
+// one line. It rides out in the corrected feed's directions.txt.
+const dirAddOpen = ref(false)
+const newDirKey = ref('')
+const newDirKind = ref('route')
+const newDirId = ref('0')
+const newDirLabel = ref('')
+
+/** every subject that names a direction, one row per direction_id */
+const directionRows = computed(() => {
+  const out: { kind: Kind; key: string; dir: string; label: string }[] = []
+  for (const k of KINDS) {
+    const m = (layer.value as any)[bucket(k)] ?? {}
+    for (const [name, ent] of Object.entries(m as Record<string, any>)) {
+      const d = ent?.directions
+      if (!d) continue
+      for (const dir of Object.keys(d).sort()) {
+        if (d[dir]) out.push({ kind: k, key: name, dir, label: String(d[dir]) })
+      }
+    }
+  }
+  return out
+})
+
+function setDirection(kind: Kind, key: string, dir: string, label: string) {
+  const doc = layer.value as any
+  const m = (doc[bucket(kind)] ??= {})
+  const ent = (m[key] ??= {})
+  const d = (ent.directions ??= {})
+  if (!label.trim()) delete d[dir]
+  else d[dir] = label.trim()
+  if (!Object.keys(d).length) delete ent.directions
+  if (!Object.keys(ent).length) delete m[key]
+}
+function dropDirection(kind: Kind, key: string, dir: string) {
+  setDirection(kind, key, dir, '')
+}
+
+async function openDirAdd() {
+  dirAddOpen.value = true
+  newDirKey.value = ''
+  newDirLabel.value = ''
+  newDirId.value = '0'
+  newDirKind.value = 'route'
+  if (!routes.value.length && feed.value) {
+    try {
+      routes.value = await api.routes(feed.value)
+    } catch {
+      /* the picker is a convenience; typing a key still works */
+    }
+  }
+}
+function addDirection(key: string, dir: string, label: string) {
+  if (!key || !label.trim()) return
+  const [kind, subj] = splitKey(key)
+  setDirection(kind, subj, dir.trim() || '0', label)
+  dirAddOpen.value = false
+}
+
 /** caterpillars tri-state for the active layer: '' = inherit, 'on', 'off' */
 const catState = computed<string>(() => {
   const v = layer.value.options?.caterpillars
@@ -483,12 +546,127 @@ const overrideCount = computed(
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader class="flex-row items-center justify-between pb-3">
+          <div>
+            <CardTitle class="text-sm">Direction labels</CardTitle>
+            <CardDescription>
+              Name each direction the way the signs do — the 4 train runs Uptown and Downtown, not 0 and 1. GTFS
+              carries direction_id and nothing that says what it means. An agency label covers every route it runs;
+              a route label beats it, so the L can say 8 Av and Canarsie while the rest say Uptown and Downtown.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" @click="openDirAdd"><Plus class="size-4" /> Add</Button>
+        </CardHeader>
+        <CardContent>
+          <div v-if="!directionRows.length" class="flex flex-col items-center gap-2 py-10 text-muted-foreground">
+            <span class="text-sm">No labels — boards show the headsign alone.</span>
+          </div>
+          <div v-else class="grid gap-2">
+            <div
+              v-for="row in directionRows"
+              :key="`${row.kind}:${row.key}:${row.dir}`"
+              class="flex items-center gap-3 rounded-lg border border-border px-3 py-2"
+            >
+              <Badge variant="muted" class="shrink-0 text-[10px]">{{ row.kind }}</Badge>
+              <span class="min-w-0 flex-1 truncate text-sm text-muted-foreground">{{ row.key }}</span>
+              <Badge variant="secondary" class="shrink-0 font-mono text-[10px]">dir {{ row.dir }}</Badge>
+              <span class="shrink-0 text-muted-foreground">→</span>
+              <Input
+                class="h-8 w-40 text-xs"
+                :model-value="row.label"
+                @update:model-value="(v) => setDirection(row.kind, row.key, row.dir, v)"
+              />
+              <Button variant="ghost" size="icon" @click="dropDirection(row.kind, row.key, row.dir)"><Trash2 class="size-4" /></Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div class="text-xs text-muted-foreground">
         {{ overrideCount }} override{{ overrideCount === 1 ? '' : 's' }} in the {{ scope }} layer.
         Changes apply on the next build.
       </div>
     </template>
   </div>
+
+  <Dialog
+    :open="dirAddOpen"
+    title="Add direction label"
+    description="Pick an agency or route, choose which direction_id it names, and type what the signs say."
+    @update:open="(v) => (dirAddOpen = v)"
+  >
+    <div class="flex flex-col gap-4">
+      <div class="flex gap-2">
+        <div class="relative flex-1">
+          <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input v-model="routeQuery" placeholder="Search routes and agencies" class="pl-9" />
+        </div>
+        <select
+          v-model="newDirId"
+          class="h-9 w-24 rounded-md border border-border bg-background px-2 font-mono text-sm"
+          aria-label="direction_id"
+        >
+          <option value="0">dir 0</option>
+          <option value="1">dir 1</option>
+        </select>
+        <Input v-model="newDirLabel" placeholder="Uptown" class="w-40" />
+      </div>
+
+      <div class="max-h-72 overflow-y-auto rounded-lg border border-border">
+        <div v-if="agencies.length" class="border-b border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          Agencies
+        </div>
+        <button
+          v-for="a in agencies"
+          :key="a.name"
+          class="flex w-full items-center gap-2 border-b border-border/50 px-3 py-2 text-left text-sm last:border-0 hover:bg-accent/40"
+          @click="addDirection(`agency:${a.name}`, newDirId, newDirLabel)"
+        >
+          <Badge variant="secondary" class="text-[10px] capitalize">{{ a.mode }}</Badge>
+          <span class="truncate">{{ a.name }}</span>
+        </button>
+
+        <div class="border-y border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          Routes
+        </div>
+        <button
+          v-for="r in filteredRoutes"
+          :key="r.id"
+          class="flex w-full items-center gap-2 border-b border-border/50 px-3 py-2 text-left text-sm last:border-0 hover:bg-accent/40"
+          @click="addDirection(`route:${r.short_name || r.id}`, newDirId, newDirLabel)"
+        >
+          <span class="w-14 shrink-0 truncate font-medium">{{ r.short_name || r.id }}</span>
+          <span class="min-w-0 flex-1 truncate text-muted-foreground">{{ r.long_name }}</span>
+          <Badge variant="muted" class="shrink-0 text-[10px] capitalize">{{ r.mode }}</Badge>
+        </button>
+      </div>
+
+      <div class="flex items-end gap-2">
+        <div class="flex w-32 flex-col gap-1.5">
+          <Label for="dirkind">Kind</Label>
+          <select
+            id="dirkind"
+            v-model="newDirKind"
+            class="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          >
+            <option value="route">route</option>
+            <option value="agency">agency</option>
+          </select>
+        </div>
+        <div class="flex flex-1 flex-col gap-1.5">
+          <Label for="rawdirkey">Or type a key</Label>
+          <Input id="rawdirkey" v-model="newDirKey" placeholder="MTA NYCT" class="font-mono" />
+        </div>
+        <Button
+          :disabled="!newDirKey || !newDirLabel.trim()"
+          @click="addDirection(`${newDirKind}:${newDirKey}`, newDirId, newDirLabel)"
+        >
+          Add
+        </Button>
+      </div>
+    </div>
+  </Dialog>
 
   <Dialog
     :open="addOpen"

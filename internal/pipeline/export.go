@@ -20,11 +20,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/stages"
+	"github.com/alexwohlbruck/portolan/internal/style"
 )
 
 // exportGTFS writes one adjusted zip per source feed into dir. gtfsList is
@@ -86,11 +88,20 @@ func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
 			}
 		}
 		out := filepath.Join(dir, filepath.Base(src))
-		if err := rewriteZip(src, out, shapes); err != nil {
+		dirs, err := resolveDirections(src, style.Active())
+		if err != nil {
+			return fmt.Errorf("export %s: reading directions: %w", src, err)
+		}
+		if err := rewriteZip(src, out, shapes, dirs); err != nil {
 			return fmt.Errorf("export %s: %w", src, err)
 		}
-		logf("export: %s — %d shapes adjusted, %d clipped shapes kept as-is",
-			out, len(shapes), nclip)
+		if len(dirs) > 0 {
+			logf("export: %s — %d shapes adjusted, %d clipped shapes kept as-is, %d directions named",
+				out, len(shapes), nclip, len(dirs))
+		} else {
+			logf("export: %s — %d shapes adjusted, %d clipped shapes kept as-is",
+				out, len(shapes), nclip)
+		}
 	}
 	return nil
 }
@@ -116,7 +127,7 @@ func feedIndexOf(routeID string) int {
 // given; every other entry passes through byte-identical. A feed with no
 // shapes.txt gains one — pfaedle-less feeds exist, and the matched walk
 // is strictly better than nothing.
-func rewriteZip(src, dst string, shapes map[string][]geo.LL) error {
+func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]string) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -130,6 +141,7 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL) error {
 	}
 	zw := zip.NewWriter(f)
 	sawShapes := false
+	sawDirections := false
 	for _, e := range zr.File {
 		name := filepath.Base(e.Name)
 		r, err := e.Open()
@@ -141,14 +153,32 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL) error {
 			r.Close()
 			return werr
 		}
-		if name == "shapes.txt" {
+		switch name {
+		case "shapes.txt":
 			sawShapes = true
 			err = filterShapes(r, w, shapes)
-		} else {
+		case "directions.txt":
+			// The feed already publishes one (367 of the 1499 in the fleet
+			// do). Curation overrides row by row and keeps the rest, so an
+			// agency that names three of four directions keeps its fourth.
+			sawDirections = true
+			err = mergeDirections(r, w, dirs)
+		default:
 			_, err = io.Copy(w, r)
 		}
 		r.Close()
 		if err != nil {
+			return err
+		}
+	}
+	// A feed with no directions.txt gains one, which is the MTA's case and
+	// the whole point: direction_id is an opaque 0/1 until something names it.
+	if !sawDirections && len(dirs) > 0 {
+		w, err := zw.Create("directions.txt")
+		if err != nil {
+			return err
+		}
+		if err := writeDirections(w, dirs); err != nil {
 			return err
 		}
 	}
@@ -224,6 +254,208 @@ func filterShapes(r io.Reader, w io.Writer, shapes map[string][]geo.LL) error {
 			if err := cw.Write(rec); err != nil {
 				return err
 			}
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// ------------------------------------------------------- direction labels
+
+// dirKey identifies one direction of one route.
+type dirKey struct{ route, dir string }
+
+// resolveDirections names each (route, direction_id) the feed carries, using
+// the curation document. GTFS core has direction_id and nothing that says
+// what it means; a rider at Grand Central is reading a sign that says UPTOWN,
+// not one that says Woodlawn.
+//
+// Reads trips.txt for the pairs that actually exist and routes.txt for each
+// route's agency, so an agency-level naming reaches every route it runs. A
+// pair nobody named is left out rather than guessed.
+func resolveDirections(zipPath string, sty *style.Set) (map[dirKey]string, error) {
+	if sty == nil {
+		return nil, nil
+	}
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+
+	rows := func(table string) ([]map[string]string, error) {
+		for _, e := range zr.File {
+			if filepath.Base(e.Name) != table {
+				continue
+			}
+			r, err := e.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer r.Close()
+			cr := csv.NewReader(r)
+			cr.FieldsPerRecord = -1
+			head, err := cr.Read()
+			if err != nil {
+				return nil, err
+			}
+			for i, h := range head {
+				head[i] = strings.TrimSpace(strings.TrimPrefix(h, "\ufeff"))
+			}
+			var out []map[string]string
+			for {
+				rec, err := cr.Read()
+				if err != nil {
+					return out, nil
+				}
+				m := map[string]string{}
+				for i, h := range head {
+					if i < len(rec) {
+						m[h] = strings.TrimSpace(rec[i])
+					}
+				}
+				out = append(out, m)
+			}
+		}
+		return nil, nil
+	}
+
+	routes, err := rows("routes.txt")
+	if err != nil {
+		return nil, err
+	}
+	// route id → every identifier curation might name it by, and its agency
+	ids := map[string][]string{}
+	agency := map[string][]string{}
+	for _, r := range routes {
+		id := r["route_id"]
+		if id == "" {
+			continue
+		}
+		ids[id] = []string{id, r["route_short_name"], r["route_long_name"]}
+		agency[id] = []string{r["agency_id"]}
+	}
+
+	trips, err := rows("trips.txt")
+	if err != nil {
+		return nil, err
+	}
+	out := map[dirKey]string{}
+	for _, t := range trips {
+		k := dirKey{t["route_id"], t["direction_id"]}
+		if k.route == "" || k.dir == "" {
+			continue
+		}
+		if _, done := out[k]; done {
+			continue
+		}
+		if label, ok := sty.Direction(k.dir, ids[k.route], agency[k.route]); ok {
+			out[k] = label
+		}
+	}
+	return out, nil
+}
+
+// writeDirections emits directions.txt in the GTFS+ shape the extension
+// already uses — route_id, direction_id, direction — sorted so a rebuild of
+// unchanged inputs produces an unchanged file.
+func writeDirections(w io.Writer, dirs map[dirKey]string) error {
+	keys := make([]dirKey, 0, len(dirs))
+	for k := range dirs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].route != keys[j].route {
+			return keys[i].route < keys[j].route
+		}
+		return keys[i].dir < keys[j].dir
+	})
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"route_id", "direction_id", "direction"}); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if err := cw.Write([]string{k.route, k.dir, dirs[k]}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// mergeDirections rewrites a feed's own directions.txt, replacing the rows
+// curation names and keeping every other row and column untouched. Rows we
+// name that the feed does not carry are appended.
+func mergeDirections(r io.Reader, w io.Writer, dirs map[dirKey]string) error {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	head, err := cr.Read()
+	if err != nil {
+		return fmt.Errorf("directions.txt header: %w", err)
+	}
+	col := map[string]int{}
+	for i, h := range head {
+		col[strings.TrimSpace(strings.TrimPrefix(h, "\ufeff"))] = i
+	}
+	rc, ok1 := col["route_id"]
+	dc, ok2 := col["direction_id"]
+	lc, ok3 := col["direction"]
+	if !ok1 || !ok2 || !ok3 {
+		// A shape we do not understand is left exactly as it is rather than
+		// half-rewritten.
+		cw := csv.NewWriter(w)
+		if err := cw.Write(head); err != nil {
+			return err
+		}
+		for {
+			rec, err := cr.Read()
+			if err != nil {
+				cw.Flush()
+				return cw.Error()
+			}
+			if err := cw.Write(rec); err != nil {
+				return err
+			}
+		}
+	}
+	cw := csv.NewWriter(w)
+	if err := cw.Write(head); err != nil {
+		return err
+	}
+	seen := map[dirKey]bool{}
+	for {
+		rec, err := cr.Read()
+		if err != nil {
+			break
+		}
+		if rc < len(rec) && dc < len(rec) {
+			k := dirKey{strings.TrimSpace(rec[rc]), strings.TrimSpace(rec[dc])}
+			seen[k] = true
+			if label, ok := dirs[k]; ok && lc < len(rec) {
+				rec[lc] = label
+			}
+		}
+		if err := cw.Write(rec); err != nil {
+			return err
+		}
+	}
+	keys := make([]dirKey, 0, len(dirs))
+	for k := range dirs {
+		if !seen[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].route != keys[j].route {
+			return keys[i].route < keys[j].route
+		}
+		return keys[i].dir < keys[j].dir
+	})
+	for _, k := range keys {
+		rec := make([]string, len(head))
+		rec[rc], rec[dc], rec[lc] = k.route, k.dir, dirs[k]
+		if err := cw.Write(rec); err != nil {
+			return err
 		}
 	}
 	cw.Flush()
