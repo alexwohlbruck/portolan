@@ -202,6 +202,15 @@ func BuildPlan(o PlanOpts) (*Plan, error) {
 	// own railroad truncates the map silently. Widen before the entries are
 	// diffed, so a widened feed is dirty and rebuilds.
 	widened := WidenFeedWindows(after, der, scope)
+	// A widened window is a changed input even though the zip did not move:
+	// the feed's clip is different, so its build and any group drawing it are
+	// both stale. Without this the corrected window is computed and then
+	// discarded — the entry is only written when the registry is marked
+	// changed, and the feed only rebuilds when it counts as affected.
+	for _, k := range widened {
+		inC[k] = true
+		affected[k] = true
+	}
 
 	beforeFeeds := feedsObj(before)
 	afterFeeds := feedsObj(after)
@@ -212,6 +221,9 @@ func BuildPlan(o PlanOpts) (*Plan, error) {
 		return nil
 	}
 	plan := &Plan{Changed: changed, Measured: der.Measured, Derivation: der, Widened: widened}
+	if len(widened) > 0 {
+		plan.RegistryChanged = true
+	}
 	keptSet := map[string]bool{}
 	groupInputs := map[string][]string{} // key → member+overlay feeds (kept is 1:1 with scoped.Groups)
 	for i, k := range kept {

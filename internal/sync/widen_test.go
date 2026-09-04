@@ -180,3 +180,85 @@ func idsOf(t *testing.T, path string) map[string]bool {
 	}
 	return out
 }
+
+// Computing the corrected window is not enough: the entry is only written
+// when the registry counts as changed, and the feed only rebuilds when it
+// counts as affected. The first cut of this did neither, so a patch run
+// reported "registry rewrite: no" and skipped the very feeds it had just
+// corrected.
+func TestAWidenedWindowRebuildsAndIsWritten(t *testing.T) {
+	dir := t.TempDir()
+	raw := buildFixture(t, dir)
+	t.Chdir(dir)
+	cfg, doc := loadFixture(t, raw)
+
+	// Settle the registry first: a fresh fixture derives groups, and that
+	// alone marks the registry changed. Only on a settled registry is
+	// widening the sole reason anything moves — which is the case that
+	// failed in production.
+	settle, err := BuildPlan(PlanOpts{
+		Config: cfg, Doc: doc, State: &State{Feeds: map[string]FeedState{}},
+		Global: true, BuildDir: "build", Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settle.Registry == nil {
+		t.Fatal("fixture did not settle")
+	}
+	cfg2, doc2 := loadFixture(t, settle.Registry)
+	if again, err := BuildPlan(PlanOpts{
+		Config: cfg2, Doc: doc2, State: &State{Feeds: map[string]FeedState{}},
+		Global: true, BuildDir: "build", Log: func(string, ...any) {},
+	}); err != nil {
+		t.Fatal(err)
+	} else if again.RegistryChanged {
+		t.Fatal("registry still churning; the isolation this test needs does not hold")
+	}
+
+	// now clip "u" to a sliver of its own railroad, the way the New York
+	// entries clipped Metro-North
+	cfg3, doc3 := loadFixture(t, settle.Registry)
+	v, _ := feedsObj(doc3).Get("u")
+	v.(*Obj).Set("bbox", []any{-100.01, 39.99, -99.995, 40.01})
+	cfg3, _ = loadFixture(t, MarshalDoc(doc3))
+
+	plan, err := BuildPlan(PlanOpts{
+		Config: cfg3, Doc: doc3, State: &State{Feeds: map[string]FeedState{}},
+		Global: true, BuildDir: "build", Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !contains(plan.Widened, "u") {
+		t.Fatalf("Widened = %v, want it to carry u", plan.Widened)
+	}
+	// RegistryChanged is what makes the run WRITE the corrected window and
+	// re-parse it; without it the build reads the old file and the widening
+	// is computed and thrown away.
+	if !plan.RegistryChanged || plan.Registry == nil {
+		t.Fatal("a corrected window must mark the registry changed, or it is never written")
+	}
+	if !contains(plan.Standalone, "u") && !contains(plan.MemberPyramids, "u") {
+		t.Errorf("u was corrected but not scheduled to rebuild (standalone=%v members=%v)",
+			plan.Standalone, plan.MemberPyramids)
+	}
+	after, err := ParseDoc(plan.Registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bboxOf(t, after, "u")[2] <= -99.995 {
+		t.Errorf("written window still clips the railroad: %v", bboxOf(t, after, "u"))
+	}
+	_ = cfg2
+}
+
+func contains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
