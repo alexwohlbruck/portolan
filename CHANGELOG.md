@@ -5,6 +5,24 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.8
+
+### A widened feed borrows its extract from the right place
+
+0.4.7 cut Metro-North's rail extract from a national intercity **bus**
+network's, and the build died with `no regular-service rail ways`. Candidates
+were ranked widest-window-first, on the reasoning that one source covering the
+whole window beats several covering corners — but the widest window in the
+registry belongs to a continental bus operator, which covers everything and
+contains no railway at all.
+
+A feed now borrows from a group it is a member of before anything else: that
+extract covers every member by construction and carries the same kind of
+railway, which no other test here can check. Failing that it takes the
+*smallest* covering extract, since a minimal superset of a feed's own window is
+far likelier to be the regional railway it runs on than some continental
+network that happens to enclose it.
+
 ## 0.4.7
 
 ### The corrected window now reaches the build
