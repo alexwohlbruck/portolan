@@ -5,6 +5,39 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.6
+
+### The global build now covers each feed's own data
+
+A global build was not global. Metro-North came out with 25 of its 114
+stations — everything past Yonkers missing — and LIRR with 44 of 127,
+clipped well short of Montauk. No error was raised for either.
+
+A feed's `bbox` is the Overpass window *and* the shape clip. The eight
+original New York entries, authored when portolan drew only New York City,
+all carry `[-74.26, 40.49, -73.7, 40.92]`. For the subway, the ferries, the
+tram, the AirTrain and the city buses that window is right. For the two
+regional railroads it is not: only 20 of Metro-North's 114 stops fall inside
+it. Groups have always taken their window from measured data; nothing did the
+same for a plain feed, so a hand-authored window stayed wrong forever and
+clipped the railroad away in silence.
+
+A measured feed's window is now grown until it contains the feed's own
+shapes. It only ever grows, and only when the window genuinely fails to
+contain the data — containment is judged without the margin, since adding
+slack first would nudge nearly every feed in the registry by a hair and every
+nudge is a rebuild. A widened feed is repointed onto its own
+`build/<key>-rail.geojson` so cutting an extract to the new window cannot
+overwrite a fixture other feeds still read, and `feedPreflight` cuts that
+extract from any registry extract that covers the window — clipped, not
+merged, because the Northeast Corridor's extract is 166 MB and a feed that
+swallowed it whole to reach its own corner would chart as heavily as the whole
+corridor. Sync still never calls Overpass. The run logs every window it
+corrected; silence is what let this sit.
+
+**Consumers**: nothing already built changes. A feed whose window was too
+small draws more of itself once rebuilt, and its station count rises.
+
 ## 0.4.5
 
 ### A stop matches the station, not the rails
