@@ -215,6 +215,11 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 				oops(t.key, "preflight", err)
 				return
 			}
+		} else if err := feedPreflight(cfg, t.key, o.BuildDir, logf); err != nil {
+			// A plain feed whose window outgrew its extract: cut one from a
+			// wider extract rather than draw the railroad short.
+			oops(t.key, "preflight", err)
+			return
 		}
 		spec, err := assembleChart(doc, cfg, t.key, o.BuildDir, o.StyleDir, exportDir, logf)
 		if err != nil {
@@ -369,6 +374,9 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 		return nil, fmt.Errorf("writing index.json: %w", err)
 	}
 	logf("index.json: %d feeds", len(idx))
+	if len(plan.Widened) > 0 {
+		logf("windows widened to cover their own shapes: %s", strings.Join(plan.Widened, " "))
+	}
 
 	if o.ExportDir != "" {
 		entries, err := os.ReadDir(o.ExportDir)

@@ -6,6 +6,8 @@ package sync
 // result is byte-comparable with a groups.py --write of the same data.
 
 import (
+	"encoding/json"
+	"math"
 	"sort"
 	"strings"
 )
@@ -15,6 +17,96 @@ import (
 // fragment that is 100% gap would fail the whole document. Members are
 // still guarded by tools/groupverify.py, on ink rather than this gate.
 const chartArgsGroup = "--set match_gap_cost=150 --allow-unmatched"
+
+// WidenFeedWindows makes every measured feed's window cover the feed's own
+// data. A feed's bbox is the Overpass window AND the shape clip, so a window
+// smaller than the railroad silently truncates the map: Metro-North carried
+// the subway's [-74.26,40.49,-73.7,40.92] — authored when portolan drew only
+// New York City — and came out with 25 of its 114 stations, everything past
+// Yonkers clipped away with no error. Groups already take their window from
+// measured data (see RewriteGroups); nothing did the same for a plain feed,
+// so a hand-authored window stayed wrong forever.
+//
+// Widening only ever grows a window, and only to what the feed's own shapes
+// occupy plus the margin groups use. A feed whose authored window is already
+// big enough is untouched, so a deliberately generous window survives.
+//
+// Returns the keys widened, in registry order, for the caller to log.
+func WidenFeedWindows(doc *Obj, der *Derivation, scope map[string]bool) []string {
+	feeds := feedsObj(doc)
+	if feeds == nil || der == nil {
+		return nil
+	}
+	var widened []string
+	for _, k := range feeds.Keys() {
+		if scope != nil && !scope[k] {
+			continue
+		}
+		ext, ok := der.Extent[k]
+		if !ok {
+			continue // not measured this run — no data to judge the window by
+		}
+		v, _ := feeds.Get(k)
+		entry, ok := v.(*Obj)
+		if !ok {
+			continue
+		}
+		bv, _ := entry.Get("bbox")
+		arr, _ := bv.([]any)
+		if len(arr) != 4 {
+			continue // no authored window: the chart uses the shapes as-is
+		}
+		cur := make([]float64, 4)
+		for i, a := range arr {
+			f, ok := toFloat(a)
+			if !ok {
+				cur = nil
+				break
+			}
+			cur[i] = f
+		}
+		if cur == nil {
+			continue
+		}
+		// Only a window that genuinely fails to contain the railroad is
+		// corrected. Judging containment WITHOUT the margin matters: adding
+		// slack first would nudge nearly every feed in the registry by a
+		// hair, and each nudge is a rebuild.
+		if cur[0] <= ext[0] && cur[1] <= ext[1] && cur[2] >= ext[2] && cur[3] >= ext[3] {
+			continue
+		}
+		want := []float64{
+			round4(math.Min(cur[0], ext[0]-marginDeg)),
+			round4(math.Min(cur[1], ext[1]-marginDeg)),
+			round4(math.Max(cur[2], ext[2]+marginDeg)),
+			round4(math.Max(cur[3], ext[3]+marginDeg)),
+		}
+		entry.Set("bbox", []any{want[0], want[1], want[2], want[3]})
+		// A widened feed usually outgrows the extract it was authored with,
+		// and that extract is often SHARED — the eight original New York
+		// entries all name testdata/nyc-rail.geojson. Give the feed its own
+		// derived path so preflight can cut one to the new window without
+		// overwriting a fixture other feeds still read.
+		if rail := entry.Str("rail"); rail != "" && !strings.HasPrefix(rail, "build/") {
+			entry.Set("rail", "build/"+k+"-rail.geojson")
+		}
+		widened = append(widened, k)
+	}
+	return widened
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
 
 // RewriteGroups mutates doc's "feeds" to carry exactly der's groups:
 // updated entries keep their key, curated name and position; groups the

@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/alexwohlbruck/portolan/internal/registry"
@@ -288,6 +289,126 @@ func mergeFC(dst string, srcs []string) (int, error) {
 	return len(feats), nil
 }
 
+// featureBBox returns a feature geometry's own extent, or ok=false for a
+// geometry this walk does not understand. Shared with railCovers so the
+// coverage test and the clip agree on what a feature occupies.
+func featureBBox(geomType string, coords json.RawMessage) (w, s, e, n float64, ok bool) {
+	w, s = math.Inf(1), math.Inf(1)
+	e, n = math.Inf(-1), math.Inf(-1)
+	take := func(c [2]float64) {
+		w, e = math.Min(w, c[0]), math.Max(e, c[0])
+		s, n = math.Min(s, c[1]), math.Max(n, c[1])
+	}
+	switch geomType {
+	case "Point":
+		var p [2]float64
+		if json.Unmarshal(coords, &p) != nil {
+			return 0, 0, 0, 0, false
+		}
+		take(p)
+	case "LineString", "MultiPoint":
+		var pts [][2]float64
+		if json.Unmarshal(coords, &pts) != nil {
+			return 0, 0, 0, 0, false
+		}
+		for _, c := range pts {
+			take(c)
+		}
+	case "Polygon", "MultiLineString":
+		var rings [][][2]float64
+		if json.Unmarshal(coords, &rings) != nil {
+			return 0, 0, 0, 0, false
+		}
+		for _, r := range rings {
+			for _, c := range r {
+				take(c)
+			}
+		}
+	case "MultiPolygon":
+		var polys [][][][2]float64
+		if json.Unmarshal(coords, &polys) != nil {
+			return 0, 0, 0, 0, false
+		}
+		for _, poly := range polys {
+			for _, r := range poly {
+				for _, c := range r {
+					take(c)
+				}
+			}
+		}
+	default:
+		return 0, 0, 0, 0, false
+	}
+	return w, s, e, n, !math.IsInf(w, 1)
+}
+
+// clipFC is mergeFC with a window: only features whose own extent meets the
+// bbox are kept. Clipping rather than merging matters for memory — the
+// Northeast Corridor's rail extract is 166 MB, and a feed that merged the
+// whole thing to reach its own corner would chart as heavily as the whole
+// corridor does. A feature straddling the edge is kept whole; the chart
+// clips geometry itself.
+func clipFC(dst string, srcs []string, bbox []float64) (int, error) {
+	if len(bbox) != 4 {
+		return mergeFC(dst, srcs)
+	}
+	type feature struct {
+		ID    any             `json:"id,omitempty"`
+		Type  string          `json:"type"`
+		Props json.RawMessage `json:"properties,omitempty"`
+		Geom  json.RawMessage `json:"geometry"`
+	}
+	seen := map[string]bool{}
+	var feats []feature
+	for _, src := range srcs {
+		raw, err := os.ReadFile(src)
+		if err != nil {
+			return 0, err
+		}
+		var fc struct {
+			Features []struct {
+				feature
+				Geometry struct {
+					Type        string          `json:"type"`
+					Coordinates json.RawMessage `json:"coordinates"`
+				} `json:"geometry"`
+			} `json:"features"`
+		}
+		if err := json.Unmarshal(raw, &fc); err != nil {
+			return 0, fmt.Errorf("%s: %w", src, err)
+		}
+		for _, f := range fc.Features {
+			w, s2, e, n, ok := featureBBox(f.Geometry.Type, f.Geometry.Coordinates)
+			if !ok || w > bbox[2] || e < bbox[0] || s2 > bbox[3] || n < bbox[1] {
+				continue
+			}
+			if f.ID != nil {
+				id := fmt.Sprint(f.ID)
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+			}
+			feats = append(feats, f.feature)
+		}
+	}
+	out := struct {
+		Type     string    `json:"type"`
+		Features []feature `json:"features"`
+	}{Type: "FeatureCollection", Features: feats}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return 0, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return 0, err
+	}
+	if err := atomicWrite(dst, append(raw, '\n')); err != nil {
+		return 0, err
+	}
+	return len(feats), nil
+}
+
 // ------------------------------------------------------------ preflight
 
 // groupPreflight is groupbuild.sh's per-group preparation, minus the
@@ -297,6 +418,63 @@ func mergeFC(dst string, srcs []string) (int, error) {
 // merges the same way; streets_from merges into streets (mergefc, as the
 // shell does). Merged extracts overlap where windows meet — mergeFC's
 // id-dedup is what keeps the shared way single.
+// feedPreflight prepares a PLAIN feed the way groupPreflight prepares a
+// group: if its rail extract does not cover its window, cut one that does.
+// A group merges from its members; a lone feed has none, so it borrows from
+// any feed in the registry whose extract already covers the window — the
+// regional group's, in practice — and clips that to its own box.
+//
+// This exists because a window and an extract have to agree. Widening
+// Metro-North to the railroad it actually runs is useless while its extract
+// still stops at the New York City line, and sync must never call Overpass.
+func feedPreflight(cfg registry.Config, key, buildDir string,
+	logf func(string, ...any)) error {
+	fc := cfg.Feeds[key]
+	if fc.Rail == "" || len(fc.BBox) != 4 || railCovers(fc.Rail, fc.BBox) {
+		return nil
+	}
+	// Widest first: one source that covers the whole window beats several
+	// that each cover a corner.
+	type cand struct {
+		path string
+		area float64
+	}
+	var cands []cand
+	seen := map[string]bool{}
+	for _, other := range cfg.Feeds {
+		p := other.Rail
+		if p == "" || p == fc.Rail || seen[p] {
+			continue
+		}
+		if st, err := os.Stat(p); err != nil || st.Size() == 0 {
+			continue
+		}
+		if !railCovers(p, fc.BBox) {
+			continue
+		}
+		seen[p] = true
+		a := 0.0
+		if len(other.BBox) == 4 {
+			a = (other.BBox[2] - other.BBox[0]) * (other.BBox[3] - other.BBox[1])
+		}
+		cands = append(cands, cand{p, a})
+	}
+	if len(cands) == 0 {
+		return fmt.Errorf("%s: rail extract at %s does not cover the window and no other extract covers it either", key, fc.Rail)
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].area > cands[j].area })
+	dst := fc.Rail
+	if !strings.HasPrefix(dst, "build/") {
+		dst = filepath.Join(buildDir, key+"-rail.geojson")
+	}
+	n, err := clipFC(dst, []string{cands[0].path}, fc.BBox)
+	if err != nil {
+		return fmt.Errorf("%s: clipping rail extract: %w", key, err)
+	}
+	logf("%s: cut a rail extract to its window from %s (%d ways) — sync never calls Overpass", key, cands[0].path, n)
+	return nil
+}
+
 func groupPreflight(cfg registry.Config, key, buildDir string,
 	logf func(string, ...any)) error {
 	fc := cfg.Feeds[key]
