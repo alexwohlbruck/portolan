@@ -34,6 +34,11 @@ type Plan struct {
 	// changed, or a group window they cede moved under them.
 	Overlays []string
 
+	// Widened: feeds whose window was grown to cover their own shapes. A
+	// window smaller than the railroad clips it away without an error, so
+	// the run says which feeds it corrected.
+	Widened []string
+
 	RegistryChanged bool
 	// Registry: the rewritten portolan.json payload (exactly what
 	// groups.py --write would have produced), nil when nothing moved.
@@ -193,6 +198,10 @@ func BuildPlan(o PlanOpts) (*Plan, error) {
 	before := o.Doc
 	after := o.Doc.Clone()
 	kept := RewriteGroups(after, scoped, scope)
+	// A feed's window is also its shape clip, so one smaller than the feed's
+	// own railroad truncates the map silently. Widen before the entries are
+	// diffed, so a widened feed is dirty and rebuilds.
+	widened := WidenFeedWindows(after, der, scope)
 
 	beforeFeeds := feedsObj(before)
 	afterFeeds := feedsObj(after)
@@ -202,7 +211,7 @@ func BuildPlan(o PlanOpts) (*Plan, error) {
 		}
 		return nil
 	}
-	plan := &Plan{Changed: changed, Measured: der.Measured, Derivation: der}
+	plan := &Plan{Changed: changed, Measured: der.Measured, Derivation: der, Widened: widened}
 	keptSet := map[string]bool{}
 	groupInputs := map[string][]string{} // key → member+overlay feeds (kept is 1:1 with scoped.Groups)
 	for i, k := range kept {
