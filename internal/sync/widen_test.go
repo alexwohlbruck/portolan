@@ -110,11 +110,13 @@ func TestWidenFeedWindowsIgnoresUnmeasuredAndOutOfScope(t *testing.T) {
 func TestClipFCKeepsOnlyWhatMeetsTheWindow(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.geojson")
+	// tags included: they are what classifies a way as regular-service rail,
+	// so an extract that keeps geometry and drops properties is still useless
 	write(t, src, `{"type":"FeatureCollection","features":[
-	  {"type":"Feature","id":"inside","geometry":{"type":"LineString","coordinates":[[0.2,0.2],[0.4,0.4]]}},
-	  {"type":"Feature","id":"straddles","geometry":{"type":"LineString","coordinates":[[0.9,0.9],[2.0,2.0]]}},
-	  {"type":"Feature","id":"far","geometry":{"type":"LineString","coordinates":[[5.0,5.0],[6.0,6.0]]}},
-	  {"type":"Feature","id":"inside","geometry":{"type":"LineString","coordinates":[[0.1,0.1],[0.3,0.3]]}}
+	  {"type":"Feature","id":"inside","properties":{"railway":"rail","usage":"main"},"geometry":{"type":"LineString","coordinates":[[0.2,0.2],[0.4,0.4]]}},
+	  {"type":"Feature","id":"straddles","properties":{"railway":"rail"},"geometry":{"type":"LineString","coordinates":[[0.9,0.9],[2.0,2.0]]}},
+	  {"type":"Feature","id":"far","properties":{"railway":"rail"},"geometry":{"type":"LineString","coordinates":[[5.0,5.0],[6.0,6.0]]}},
+	  {"type":"Feature","id":"inside","properties":{"railway":"rail"},"geometry":{"type":"LineString","coordinates":[[0.1,0.1],[0.3,0.3]]}}
 	]}`)
 	dst := filepath.Join(dir, "out.geojson")
 
@@ -129,6 +131,18 @@ func TestClipFCKeepsOnlyWhatMeetsTheWindow(t *testing.T) {
 	}
 	if ids["far"] {
 		t.Error("a feature outside the window was kept")
+	}
+	// AND the geometry must survive. The first cut of clipFC wrote every
+	// feature with "geometry":null — the right ways with no shape — and the
+	// chart reported "no regular-service rail ways". Asserting on ids alone
+	// is what let that reach production.
+	for _, f := range featuresOf(t, dst) {
+		if len(f.Geom) == 0 || string(f.Geom) == "null" {
+			t.Fatalf("feature %v was written with no geometry", f.ID)
+		}
+		if len(f.Props) == 0 || string(f.Props) == "null" {
+			t.Errorf("feature %v lost its properties — the tags are what classify a way", f.ID)
+		}
 	}
 }
 
@@ -331,4 +345,25 @@ func loadFixtureCfg(t *testing.T, raw string) (registry.Config, *Obj) {
 		t.Fatal(err)
 	}
 	return cfg, doc
+}
+
+type clippedFeature struct {
+	ID    any             `json:"id"`
+	Props json.RawMessage `json:"properties"`
+	Geom  json.RawMessage `json:"geometry"`
+}
+
+func featuresOf(t *testing.T, path string) []clippedFeature {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct {
+		Features []clippedFeature `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		t.Fatal(err)
+	}
+	return fc.Features
 }

@@ -365,20 +365,28 @@ func clipFC(dst string, srcs []string, bbox []float64) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		// The geometry is decoded ONCE, as the raw message that goes back
+		// out. An earlier cut of this embedded `feature` beside a second
+		// field also tagged "geometry"; Go resolves that conflict in favour
+		// of the shallower field, so the embedded one stayed nil and every
+		// clipped feature was written with "geometry":null. The extract had
+		// the right ways in it and no shape at all, and the chart reported
+		// "no regular-service rail ways".
 		var fc struct {
-			Features []struct {
-				feature
-				Geometry struct {
-					Type        string          `json:"type"`
-					Coordinates json.RawMessage `json:"coordinates"`
-				} `json:"geometry"`
-			} `json:"features"`
+			Features []feature `json:"features"`
 		}
 		if err := json.Unmarshal(raw, &fc); err != nil {
 			return 0, fmt.Errorf("%s: %w", src, err)
 		}
 		for _, f := range fc.Features {
-			w, s2, e, n, ok := featureBBox(f.Geometry.Type, f.Geometry.Coordinates)
+			var g struct {
+				Type        string          `json:"type"`
+				Coordinates json.RawMessage `json:"coordinates"`
+			}
+			if len(f.Geom) == 0 || json.Unmarshal(f.Geom, &g) != nil {
+				continue
+			}
+			w, s2, e, n, ok := featureBBox(g.Type, g.Coordinates)
 			if !ok || w > bbox[2] || e < bbox[0] || s2 > bbox[3] || n < bbox[1] {
 				continue
 			}
@@ -389,7 +397,7 @@ func clipFC(dst string, srcs []string, bbox []float64) (int, error) {
 				}
 				seen[id] = true
 			}
-			feats = append(feats, f.feature)
+			feats = append(feats, f)
 		}
 	}
 	out := struct {
@@ -475,7 +483,13 @@ func feedPreflight(cfg registry.Config, key, buildDir string,
 		cands = append(cands, cand{p, a, owned})
 	}
 	if len(cands) == 0 {
-		return fmt.Errorf("%s: rail extract at %s does not cover the window and no other extract covers it either", key, fc.Rail)
+		// Nothing to cut from. The feed keeps the extract it has and draws
+		// what that covers, which is what it did before this step existed —
+		// a partial railroad beats refusing to build. Continental feeds are
+		// the normal case here: Amtrak's and VIA's windows are larger than
+		// any single extract in the registry.
+		logf("%s: window reaches past its rail extract and nothing else covers it — drawing what the extract has", key)
+		return nil
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].owned != cands[j].owned {
