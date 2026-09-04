@@ -5,6 +5,25 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.7
+
+### The corrected window now reaches the build
+
+0.4.6 computed each feed's corrected window and then discarded it. A patch run
+for Metro-North and LIRR reported `registry rewrite: no` and skipped both feeds
+as clean, leaving them drawn exactly as short as before.
+
+`plan.RegistryChanged` is only ever set from group diffs, and that flag is what
+makes a run write the registry *and re-parse it into the config every build
+reads*. With it false the run re-read the old file, the widened window never
+reached the chart, and the build fingerprint never moved. A widened window now
+sets it, and a widened feed joins the changed and affected sets — its clip moved
+even though its zip did not, so its own build and any group drawing it are both
+stale.
+
+**Consumers**: 0.4.6 shipped the window fix inert. This is the release that
+makes it take effect, so the rebuild it asks for is still owed.
+
 ## 0.4.6
 
 ### The global build now covers each feed's own data
