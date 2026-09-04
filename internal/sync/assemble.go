@@ -433,11 +433,19 @@ func feedPreflight(cfg registry.Config, key, buildDir string,
 	if fc.Rail == "" || len(fc.BBox) != 4 || railCovers(fc.Rail, fc.BBox) {
 		return nil
 	}
-	// Widest first: one source that covers the whole window beats several
-	// that each cover a corner.
+	// A GROUP THIS FEED BELONGS TO FIRST. Its extract covers every member by
+	// construction and carries the same kind of railway, which no other test
+	// here can tell. Ranking by window size instead cut Metro-North's rail
+	// from a national intercity BUS feed — the widest window in the registry
+	// — and the build died with "no regular-service rail ways".
+	//
+	// Failing that, the SMALLEST covering extract: a minimal superset of this
+	// feed's own window is far likelier to be the regional railway it runs on
+	// than some continental network that happens to enclose it.
 	type cand struct {
-		path string
-		area float64
+		path  string
+		area  float64
+		owned bool // an extract belonging to a group this feed is a member of
 	}
 	var cands []cand
 	seen := map[string]bool{}
@@ -453,16 +461,28 @@ func feedPreflight(cfg registry.Config, key, buildDir string,
 			continue
 		}
 		seen[p] = true
-		a := 0.0
+		a := math.Inf(1)
 		if len(other.BBox) == 4 {
 			a = (other.BBox[2] - other.BBox[0]) * (other.BBox[3] - other.BBox[1])
 		}
-		cands = append(cands, cand{p, a})
+		owned := false
+		for _, m := range other.Members {
+			if m == key {
+				owned = true
+				break
+			}
+		}
+		cands = append(cands, cand{p, a, owned})
 	}
 	if len(cands) == 0 {
 		return fmt.Errorf("%s: rail extract at %s does not cover the window and no other extract covers it either", key, fc.Rail)
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].area > cands[j].area })
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].owned != cands[j].owned {
+			return cands[i].owned
+		}
+		return cands[i].area < cands[j].area
+	})
 	dst := fc.Rail
 	if !strings.HasPrefix(dst, "build/") {
 		dst = filepath.Join(buildDir, key+"-rail.geojson")
