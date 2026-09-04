@@ -5,6 +5,34 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.9
+
+### Directions can be named the way the signs are
+
+A board reading "Woodlawn" makes a rider work out which way that is; the sign
+they are standing under says UPTOWN. GTFS carries `direction_id` — an opaque
+0/1 — and nothing that says what it means. The `directions.txt` extension
+exists and 367 of the 1499 feeds in the fleet publish one, but the MTA does
+not, and the vocabulary of those that do is agency-chosen and ragged
+(`NORTHBOUND`, `Inbound`, `Loop`, `CIRCULATOR`, one feed with `Inound`).
+
+So it is curation, like colour. A style document's agency, route or stop entry
+takes a `directions` map of `direction_id` to the name on the sign. An agency
+naming covers every route it runs and a route naming beats it, so an operator
+says Inbound/Outbound once while the MTA lets the L say "8 Av"/"Canarsie"
+where the Lexington Avenue lines say "Uptown"/"Downtown". Documents layer per
+direction_id, so a city naming direction 0 keeps what the global document said
+about direction 1.
+
+The corrected feed now carries `directions.txt`. A feed with none gains one; a
+feed that publishes one has the named rows replaced and every other row and
+column kept. A pair nobody named is left out rather than guessed — a board
+showing the wrong compass point is worse than one showing none. The console's
+Style page edits them alongside colours and names.
+
+**Consumers**: the corrected GTFS gains a `directions.txt` wherever a
+direction is named. Nothing else in the output moves.
+
 ## 0.4.8
 
 ### A widened feed borrows its extract from the right place
