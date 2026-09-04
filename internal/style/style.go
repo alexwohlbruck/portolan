@@ -130,6 +130,11 @@ type Config struct {
 	RouteTypes map[string]int `json:"route_types,omitempty"`
 	// Hiddens: routes/agencies dropped from the build (Entity.Hidden).
 	Hiddens map[string]bool `json:"hiddens,omitempty"`
+	// Directions: direction_id → the name on the sign, keyed like Colors.
+	// Nested rather than flattened into one key because direction_id is a
+	// second dimension, not part of the subject's identity, and a route id
+	// may itself contain the ':' any flat separator would have to survive.
+	Directions map[string]map[string]string `json:"directions,omitempty"`
 	// BulletOrder: one of the Bullets* policies above. Empty inherits
 	// (default BulletsColor).
 	BulletOrder string `json:"bullet_order,omitempty"`
@@ -200,6 +205,8 @@ type Set struct {
 	RouteTypes map[string]int `json:"route_types,omitempty"`
 	// Hiddens: routes/agencies dropped from the build (Entity.Hidden).
 	Hiddens map[string]bool `json:"hiddens,omitempty"`
+	// Directions: resolved direction_id → sign name, keyed like Colors.
+	Directions map[string]map[string]string `json:"directions,omitempty"`
 	// BulletOrder: resolved Bullets* policy, never empty.
 	BulletOrder string `json:"bullet_order"`
 	// Caterpillars: resolved on/off for inline route bullets.
@@ -229,6 +236,8 @@ type Set struct {
 	rtRoute  map[string]int
 	hAgency2 map[string]bool
 	hRoute2  map[string]bool
+	dAgency  map[string]map[string]string
+	dRoute   map[string]map[string]string
 }
 
 // New resolves configs in precedence order — later ones win field by field.
@@ -251,7 +260,8 @@ func New(layers ...Config) *Set {
 		tAgency: map[string]string{}, tRoute: map[string]string{},
 		gAgency: map[string]string{}, gRoute: map[string]string{},
 		rtAgency: map[string]int{}, rtRoute: map[string]int{},
-		hAgency2: map[string]bool{}, hRoute2: map[string]bool{}}
+		hAgency2: map[string]bool{}, hRoute2: map[string]bool{},
+		dAgency: map[string]map[string]string{}, dRoute: map[string]map[string]string{}}
 	for name, d := range defaults {
 		merged := d
 		for _, l := range layers {
@@ -290,6 +300,21 @@ func New(layers ...Config) *Set {
 		}
 		for k, v := range l.TrunkGroups {
 			s.TrunkGroups[k] = v
+		}
+		for k, v := range l.Directions {
+			if s.Directions == nil {
+				s.Directions = map[string]map[string]string{}
+			}
+			// merge per direction_id: a city naming only direction 0 keeps
+			// whatever the global document said about direction 1
+			cur := s.Directions[k]
+			if cur == nil {
+				cur = map[string]string{}
+				s.Directions[k] = cur
+			}
+			for d, label := range v {
+				cur[d] = label
+			}
 		}
 		for k, v := range l.RouteTypes {
 			if s.RouteTypes == nil {
@@ -379,6 +404,24 @@ func New(layers ...Config) *Set {
 			s.gRoute[strings.TrimPrefix(key, "route:")] = val
 		}
 	}
+	for k, v := range s.Directions {
+		key := strings.ToLower(strings.TrimSpace(k))
+		labels := map[string]string{}
+		for d, label := range v {
+			if label = strings.TrimSpace(label); label != "" {
+				labels[strings.TrimSpace(d)] = label
+			}
+		}
+		if len(labels) == 0 {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(key, "agency:"):
+			s.dAgency[strings.TrimPrefix(key, "agency:")] = labels
+		case strings.HasPrefix(key, "route:"):
+			s.dRoute[strings.TrimPrefix(key, "route:")] = labels
+		}
+	}
 	for k, v := range s.RouteTypes {
 		key := strings.ToLower(strings.TrimSpace(k))
 		switch {
@@ -444,6 +487,45 @@ func (s *Set) Class(name string) Resolved {
 		return r
 	}
 	return s.Modes["unknown"]
+}
+
+// Direction is the name on the sign for one direction_id — "Uptown" for
+// the 4 train's direction 0. A route's own naming beats its agency's, so
+// an operator can say Inbound/Outbound once for the whole network and
+// still let one line say something truer.
+//
+// dirID is the GTFS direction_id as its string ("0"/"1"). Reported missing
+// rather than guessed: there is no default worth inventing, and a board
+// showing the wrong compass point is worse than one showing none.
+func (s *Set) Direction(dirID string, routeIDs, agencyIDs []string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	dirID = strings.TrimSpace(dirID)
+	if dirID == "" {
+		return "", false
+	}
+	if v, ok := lookupDirection(s.dRoute, routeIDs, dirID); ok {
+		return v, true
+	}
+	return lookupDirection(s.dAgency, agencyIDs, dirID)
+}
+
+func lookupDirection(tbl map[string]map[string]string, ids []string, dirID string) (string, bool) {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(id))
+		for _, k := range []string{key, unprefix(key)} {
+			if labels, ok := tbl[k]; ok {
+				if v, ok := labels[dirID]; ok {
+					return v, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 // RouteColor is the color override for a route, if any. Every identifier
