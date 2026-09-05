@@ -5,6 +5,38 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.4.10
+
+### Clipped extracts keep their geometry
+
+0.4.6 taught a feed whose window reaches past its rail extract to clip that
+extract down to the window. The clip decoded each feature into a struct that
+embedded `feature` alongside a second field also tagged `"geometry"`; Go
+resolves that collision in favour of the shallower field, so the embedded one
+stayed nil and every clipped feature was written back out with
+`"geometry": null`. The extract carried the right ways and no shape at all.
+The chart then found nothing it could draw, and either failed the feed with
+"no regular-service rail ways" or wrote an empty collection.
+
+On a global run this took out two thirds of the fleet: 2,746 of 4,262 feeds
+charted empty. Only clipped feeds were affected, which is why the large
+metros — whose windows already sat inside their extracts — kept drawing
+normally and hid the scale of it.
+
+### A feed with no covering extract draws what it has
+
+Preflight used to fail a feed outright when its window reached past its rail
+extract and nothing else in the registry covered the remainder. That is the
+normal case for continental carriers, whose windows are larger than any single
+extract in the registry, so the feeds most in need of a railroad were the ones
+refused one. It now says so in the log and builds from the extract it has: a
+partial railroad beats no map.
+
+### The MTA's directions carry their sign names
+
+The direction curation added in 0.4.9 is now filled in for the MTA, whose feed
+publishes no `directions.txt`.
+
 ## 0.4.9
 
 ### Directions can be named the way the signs are
