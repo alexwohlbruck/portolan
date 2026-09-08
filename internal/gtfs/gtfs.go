@@ -189,9 +189,11 @@ func loadFiles(files map[string]opener, path string, coverFrac float64,
 					lat, e1 := strconv.ParseFloat(v[1], 64)
 					lon, e2 := strconv.ParseFloat(v[2], 64)
 					if e1 == nil && e2 == nil {
-						stopLL[v[0]] = geo.LL{Lon: lon, Lat: lat}
-						feed.Stops[v[0]] = Stop{Name: v[3],
-							LL: geo.LL{Lon: lon, Lat: lat}, Parent: v[4]}
+						// cloned: a kept field pins its whole source row
+						sid := strings.Clone(v[0])
+						stopLL[sid] = geo.LL{Lon: lon, Lat: lat}
+						feed.Stops[sid] = Stop{Name: strings.Clone(v[3]),
+							LL: geo.LL{Lon: lon, Lat: lat}, Parent: strings.Clone(v[4])}
 					}
 				})
 		}()
@@ -250,18 +252,40 @@ func loadFiles(files map[string]opener, path string, coverFrac float64,
 	// grouping needs each kept trip's route. Shaped feeds skip it —
 	// on Chicago that map would be 5.8M entries for nothing.
 	tripRoute := map[string]string{}
+	// keep() runs style resolution — allocations per candidate id — and
+	// is a pure function of the route, so one verdict per route id
+	// serves every one of that route's trips. Retained ids are interned
+	// (route/shape repeat endlessly) or cloned (trip ids are distinct),
+	// so no kept string pins its source row.
+	keepVerdict := map[string]bool{}
+	tin := map[string]string{}
+	tintern := func(x string) string {
+		if c, ok := tin[x]; ok {
+			return c
+		}
+		c := strings.Clone(x)
+		tin[c] = c
+		return c
+	}
 	if err := eachRowCols(tf, []string{"route_id", "shape_id", "trip_id"},
 		func(v []string) {
-			if keep != nil && !keep(feed.Routes[v[0]]) {
-				return
+			if keep != nil {
+				kv, ok := keepVerdict[v[0]]
+				if !ok {
+					kv = keep(feed.Routes[v[0]])
+					keepVerdict[tintern(v[0])] = kv
+				}
+				if !kv {
+					return
+				}
 			}
 			if !hasShapes {
-				tripRoute[v[2]] = v[0]
+				tripRoute[strings.Clone(v[2])] = tintern(v[0])
 				return
 			}
 			if v[1] != "" {
-				tripCount[key{v[0], v[1]}]++
-				tripShape[v[2]] = v[1]
+				tripCount[key{tintern(v[0]), tintern(v[1])}]++
+				tripShape[strings.Clone(v[2])] = tintern(v[1])
 			}
 		}); err != nil {
 		return nil, err
@@ -299,21 +323,32 @@ func loadFiles(files map[string]opener, path string, coverFrac float64,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sin := map[string]string{} // sweep-local: runs beside the shapes sweep
+			sintern := func(x string) string {
+				if c, ok := sin[x]; ok {
+					return c
+				}
+				c := strings.Clone(x)
+				sin[c] = c
+				return c
+			}
 			stErr = eachRowCols(stf, []string{"trip_id", "stop_sequence", "stop_id"},
 				func(v []string) {
 					seq, err := strconv.Atoi(v[1])
 					if err != nil {
 						return
 					}
-					sid := v[2]
+					sid := sintern(v[2])
 					if !hasShapes {
 						if _, kept := tripRoute[v[0]]; !kept {
 							return
 						}
-						if tripOrder[v[0]] == nil {
-							tripOrder[v[0]] = map[int]string{}
+						to := tripOrder[v[0]]
+						if to == nil {
+							to = map[int]string{}
+							tripOrder[strings.Clone(v[0])] = to
 						}
-						tripOrder[v[0]][seq] = sid
+						to[seq] = sid
 						return
 					}
 					shape, ok := tripShape[v[0]]
@@ -355,7 +390,12 @@ func loadFiles(files map[string]opener, path string, coverFrac float64,
 					lon, e2 := strconv.ParseFloat(v[2], 64)
 					seq, e3 := strconv.Atoi(v[3])
 					if e1 == nil && e2 == nil && e3 == nil {
-						shapes[v[0]] = append(shapes[v[0]], spt{seq, geo.LL{Lon: lon, Lat: lat}})
+						id := v[0]
+						pts, ok := shapes[id]
+						if !ok {
+							id = strings.Clone(id)
+						}
+						shapes[id] = append(pts, spt{seq, geo.LL{Lon: lon, Lat: lat}})
 					}
 				})
 		}()
@@ -662,6 +702,57 @@ func eachRowCols(open opener, cols []string, fn func(vals []string)) error {
 			if strings.TrimSpace(h) == c {
 				idxs[j] = i
 				break
+			}
+		}
+	}
+	vals := make([]string, len(cols))
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for j, ix := range idxs {
+			if ix < 0 || ix >= len(row) {
+				vals[j] = ""
+			} else {
+				vals[j] = strings.TrimSpace(row[ix])
+			}
+		}
+		fn(vals)
+	}
+}
+
+// eachRowVals is eachRowCols with eachRow's header rule — a duplicated
+// column name resolves to its LAST occurrence — so converted callers see
+// exactly the fields eachRow's map lookup served. It exists because
+// eachRow's per-row closure and per-field map hash were the whole cost
+// of the service pass over stop_times.
+func eachRowVals(open opener, cols []string, fn func(vals []string)) error {
+	rc, err := open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	r := csv.NewReader(rc)
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+	r.ReuseRecord = true
+	header, err := r.Read()
+	if err != nil {
+		return err
+	}
+	if len(header) > 0 && len(header[0]) > 2 && header[0][0] == 0xEF {
+		header[0] = header[0][3:]
+	}
+	idxs := make([]int, len(cols))
+	for j, c := range cols {
+		idxs[j] = -1
+		for i, h := range header {
+			if strings.TrimSpace(h) == c {
+				idxs[j] = i // no break: the last duplicate wins, as in eachRow
 			}
 		}
 	}

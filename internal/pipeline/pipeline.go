@@ -391,12 +391,26 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		}
 	}
 	logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
+	// One parse for the whole build: LoadServiceInfo reads stop_times end
+	// to end (a gigabyte on the big feeds), and two sites below need it.
+	var (
+		siMemo    *gtfs.ServiceInfo
+		siMemoErr error
+		siLoaded  bool
+	)
+	serviceInfo := func() (*gtfs.ServiceInfo, error) {
+		if !siLoaded {
+			siLoaded = true
+			siMemo, siMemoErr = LoadServiceInfo(o.GTFS)
+		}
+		return siMemo, siMemoErr
+	}
 	// scenario selection runs BEFORE the bbox clip: clipping rewrites a
 	// pattern's ShapeID to "<shape>#clipN", and a scenario names patterns
 	// by (route, shape) — filtering after the clip silently dropped every
 	// pattern that touched the window edge.
 	if o.Scenario != "" {
-		si, err := LoadServiceInfo(o.GTFS)
+		si, err := serviceInfo()
 		if err != nil {
 			return fmt.Errorf("scenario build: %w", err)
 		}
@@ -451,7 +465,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	// a usable calendar builds a map without acts and the viewer falls
 	// back to route-level masks.
 	var patActs map[string]gtfs.Mask168
-	if si, err := LoadServiceInfo(o.GTFS); err == nil {
+	if si, err := serviceInfo(); err == nil {
 		pm := si.PatternMasks()
 		patActs = make(map[string]gtfs.Mask168, len(pm))
 		for k, m := range pm {
