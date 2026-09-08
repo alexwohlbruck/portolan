@@ -5,6 +5,27 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### The same maps, faster and in less memory
+
+A performance pass over the whole pipeline with one rule: every output —
+GeoJSON, sidecars, tiles — stays byte-for-byte what it was. A NYC subway
+chart runs ~16% less CPU; tiling holds one tile in memory instead of a
+whole zoom level (half the tiler's peak on a city, far more on a metro
+group's z18); the service calendar is parsed once per build instead of
+three times; and a stale extract's coverage scan reads the one candidate
+the ranking picks instead of every extract in the registry. Retained GTFS
+ids no longer pin their whole CSV rows, and a chart child's log is no
+longer buffered unbounded in the sync parent.
+
+One deliberate exception to "byte-for-byte": station centroids now sum
+their platforms in sorted stop order. They previously summed in Go map
+order, which wobbled the last float digit run to run — the same build
+could emit two different stations files, and sync's unchanged-tile
+detection saw phantom changes. Output is now one canonical byte stream
+across runs; coordinates move by at most one ulp against any prior run.
+
 ## 0.4.10
 
 ### Clipped extracts keep their geometry
