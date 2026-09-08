@@ -505,6 +505,22 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 			return fmt.Errorf("EXPORT: %w", err)
 		}
 	}
+	// MATCH, the paths dump and the export were the last readers of the
+	// source shape polylines and of the per-step way tokens: everything
+	// downstream reads a path's Line, Steps and pattern metadata (route,
+	// ids, terminals). Dropping the references here releases every input
+	// shape — the largest retained input on a metro build — for the rest
+	// of it.
+	for i := range paths {
+		paths[i].Pattern.Shape = nil
+		paths[i].WayIDs = nil
+	}
+	for i := range rail {
+		rail[i].Shape = nil
+	}
+	for i := range feed.Patterns {
+		feed.Patterns[i].Shape = nil
+	}
 	// PORTOLAN_MATCH_ONLY=1: stop after MATCH + the paths dump. Debug
 	// family (PORTOLAN_DBG*): iterating on a match diagnosis pays SPLIT's
 	// minutes on every loop otherwise.
