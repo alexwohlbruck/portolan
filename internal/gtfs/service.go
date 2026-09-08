@@ -802,17 +802,25 @@ func groupPatterns(si *ServiceInfo, cells [7][24]bool, coverFrac float64, derive
 		n   int
 	}
 	byRoute := map[string][]pa{}
+	// the active cells once, not per pattern: BuildScenarios calls this
+	// 168 times with a single-cell mask, and the 7×24 scan per pattern
+	// was 168 integer reads to find one
+	type dh struct{ d, h int }
+	var on []dh
+	for d := 0; d < 7; d++ {
+		for h := 0; h < 24; h++ {
+			if cells[d][h] {
+				on = append(on, dh{d, h})
+			}
+		}
+	}
 	for key, act := range si.Activity {
 		if deriveOnly && !si.derive[key] {
 			continue
 		}
 		n := 0
-		for d := 0; d < 7; d++ {
-			for h := 0; h < 24; h++ {
-				if cells[d][h] {
-					n += act[d][h]
-				}
-			}
+		for _, c := range on {
+			n += act[c.d][c.h]
 		}
 		if n > 0 {
 			byRoute[key.Route] = append(byRoute[key.Route], pa{key, n})
@@ -994,11 +1002,17 @@ func (m Mask168) Empty() bool {
 
 // Hex renders 7 × 6 hex chars, day-major.
 func (m Mask168) Hex() string {
-	var b strings.Builder
+	// manual hex, same bytes as the old %06x: seven reflective Fprintf
+	// calls per pattern added up across every pattern of every feed
+	const digits = "0123456789abcdef"
+	b := make([]byte, 0, 42)
 	for _, d := range m {
-		fmt.Fprintf(&b, "%06x", d&0xffffff)
+		v := d & 0xffffff
+		for s := 20; s >= 0; s -= 4 {
+			b = append(b, digits[(v>>uint(s))&0xf])
+		}
 	}
-	return b.String()
+	return string(b)
 }
 
 // ParseMask168 is Hex's inverse; ok is false for anything but 42 hex
