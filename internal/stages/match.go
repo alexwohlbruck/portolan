@@ -103,6 +103,7 @@ const gapState = -1
 
 // dbgMatch gates match-stage diagnostics (PORTOLAN_DBGM=1).
 var dbgMatch = os.Getenv("PORTOLAN_DBGM") != ""
+var dbgMatch2 = os.Getenv("PORTOLAN_DBGM2")
 
 // crossoverWays: ways tagged service=crossover. Crossovers are kept in the
 // graph for CONNECTIVITY (dropping them severed the bridge→Broadway link),
@@ -650,7 +651,7 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 	// PORTOLAN_DBGM2=<route>:<shape> dumps the emission table for ONE
 	// pattern — the way to see WHY a stretch went to GAP instead of
 	// theorizing about it. Debug family (PORTOLAN_DBG*).
-	if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+	if want := dbgMatch2; want != "" &&
 		want == pat.Route.ID+":"+pat.ShapeID {
 		for i := 0; i < n; i++ {
 			best := math.Inf(1)
@@ -916,7 +917,7 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 		if len(events) > 0 && s != gapState && events[len(events)-1].edge != gapState {
 			// splice the connecting walk's intermediate edges
 			w := m.walks[[2]int{events[len(events)-1].edge, s}]
-			if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+			if want := dbgMatch2; want != "" &&
 				want == pat.Route.ID+":"+pat.ShapeID && len(w.via) > 0 {
 				wl := 0.0
 				for _, e := range w.via {
@@ -936,7 +937,7 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 	}
 	// PORTOLAN_DBGM2: where exactly did the DP fall to GAP? Arc ranges in
 	// km along the shape — the coordinates to aim the next probe at.
-	if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+	if want := dbgMatch2; want != "" &&
 		want == pat.Route.ID+":"+pat.ShapeID {
 		for _, ev := range events {
 			if ev.edge == gapState && ev.toArc-ev.fromArc > 1000 {
