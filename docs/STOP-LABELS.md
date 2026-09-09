@@ -260,13 +260,27 @@ and quietly stop tracking upstream.
 `aerialway=station`, `amenity=ferry_terminal`) and `internal/pipeline/
 osmstops.go` pairs each drawn station with the one that is really the same
 place. Three signals must agree, because a wrong rename is worse than no
-rename: **proximity** (220 m ceiling, distance still weighted inside it),
-**name** (token-set similarity after folding case, accents, punctuation,
-"Station"/"Estación"/"Bahnhof", and the directional suffixes feeds
-append), and **class** (a light-rail station may not match a bus
-`stop_position` sharing its corner, however similar the names). Matching
-is one-to-one and greedy by score. The extract is opt-in per city, and its
-presence IS the switch — a city with no `stops` path is untouched.
+rename:
+
+- **proximity** — a 250 m ceiling, and the primary tell. Inside 45 m a
+  compatible stop simply IS the stop; past that the name has to start
+  agreeing, on a ramp reaching 0.6 similarity at the ceiling.
+- **name** — IDF-weighted token containment, measured over this city's own
+  names rather than any stopword list, so the words a city repeats weigh
+  nothing whatever language they are in. Tokens pair one-to-one, exact
+  spellings first and abbreviations after, an abbreviation being a token
+  that is a prefix of the other ("wash"/"washington", "4"/"4th"). A prefix
+  pairing is credited the lesser of the two words' weights and counts for
+  less than agreeing outright.
+- **class** — a tram stop may not claim the bus pole beside it. `metro`,
+  `regional` and `tram` count as agreement that it is rail, at a ranking
+  penalty, because feeds and OSM disagree about which one a line is and
+  neither is wrong: the Staten Island Railway is `route_type` 2 to the MTA
+  and `station=subway` to OSM. Bus, ferry and aerial stay hard-gated.
+
+Matching is one-to-one and greedy by score. The extract is opt-in per
+city, and its presence IS the switch — a city with no `stops` path is
+untouched.
 
 A match always attaches the OSM object id, emitted as `osm` on the station
 feature and on each of its markers (`"node/5106080553"`), so a consumer
@@ -302,10 +316,17 @@ are what the MTA and Apple print and what fits a label pill; OSM's
 cartography. That is a curation call, so it lives in config.
 
 Match rates are a data-quality signal worth watching: Mexico City 221/225
-stations, Boston 184/198, Charlotte 28/43, NYC 179/566 (NYC's low rate is
-its enormous bus-stop population in the extract diluting nothing — the
-rail stations that matter mostly match; the misses are minor complexes
-OSM models as several nodes with none tagged as the station).
+stations, Boston 184/198, Charlotte 28/43. On the NYC subway 379 of 380
+distinct station names match, the one miss being a station the feed leaves
+unnamed.
+
+A low rate is worth reading before it is explained away. NYC's used to sit
+at 29 misses, and the tempting story — OSM models a big complex as several
+nodes with none tagged as the station — was wrong twice over. Every miss
+was either a name the MTA abbreviates and OSM spells out (no token in
+common, so the name signal read zero) or the Staten Island Railway
+disagreeing with OSM about its own class. Both were matcher bugs, not data
+gaps, and both stations and nodes were sitting metres apart the whole time.
 
 **Transitland onestop ids are reachable but not wired.** `GET /stops?
 feed_onestop_id=…` returns `onestop_id` alongside the feed's own
