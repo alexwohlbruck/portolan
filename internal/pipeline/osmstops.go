@@ -291,38 +291,114 @@ func idfOf(corpora ...[][]string) map[string]float64 {
 	return idf
 }
 
+// abbreviates reports one token written short for the other: a strict
+// prefix of it. This is the single structural fact about abbreviation
+// that needs no word list and no language — "st" for "street", "wash"
+// for "washington", "4" for "4th", "estac" for "estación" — and it is
+// what lets a feed that shortens every word still agree with an OSM name
+// that spells them all out.
+//
+// It says nothing about WHICH word was meant: "st" prefixes "stuyvesant"
+// as readily as "street". That ambiguity is priced in rather than
+// legislated away — see abbrevCredit and the pairing order in nameSim.
+func abbreviates(a, b string) bool {
+	if len(a) == len(b) {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a)
+}
+
+// abbrevCredit is a prefix pairing's worth against the same two words
+// spelled alike. An abbreviation is real but weaker evidence — the
+// shorter the stub, the more words it could have been — so it counts
+// for less, and a station that agrees outright always outranks one that
+// only agrees once expanded.
+const abbrevCredit = 0.75
+
+// uniqueToks drops repeats, keeping first-seen order so pairing is
+// deterministic across runs.
+func uniqueToks(t []string) []string {
+	seen := make(map[string]bool, len(t))
+	out := make([]string, 0, len(t))
+	for _, x := range t {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // nameSim is IDF-weighted containment: the shared weight over the lighter
 // side's total. Containment rather than Jaccard because abbreviation is
 // the norm — "Mint" against "Mint Street" should read as agreement, not
 // as half a disagreement — and the weighting means the words the city
 // repeats everywhere ("Street", "CityLYNX") contribute almost nothing to
 // either side of that ratio.
+//
+// Words pair one-to-one, exact spellings first and abbreviations after,
+// so a stub never consumes the token its own full form was waiting for:
+// against "Christopher Street–Stonewall", the feed's "st" must not take
+// "stonewall" and leave "christopher" to carry the name alone.
+//
+// A pairing is credited the LOWER of the two tokens' weights. A stub
+// cannot be worth more than the word it stands in for, and it is what
+// keeps promiscuous one-letter stubs cheap without a rule about their
+// length: "w" is on a tenth of the MTA's names, so it scores near zero
+// however rare the "washington" it reaches for.
 func nameSim(a, b []string, idf map[string]float64) float64 {
-	if len(a) == 0 || len(b) == 0 {
+	ta, tb := uniqueToks(a), uniqueToks(b)
+	if len(ta) == 0 || len(tb) == 0 {
 		return 0
 	}
 	wa, wb := 0.0, 0.0
-	setA := map[string]bool{}
-	for _, t := range a {
-		if !setA[t] {
-			setA[t] = true
-			wa += idf[t]
-		}
+	for _, t := range ta {
+		wa += idf[t]
 	}
-	setB := map[string]bool{}
-	shared := 0.0
-	for _, t := range b {
-		if !setB[t] {
-			setB[t] = true
-			wb += idf[t]
-			if setA[t] {
-				shared += idf[t]
-			}
-		}
+	for _, t := range tb {
+		wb += idf[t]
 	}
 	lighter := math.Min(wa, wb)
 	if lighter <= 0 {
 		return 0
+	}
+
+	pairedA := make([]bool, len(ta))
+	usedB := make([]bool, len(tb))
+	shared := 0.0
+	for i, x := range ta {
+		for j, y := range tb {
+			if usedB[j] || x != y {
+				continue
+			}
+			pairedA[i], usedB[j] = true, true
+			shared += idf[x]
+			break
+		}
+	}
+	for i, x := range ta {
+		if pairedA[i] {
+			continue
+		}
+		best, credit := -1, 0.0
+		for j, y := range tb {
+			if usedB[j] || !abbreviates(x, y) {
+				continue
+			}
+			c := abbrevCredit * math.Min(idf[x], idf[y])
+			// the closest expansion when several fit: "st" is likelier
+			// "street" than "stuyvesant"
+			if c > credit || (c == credit && best >= 0 && len(y) < len(tb[best])) {
+				best, credit = j, c
+			}
+		}
+		if best >= 0 {
+			pairedA[i], usedB[best] = true, true
+			shared += credit
+		}
 	}
 	return math.Min(1, shared/lighter)
 }
@@ -410,6 +486,49 @@ func needSim(d float64) float64 {
 // a genuinely nearer station.
 const osmStationBonus = 0.13
 
+// railFamily is the set of classes that mean "runs on rails in a city".
+// A feed and OSM routinely disagree about WHICH of them a line is, and
+// neither is wrong: the Staten Island Railway is filed by the MTA as
+// route_type 2 (regional) and mapped in OSM as station=subway (metro),
+// because it is legally a railway and operationally a subway. Requiring
+// the two to agree exactly threw away all 21 of its stations while their
+// OSM nodes sat 19-28 m away under identical names.
+//
+// Ferry, bus, aerial and the rest stay hard-gated. Those confusions are
+// real disagreements about what the thing IS, not two names for one
+// answer, and a tram stop must still not claim the bus pole beside it.
+var railFamily = map[string]bool{
+	"metro": true, "regional": true, "tram": true,
+}
+
+// crossClassPenalty prices a pairing that only agrees it is rail. Enough
+// that a stop of the station's own class wins whenever both are in reach,
+// not enough to lose to a stop that merely sits nearer.
+const crossClassPenalty = 0.10
+
+// classAffinity scores a station's classes against an OSM stop's: 1 for
+// a class both hold, railFamilyOnly when they merely agree it is rail,
+// and 0 for a pairing the gate should drop.
+func classAffinity(stationClasses, stopClasses map[string]bool) (ok, exact bool) {
+	for c := range stationClasses {
+		if stopClasses[c] {
+			return true, true
+		}
+	}
+	rail := func(cs map[string]bool) bool {
+		for c := range cs {
+			if railFamily[c] {
+				return true
+			}
+		}
+		return false
+	}
+	if rail(stationClasses) && rail(stopClasses) {
+		return true, false
+	}
+	return false, false
+}
+
 // MatchOSMStops pairs stations with OSM stops and returns the accepted
 // matches, best-first. It does not mutate the stations — the caller
 // decides whether a match renames anything (ApplyOSMStopMatches).
@@ -457,15 +576,10 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 				continue
 			}
 			// CLASS gates regardless of how close: a tram stop is not the
-			// bus pole beside it. A station of unknown class is left alone.
-			shared := false
-			for c := range classes {
-				if stops[oi].Classes[c] {
-					shared = true
-					break
-				}
-			}
-			if !shared {
+			// bus pole beside it. Two rail classes that disagree with each
+			// other still pass, at a price — see railFamily.
+			ok, exactClass := classAffinity(classes, stops[oi].Classes)
+			if !ok {
 				continue
 			}
 			sim := nameSim(stoks[si], stops[oi].toks, idf)
@@ -475,6 +589,9 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 			// proximity dominates the ranking too; the name only orders
 			// candidates that are similarly close
 			score := 0.65*(1-d/osmMatchRadiusM) + 0.35*sim
+			if !exactClass {
+				score -= crossClassPenalty
+			}
 			// ...but a station outranks a stopping point that is merely
 			// nearer. Both carry the station's name and sit metres apart, so
 			// without this the winner is whichever the feed's coordinate

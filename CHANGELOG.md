@@ -5,6 +5,50 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### The stop matcher reads abbreviations and forgives rail classes
+
+Two gates in OSM stop matching were dropping stations whose OSM object sat
+in plain sight. On the New York subway they cost 29 of 380 stations their
+id, W 4 St-Wash Sq among them — eight lines, the busiest interchange in the
+system, and the tap that opens it had nothing to open.
+
+The name gate could not read an abbreviation. A feed that shortens every
+word and an OSM name that spells every one out share no token at all:
+"W 4 St-Wash Sq" against "West 4th Street–Washington Square" scored 0.000
+where the 88 m between them demanded 0.126. Only a rare proper noun
+survived the difference, which is why Christopher St-Stonewall matched at
+99 m while W 4 St failed at 88, and why every casualty was a numbered
+street. Tokens now pair one-to-one, exact spellings first and prefixes
+after, so a stub never consumes the token its own full form was waiting
+for. A prefix pairing is credited the lesser of the two words' weights,
+which is what keeps a promiscuous "w" cheap without a rule about stub
+length. No word list is involved: abbreviation is prefix truncation in
+every language portolan draws.
+
+The class gate demanded the feed and OSM agree on which rail class a line
+is. They routinely do not, and neither is wrong — the MTA files the Staten
+Island Railway as `route_type` 2 (regional) and OSM maps it
+`station=subway` (metro), because it is legally a railway and operationally
+a subway. All 21 SIR stations went unmatched with their nodes 19-28 m away
+under identical names. `metro`, `regional` and `tram` now count as
+agreement that it is rail, at a ranking penalty small enough to lose to
+real distance but enough that a stop of the station's own class wins
+whenever both are in reach. Bus, ferry and aerial stay hard-gated.
+
+Replayed against the real New York extract, misses fall from 29 to 1 — a
+station the feed leaves unnamed. Every newly matched pair is its own name
+spelled out, at 0-6 m, and the weakest-evidence match in the set
+("8 St-NYU" to "8th Street–New York University", 92 m) is correct.
+
+Ids only, for NYC: it keeps `"osm_stop_names": false`, so no drawn label
+moves. Cities that opt into renaming will adopt OSM spellings for stations
+that previously had no match.
+
+**Requires a tile rebuild** — existing pyramids keep the ids they were
+built with.
+
 ## 0.4.10
 
 ### Clipped extracts keep their geometry
