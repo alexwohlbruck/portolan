@@ -291,7 +291,16 @@ func BuildStations(feed *gtfs.Feed, pats []gtfs.Pattern, bbox []float64,
 		routes map[string]bool
 	}
 	groups := map[string]*group{}
-	for sid, rts := range stopRoutes {
+	// Sorted stop order, not map order: g.lls feeds a float centroid sum,
+	// and summation order reaches the emitted coordinates (last-ulp
+	// wobble run to run, which sync then mistakes for a real change).
+	sids := make([]string, 0, len(stopRoutes))
+	for sid := range stopRoutes {
+		sids = append(sids, sid)
+	}
+	sort.Strings(sids)
+	for _, sid := range sids {
+		rts := stopRoutes[sid]
 		st := feed.Stops[sid]
 		key := sid
 		if st.Parent != "" {

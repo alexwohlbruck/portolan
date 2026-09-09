@@ -95,6 +95,25 @@ type Entity struct {
 	// narrows the colour policy's reach. Empty — every real-world feed —
 	// leaves the key the bare colour, byte for byte.
 	TrunkGroup string `json:"trunk_group,omitempty"`
+	// Directions names each direction_id the way the signs do, keyed by the
+	// GTFS direction_id as a string: {"0": "Uptown", "1": "Downtown"}. A
+	// rider at Grand Central is reading a sign that says UPTOWN, not one
+	// that says Woodlawn, so a board that only shows the headsign makes
+	// them work out which way that is.
+	//
+	// This is curation because the data does not carry it. GTFS core has
+	// direction_id — an opaque 0/1 with no meaning attached — and the
+	// directions.txt extension, which 367 of the 1499 feeds in the fleet
+	// publish and the MTA does not. Where a feed does publish one it is
+	// read as the starting point; this overrides it, and supplies it where
+	// there is none.
+	//
+	// On an agency it covers every route the agency runs; on a route it
+	// beats the agency. Both are useful: an operator whose whole network
+	// runs Inbound/Outbound says it once, while the MTA needs the L to say
+	// "8 Av"/"Canarsie" where the Lexington Avenue lines say
+	// "Uptown"/"Downtown".
+	Directions map[string]string `json:"directions,omitempty"`
 	// RouteType REPAIRS a feed's route_type where the agency mistyped it —
 	// Mexico City files the Tren Suburbano (a commuter railway) as
 	// route_type 1, and everything downstream then demands metro-class
@@ -181,6 +200,18 @@ func (d Doc) Config() Config {
 					c.Hiddens = map[string]bool{}
 				}
 				c.Hiddens[key] = true
+			}
+			if len(e.Directions) > 0 {
+				if c.Directions == nil {
+					c.Directions = map[string]map[string]string{}
+				}
+				// copied, not aliased: the resolver layers documents over
+				// each other and must not write through into a caller's doc
+				m := make(map[string]string, len(e.Directions))
+				for d, label := range e.Directions {
+					m[d] = label
+				}
+				c.Directions[key] = m
 			}
 			if e.Name != "" {
 				if c.Names == nil {

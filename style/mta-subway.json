@@ -1,5 +1,75 @@
 {
   "options": {
     "osm_stop_names": false
+  },
+  "agencies": {
+    "MTA NYCT": {
+      "directions": {
+        "0": "Uptown",
+        "1": "Downtown"
+      }
+    }
+  },
+  "routes": {
+    "7": {
+      "directions": {
+        "0": "Queens",
+        "1": "Manhattan"
+      }
+    },
+    "7X": {
+      "directions": {
+        "0": "Queens",
+        "1": "Manhattan"
+      }
+    },
+    "G": {
+      "directions": {
+        "0": "Queens",
+        "1": "Brooklyn"
+      }
+    },
+    "L": {
+      "directions": {
+        "0": "Manhattan",
+        "1": "Brooklyn"
+      }
+    },
+    "J": {
+      "directions": {
+        "0": "Jamaica",
+        "1": "Manhattan"
+      }
+    },
+    "Z": {
+      "directions": {
+        "0": "Jamaica",
+        "1": "Manhattan"
+      }
+    },
+    "GS": {
+      "directions": {
+        "0": "Times Sq",
+        "1": "Grand Central"
+      }
+    },
+    "FS": {
+      "directions": {
+        "0": "Franklin Av",
+        "1": "Prospect Park"
+      }
+    },
+    "H": {
+      "directions": {
+        "0": "Broad Channel",
+        "1": "Rockaway Park"
+      }
+    },
+    "SI": {
+      "directions": {
+        "0": "St George",
+        "1": "Tottenville"
+      }
+    }
   }
 }

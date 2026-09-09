@@ -2,9 +2,13 @@ package sync
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/alexwohlbruck/portolan/internal/registry"
 )
 
 // A feed's bbox is the Overpass window AND the shape clip, so a window
@@ -106,11 +110,13 @@ func TestWidenFeedWindowsIgnoresUnmeasuredAndOutOfScope(t *testing.T) {
 func TestClipFCKeepsOnlyWhatMeetsTheWindow(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.geojson")
+	// tags included: they are what classifies a way as regular-service rail,
+	// so an extract that keeps geometry and drops properties is still useless
 	write(t, src, `{"type":"FeatureCollection","features":[
-	  {"type":"Feature","id":"inside","geometry":{"type":"LineString","coordinates":[[0.2,0.2],[0.4,0.4]]}},
-	  {"type":"Feature","id":"straddles","geometry":{"type":"LineString","coordinates":[[0.9,0.9],[2.0,2.0]]}},
-	  {"type":"Feature","id":"far","geometry":{"type":"LineString","coordinates":[[5.0,5.0],[6.0,6.0]]}},
-	  {"type":"Feature","id":"inside","geometry":{"type":"LineString","coordinates":[[0.1,0.1],[0.3,0.3]]}}
+	  {"type":"Feature","id":"inside","properties":{"railway":"rail","usage":"main"},"geometry":{"type":"LineString","coordinates":[[0.2,0.2],[0.4,0.4]]}},
+	  {"type":"Feature","id":"straddles","properties":{"railway":"rail"},"geometry":{"type":"LineString","coordinates":[[0.9,0.9],[2.0,2.0]]}},
+	  {"type":"Feature","id":"far","properties":{"railway":"rail"},"geometry":{"type":"LineString","coordinates":[[5.0,5.0],[6.0,6.0]]}},
+	  {"type":"Feature","id":"inside","properties":{"railway":"rail"},"geometry":{"type":"LineString","coordinates":[[0.1,0.1],[0.3,0.3]]}}
 	]}`)
 	dst := filepath.Join(dir, "out.geojson")
 
@@ -125,6 +131,18 @@ func TestClipFCKeepsOnlyWhatMeetsTheWindow(t *testing.T) {
 	}
 	if ids["far"] {
 		t.Error("a feature outside the window was kept")
+	}
+	// AND the geometry must survive. The first cut of clipFC wrote every
+	// feature with "geometry":null — the right ways with no shape — and the
+	// chart reported "no regular-service rail ways". Asserting on ids alone
+	// is what let that reach production.
+	for _, f := range featuresOf(t, dst) {
+		if len(f.Geom) == 0 || string(f.Geom) == "null" {
+			t.Fatalf("feature %v was written with no geometry", f.ID)
+		}
+		if len(f.Props) == 0 || string(f.Props) == "null" {
+			t.Errorf("feature %v lost its properties — the tags are what classify a way", f.ID)
+		}
 	}
 }
 
@@ -261,4 +279,91 @@ func contains(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// Which extract a widened feed borrows from decides whether it builds at all.
+// Ranking by window size cut Metro-North's rail from a national intercity BUS
+// feed — the widest window in the registry — and the build died with "no
+// regular-service rail ways in build/mta-metro-north-rail.geojson".
+func TestFeedPreflightBorrowsFromItsOwnGroup(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll("build", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// three extracts, all covering the feed's window
+	rail := func(name string, w, s, e, n float64) string {
+		p := filepath.Join("build", name)
+		write(t, p, `{"type":"FeatureCollection","features":[{"type":"Feature","id":"`+name+`",`+
+			`"geometry":{"type":"LineString","coordinates":[[`+ff(w)+`,`+ff(s)+`],[`+ff(e)+`,`+ff(n)+`]]}}]}`)
+		return p
+	}
+	// pad each past railCovers' 2 KB floor
+	pad := func(p string) {
+		raw, _ := os.ReadFile(p)
+		body := string(raw[:len(raw)-len("]}")])
+		for i := 0; i < 40; i++ {
+			body += `,{"type":"Feature","id":"pad` + ff(float64(i)) + `","geometry":{"type":"LineString","coordinates":[[-80,40],[-79,41]]}}`
+		}
+		write(t, p, body+"]}")
+	}
+	groupRail := rail("nec-rail.geojson", -76, 39, -71, 42)
+	busRail := rail("intercity-bus-rail.geojson", -125, 25, -66, 49)
+	ownRail := rail("mnr-rail.geojson", -74.3, 40.4, -73.6, 41.0) // too small: does not cover
+	for _, p := range []string{groupRail, busRail, ownRail} {
+		pad(p)
+	}
+
+	cfg, _ := loadFixtureCfg(t, `{"feeds":{
+	  "mta-metro-north":{"bbox":[-74.1,40.7,-72.9,41.9],"rail":"`+ownRail+`"},
+	  "northeast-corridor-region":{"bbox":[-76,39,-71,42],"rail":"`+groupRail+`","members":["mta-metro-north"]},
+	  "intercity-bus":{"bbox":[-125,25,-66,49],"rail":"`+busRail+`"}
+	}}`)
+
+	var logged string
+	if err := feedPreflight(cfg, "mta-metro-north", "build", func(f string, a ...any) {
+		logged += fmt.Sprintf(f, a...)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logged, "nec-rail.geojson") {
+		t.Errorf("borrowed from the wrong extract: %q", logged)
+	}
+	if strings.Contains(logged, "intercity-bus") {
+		t.Error("borrowed from the continental bus network again")
+	}
+}
+
+func loadFixtureCfg(t *testing.T, raw string) (registry.Config, *Obj) {
+	t.Helper()
+	cfg, err := registry.Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ParseDoc([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, doc
+}
+
+type clippedFeature struct {
+	ID    any             `json:"id"`
+	Props json.RawMessage `json:"properties"`
+	Geom  json.RawMessage `json:"geometry"`
+}
+
+func featuresOf(t *testing.T, path string) []clippedFeature {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct {
+		Features []clippedFeature `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &fc); err != nil {
+		t.Fatal(err)
+	}
+	return fc.Features
 }

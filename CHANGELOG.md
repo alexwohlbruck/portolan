@@ -5,6 +5,124 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### The same maps, faster and in less memory
+
+A performance pass over the whole pipeline with one rule: every output —
+GeoJSON, sidecars, tiles — stays byte-for-byte what it was. A NYC subway
+chart runs ~16% less CPU; tiling holds one tile in memory instead of a
+whole zoom level (half the tiler's peak on a city, far more on a metro
+group's z18); the service calendar is parsed once per build instead of
+three times; and a stale extract's coverage scan reads the one candidate
+the ranking picks instead of every extract in the registry. Retained GTFS
+ids no longer pin their whole CSV rows, and a chart child's log is no
+longer buffered unbounded in the sync parent.
+
+One deliberate exception to "byte-for-byte": station centroids now sum
+their platforms in sorted stop order. They previously summed in Go map
+order, which wobbled the last float digit run to run — the same build
+could emit two different stations files, and sync's unchanged-tile
+detection saw phantom changes. Output is now one canonical byte stream
+across runs; coordinates move by at most one ulp against any prior run.
+
+## 0.4.10
+
+### Clipped extracts keep their geometry
+
+0.4.6 taught a feed whose window reaches past its rail extract to clip that
+extract down to the window. The clip decoded each feature into a struct that
+embedded `feature` alongside a second field also tagged `"geometry"`; Go
+resolves that collision in favour of the shallower field, so the embedded one
+stayed nil and every clipped feature was written back out with
+`"geometry": null`. The extract carried the right ways and no shape at all.
+The chart then found nothing it could draw, and either failed the feed with
+"no regular-service rail ways" or wrote an empty collection.
+
+On a global run this took out two thirds of the fleet: 2,746 of 4,262 feeds
+charted empty. Only clipped feeds were affected, which is why the large
+metros — whose windows already sat inside their extracts — kept drawing
+normally and hid the scale of it.
+
+### A feed with no covering extract draws what it has
+
+Preflight used to fail a feed outright when its window reached past its rail
+extract and nothing else in the registry covered the remainder. That is the
+normal case for continental carriers, whose windows are larger than any single
+extract in the registry, so the feeds most in need of a railroad were the ones
+refused one. It now says so in the log and builds from the extract it has: a
+partial railroad beats no map.
+
+### The MTA's directions carry their sign names
+
+The direction curation added in 0.4.9 is now filled in for the MTA, whose feed
+publishes no `directions.txt`.
+
+## 0.4.9
+
+### Directions can be named the way the signs are
+
+A board reading "Woodlawn" makes a rider work out which way that is; the sign
+they are standing under says UPTOWN. GTFS carries `direction_id` — an opaque
+0/1 — and nothing that says what it means. The `directions.txt` extension
+exists and 367 of the 1499 feeds in the fleet publish one, but the MTA does
+not, and the vocabulary of those that do is agency-chosen and ragged
+(`NORTHBOUND`, `Inbound`, `Loop`, `CIRCULATOR`, one feed with `Inound`).
+
+So it is curation, like colour. A style document's agency, route or stop entry
+takes a `directions` map of `direction_id` to the name on the sign. An agency
+naming covers every route it runs and a route naming beats it, so an operator
+says Inbound/Outbound once while the MTA lets the L say "8 Av"/"Canarsie"
+where the Lexington Avenue lines say "Uptown"/"Downtown". Documents layer per
+direction_id, so a city naming direction 0 keeps what the global document said
+about direction 1.
+
+The corrected feed now carries `directions.txt`. A feed with none gains one; a
+feed that publishes one has the named rows replaced and every other row and
+column kept. A pair nobody named is left out rather than guessed — a board
+showing the wrong compass point is worse than one showing none. The console's
+Style page edits them alongside colours and names.
+
+**Consumers**: the corrected GTFS gains a `directions.txt` wherever a
+direction is named. Nothing else in the output moves.
+
+## 0.4.8
+
+### A widened feed borrows its extract from the right place
+
+0.4.7 cut Metro-North's rail extract from a national intercity **bus**
+network's, and the build died with `no regular-service rail ways`. Candidates
+were ranked widest-window-first, on the reasoning that one source covering the
+whole window beats several covering corners — but the widest window in the
+registry belongs to a continental bus operator, which covers everything and
+contains no railway at all.
+
+A feed now borrows from a group it is a member of before anything else: that
+extract covers every member by construction and carries the same kind of
+railway, which no other test here can check. Failing that it takes the
+*smallest* covering extract, since a minimal superset of a feed's own window is
+far likelier to be the regional railway it runs on than some continental
+network that happens to enclose it.
+
+## 0.4.7
+
+### The corrected window now reaches the build
+
+0.4.6 computed each feed's corrected window and then discarded it. A patch run
+for Metro-North and LIRR reported `registry rewrite: no` and skipped both feeds
+as clean, leaving them drawn exactly as short as before.
+
+`plan.RegistryChanged` is only ever set from group diffs, and that flag is what
+makes a run write the registry *and re-parse it into the config every build
+reads*. With it false the run re-read the old file, the widened window never
+reached the chart, and the build fingerprint never moved. A widened window now
+sets it, and a widened feed joins the changed and affected sets — its clip moved
+even though its zip did not, so its own build and any group drawing it are both
+stale.
+
+**Consumers**: 0.4.6 shipped the window fix inert. This is the release that
+makes it take effect, so the rebuild it asks for is still owed.
+
 ## 0.4.6
 
 ### The global build now covers each feed's own data

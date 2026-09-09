@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -77,7 +78,7 @@ func world(lon, lat float64) (float64, float64) {
 
 type line struct {
 	pts                    [][2]float64 // world coords
-	props                  map[string]any
+	tags                   []tagKV
 	id                     uint64
 	kind                   string // steady | transition | bridge
 	zmin                   int
@@ -87,10 +88,44 @@ type line struct {
 
 type point struct {
 	x, y  float64
-	props map[string]any
+	props map[string]any // kept for the stop/route indexes
+	tags  []tagKV
 	layer string // stations | markers | cat
 	zmin  int
 	zmax  int
+}
+
+// tagKV is one feature property, precomputed at load: the sorted key
+// order and the JSON encoding of list values are per-FEATURE facts, and
+// tagAll used to rederive both for every tile at every zoom.
+type tagKV struct {
+	k string
+	v any
+}
+
+// tagsOf flattens a property map into the exact (key, value) sequence
+// tagAll used to feed the layer: keys sorted, lists as JSON text.
+func tagsOf(props map[string]any) []tagKV {
+	keys := make([]string, 0, len(props))
+	for k := range props {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]tagKV, 0, len(keys))
+	for _, k := range keys {
+		v := props[k]
+		if _, ok := v.([]any); ok {
+			// MVT values are scalar; lists (caterpillar vec/veclo) ride
+			// as JSON text and the viewer decodes them on load
+			enc, err := json.Marshal(v)
+			if err != nil {
+				continue
+			}
+			v = string(enc)
+		}
+		out = append(out, tagKV{k, v})
+	}
+	return out
 }
 
 // Build tiles one build's output fan into Out.
@@ -145,20 +180,6 @@ func Build(o Opts) (Stats, error) {
 		}
 		buf := buffer * ext / extent               // same on-screen slack at any extent
 		pad := float64(buf) / float64(ext) / scale // buffer in world units
-		tilesAt := map[tk]map[string]*mvtLayer{}
-		layer := func(t tk, name string) *mvtLayer {
-			m, ok := tilesAt[t]
-			if !ok {
-				m = map[string]*mvtLayer{}
-				tilesAt[t] = m
-			}
-			l, ok := m[name]
-			if !ok {
-				l = newLayer(name, ext)
-				m[name] = l
-			}
-			return l
-		}
 		// simplification keeps the LOW-zoom tiles from bloating; the TOP
 		// zoom serves every overzoom level above it, where one extent
 		// unit (~0.3 m at z15) is pixels wide — a corner arc simplified
@@ -169,44 +190,25 @@ func Build(o Opts) (Stats, error) {
 			simpTol = 0
 		}
 
+		// Index first, build later: the whole zoom used to accumulate as
+		// decoded layers before a byte was written, which at the top zoom
+		// of a big region held tens of thousands of tiles' features live
+		// at once. Recording which line/point indices touch each tile,
+		// then building, encoding and writing ONE tile at a time, bounds
+		// the peak at a single tile. Per-tile feature order is unchanged:
+		// indices append in ascending order, lines before points — the
+		// same order the per-line sweep produced.
+		lineAt := map[tk][]int32{}
+		pointAt := map[tk][]int32{}
 		for i := range lines {
 			ln := &lines[i]
 			if z < ln.zmin || z > ln.zmax {
 				continue
 			}
 			for _, t := range spanTiles(ln, pad, z) {
-				{
-					tx, ty := t[0], t[1]
-					local := toLocal(ln.pts, tx, ty, scale, ext)
-					var parts [][][2]float64
-					if ln.kind == "steady" {
-						parts = clipParts(local, ext, buf)
-					} else if intersects(local, ext, buf) {
-						// transitions and gap bridges ride whole: their
-						// offset easing runs over line-progress, and a
-						// clip would re-normalise it mid-curve.
-						parts = [][][2]float64{local}
-					}
-					if len(parts) == 0 {
-						continue
-					}
-					l := layer(tk{tx, ty}, "ribbons")
-					f := mvtFeature{typ: 2, id: ln.id}
-					for _, p := range parts {
-						ip := roundPart(simplify(p, simpTol))
-						if len(ip) > 1 {
-							f.lines = append(f.lines, ip)
-						}
-					}
-					if len(f.lines) == 0 {
-						continue
-					}
-					tagAll(l, &f, ln.props)
-					l.feats = append(l.feats, f)
-				}
+				lineAt[t] = append(lineAt[t], int32(i))
 			}
 		}
-
 		for i := range points {
 			pt := &points[i]
 			if z < pt.zmin || z > pt.zmax {
@@ -214,26 +216,82 @@ func Build(o Opts) (Stats, error) {
 			}
 			tx := int(pt.x * scale)
 			ty := int(pt.y * scale)
-			// a symbol lands in every tile whose buffer reaches it, so
-			// labels near an edge keep their collision context
+			// a symbol lands only in its owning tile for now (symbols
+			// dedupe poorly), and only when that tile is in range
 			x0, x1 := tileRange(pt.x-pad, pt.x+pad, z)
 			y0, y1 := tileRange(pt.y-pad, pt.y+pad, z)
-			for ax := x0; ax <= x1; ax++ {
-				for ay := y0; ay <= y1; ay++ {
-					if ax != tx || ay != ty {
-						continue // only the owning tile for now: symbols dedupe poorly
-					}
-					l := layer(tk{ax, ay}, pt.layer)
-					px := int32(math.Round((pt.x*scale - float64(ax)) * float64(ext)))
-					py := int32(math.Round((pt.y*scale - float64(ay)) * float64(ext)))
-					f := mvtFeature{typ: 1, lines: [][][2]int32{{{px, py}}}}
-					tagAll(l, &f, pt.props)
-					l.feats = append(l.feats, f)
-				}
+			if tx >= x0 && tx <= x1 && ty >= y0 && ty <= y1 {
+				pointAt[tk{tx, ty}] = append(pointAt[tk{tx, ty}], int32(i))
 			}
 		}
+		keys := make([]tk, 0, len(lineAt)+len(pointAt))
+		for t := range lineAt {
+			keys = append(keys, t)
+		}
+		for t := range pointAt {
+			if _, ok := lineAt[t]; !ok {
+				keys = append(keys, t)
+			}
+		}
+		sort.Slice(keys, func(a, b int) bool {
+			if keys[a][0] != keys[b][0] {
+				return keys[a][0] < keys[b][0]
+			}
+			return keys[a][1] < keys[b][1]
+		})
 
-		for t, layers := range tilesAt {
+		zStr := strconv.Itoa(z)
+		lastDir, lastX := "", -1
+		for _, t := range keys {
+			tx, ty := t[0], t[1]
+			layers := map[string]*mvtLayer{}
+			layer := func(name string) *mvtLayer {
+				l, ok := layers[name]
+				if !ok {
+					l = newLayer(name, ext)
+					layers[name] = l
+				}
+				return l
+			}
+			for _, i := range lineAt[t] {
+				ln := &lines[i]
+				local := toLocal(ln.pts, tx, ty, scale, ext)
+				var parts [][][2]float64
+				if ln.kind == "steady" {
+					parts = clipParts(local, ext, buf)
+				} else if intersects(local, ext, buf) {
+					// transitions and gap bridges ride whole: their
+					// offset easing runs over line-progress, and a
+					// clip would re-normalise it mid-curve.
+					parts = [][][2]float64{local}
+				}
+				if len(parts) == 0 {
+					continue
+				}
+				l := layer("ribbons")
+				f := mvtFeature{typ: 2, id: ln.id}
+				for _, p := range parts {
+					ip := roundPart(simplify(p, simpTol))
+					if len(ip) > 1 {
+						f.lines = append(f.lines, ip)
+					}
+				}
+				if len(f.lines) == 0 {
+					continue
+				}
+				tagAll(l, &f, ln.tags)
+				l.feats = append(l.feats, f)
+			}
+			for _, i := range pointAt[t] {
+				pt := &points[i]
+				l := layer(pt.layer)
+				px := int32(math.Round((pt.x*scale - float64(tx)) * float64(ext)))
+				py := int32(math.Round((pt.y*scale - float64(ty)) * float64(ext)))
+				f := mvtFeature{typ: 1, lines: [][][2]int32{{{px, py}}}}
+				tagAll(l, &f, pt.tags)
+				l.feats = append(l.feats, f)
+			}
+
 			names := make([]string, 0, len(layers))
 			for n := range layers {
 				names = append(names, n)
@@ -247,15 +305,22 @@ func Build(o Opts) (Stats, error) {
 			if len(blob) == 0 {
 				continue
 			}
-			dir := filepath.Join(o.Out, fmt.Sprint(z), fmt.Sprint(t[0]))
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return st, err
+			if tx != lastX {
+				lastDir = filepath.Join(o.Out, zStr, strconv.Itoa(tx))
+				lastX = tx
+				if err := os.MkdirAll(lastDir, 0o755); err != nil {
+					return st, err
+				}
 			}
-			path := filepath.Join(dir, fmt.Sprintf("%d.mvt", t[1]))
+			path := filepath.Join(lastDir, strconv.Itoa(ty)+".mvt")
 			produced[path] = true
-			if old, err := os.ReadFile(path); err == nil && string(old) == string(blob) {
-				st.Unchanged++
-				continue
+			// Stat first: a changed tile usually changes size, and the
+			// full read is only needed to prove byte equality.
+			if fi, err := os.Stat(path); err == nil && fi.Size() == int64(len(blob)) {
+				if old, err := os.ReadFile(path); err == nil && string(old) == string(blob) {
+					st.Unchanged++
+					continue
+				}
 			}
 			if err := os.WriteFile(path, blob, 0o644); err != nil {
 				return st, err
@@ -268,8 +333,8 @@ func Build(o Opts) (Stats, error) {
 	// prune tiles the new build no longer produces — a route that moved
 	// leaves stale tiles behind, and a stale tile is a rendering bug the
 	// viewer cannot detect
-	err = filepath.Walk(o.Out, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || filepath.Ext(p) != ".mvt" || produced[p] {
+	err = filepath.WalkDir(o.Out, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(p) != ".mvt" || produced[p] {
 			return err
 		}
 		st.Removed++
@@ -489,24 +554,9 @@ func simplify(pts [][2]float64, tol float64) [][2]float64 {
 	return out
 }
 
-func tagAll(l *mvtLayer, f *mvtFeature, props map[string]any) {
-	keys := make([]string, 0, len(props))
-	for k := range props {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := props[k]
-		if _, ok := v.([]any); ok {
-			// MVT values are scalar; lists (caterpillar vec/veclo) ride
-			// as JSON text and the viewer decodes them on load
-			enc, err := json.Marshal(v)
-			if err != nil {
-				continue
-			}
-			v = string(enc)
-		}
-		l.tag(f, k, v)
+func tagAll(l *mvtLayer, f *mvtFeature, tags []tagKV) {
+	for _, t := range tags {
+		l.tag(f, t.k, t.v)
 	}
 }
 
@@ -531,7 +581,7 @@ func loadRibbons(path string, maxZoom int) ([]line, error) {
 		if len(coords) < 2 {
 			continue
 		}
-		ln := line{props: gf.Properties, kind: str(gf.Properties["kind"])}
+		ln := line{tags: tagsOf(gf.Properties), kind: str(gf.Properties["kind"])}
 		ln.zmin, ln.zmax = bandZooms(gf.Properties, maxZoom)
 		if ln.kind == "transition" || ln.kind == "bridge" {
 			ln.zmin, ln.zmax = widenForHydration(ln.zmin, ln.zmax, maxZoom)
@@ -575,7 +625,7 @@ func loadSymbols(path string, maxZoom int) ([]point, error) {
 			return nil, fmt.Errorf("tiles: %s: %w", path, err)
 		}
 		x, y := world(c[0], c[1])
-		p := point{x: x, y: y, props: gf.Properties}
+		p := point{x: x, y: y, props: gf.Properties, tags: tagsOf(gf.Properties)}
 		switch str(gf.Properties["ftype"]) {
 		case "station":
 			p.layer, p.zmin, p.zmax = "stations", symbolFloor, maxZoom
