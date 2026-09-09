@@ -134,8 +134,20 @@ func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string,
 	// service scenarios still work: the graph's route membership is
 	// static, so building one scenario means dropping the routes that do
 	// not run in it from every edge, and any edge left carrying nobody.
+	// The calendar is parsed at most once per build — stop_times is the
+	// biggest file in a feed, and two sites here need the same tables.
+	var (
+		siMemo    *gtfs.ServiceInfo
+		siMemoErr error
+		siLoaded  bool
+	)
 	if o.Scenario != "" {
-		if err := restrictToScenario(net, feed, o, d, logf); err != nil {
+		si, err := serviceInfoFor(o)
+		if err != nil {
+			return fmt.Errorf("scenario build: %w", err)
+		}
+		siMemo, siLoaded = si, true
+		if err := restrictToScenario(net, feed, si, o, d, logf); err != nil {
 			return err
 		}
 		mark = lap("scenario", mark)
@@ -148,7 +160,11 @@ func chartCorridors(ctx context.Context, o ChartOpts, d Dials, logf func(string,
 	// The viewer then falls back to route-level masks, which for a
 	// network with no timetable is the whole truth anyway.
 	var patActs map[string]gtfs.Mask168
-	if si, err := serviceInfoFor(o); err == nil {
+	if !siLoaded {
+		siMemo, siMemoErr = serviceInfoFor(o)
+		siLoaded = true
+	}
+	if si, err := siMemo, siMemoErr; err == nil {
 		pm := si.PatternMasks()
 		patActs = make(map[string]gtfs.Mask168, len(pm))
 		for k, m := range pm {
@@ -282,13 +298,9 @@ func applyEdgeActs(net *stages.Network, feed *gtfs.Feed, patActs map[string]gtfs
 
 // restrictToScenario drops the routes that do not run in the named
 // scenario from every edge, and then the edges nobody is left riding.
-func restrictToScenario(net *stages.Network, feed *gtfs.Feed, o ChartOpts,
-	d Dials, logf func(string, ...any)) error {
+func restrictToScenario(net *stages.Network, feed *gtfs.Feed, si *gtfs.ServiceInfo,
+	o ChartOpts, d Dials, logf func(string, ...any)) error {
 
-	si, err := serviceInfoFor(o)
-	if err != nil {
-		return fmt.Errorf("scenario build: %w", err)
-	}
 	var sc *gtfs.Scenario
 	for _, s := range gtfs.BuildScenarios(si, d.Cover) {
 		if s.ID == o.Scenario {

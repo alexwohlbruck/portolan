@@ -391,12 +391,26 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		}
 	}
 	logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
+	// One parse for the whole build: LoadServiceInfo reads stop_times end
+	// to end (a gigabyte on the big feeds), and two sites below need it.
+	var (
+		siMemo    *gtfs.ServiceInfo
+		siMemoErr error
+		siLoaded  bool
+	)
+	serviceInfo := func() (*gtfs.ServiceInfo, error) {
+		if !siLoaded {
+			siLoaded = true
+			siMemo, siMemoErr = LoadServiceInfo(o.GTFS)
+		}
+		return siMemo, siMemoErr
+	}
 	// scenario selection runs BEFORE the bbox clip: clipping rewrites a
 	// pattern's ShapeID to "<shape>#clipN", and a scenario names patterns
 	// by (route, shape) — filtering after the clip silently dropped every
 	// pattern that touched the window edge.
 	if o.Scenario != "" {
-		si, err := LoadServiceInfo(o.GTFS)
+		si, err := serviceInfo()
 		if err != nil {
 			return fmt.Errorf("scenario build: %w", err)
 		}
@@ -451,7 +465,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	// a usable calendar builds a map without acts and the viewer falls
 	// back to route-level masks.
 	var patActs map[string]gtfs.Mask168
-	if si, err := LoadServiceInfo(o.GTFS); err == nil {
+	if si, err := serviceInfo(); err == nil {
 		pm := si.PatternMasks()
 		patActs = make(map[string]gtfs.Mask168, len(pm))
 		for k, m := range pm {
@@ -490,6 +504,22 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		if err := exportGTFS(o.ExportGTFS, o.GTFS, paths, frame, logf); err != nil {
 			return fmt.Errorf("EXPORT: %w", err)
 		}
+	}
+	// MATCH, the paths dump and the export were the last readers of the
+	// source shape polylines and of the per-step way tokens: everything
+	// downstream reads a path's Line, Steps and pattern metadata (route,
+	// ids, terminals). Dropping the references here releases every input
+	// shape — the largest retained input on a metro build — for the rest
+	// of it.
+	for i := range paths {
+		paths[i].Pattern.Shape = nil
+		paths[i].WayIDs = nil
+	}
+	for i := range rail {
+		rail[i].Shape = nil
+	}
+	for i := range feed.Patterns {
+		feed.Patterns[i].Shape = nil
 	}
 	// PORTOLAN_MATCH_ONLY=1: stop after MATCH + the paths dump. Debug
 	// family (PORTOLAN_DBG*): iterating on a match diagnosis pays SPLIT's

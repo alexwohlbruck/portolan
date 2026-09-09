@@ -204,6 +204,7 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 		mu.Unlock()
 		logf("%s: %s: %v", key, what, err)
 	}
+	hashes := &hashCache{}
 
 	runTask := func(t task) {
 		exportDir := o.ExportDir
@@ -226,7 +227,7 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 			oops(t.key, "assemble", err)
 			return
 		}
-		fp, err := fingerprintBuild(spec)
+		fp, err := fingerprintBuild(spec, hashes)
 		if err != nil {
 			oops(t.key, "fingerprint", err)
 			return
@@ -246,9 +247,13 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 
 		logf("%s: chart (%s)", t.key, t.kind)
 		cmd := exec.Command(o.Portolan, append([]string{"chart"}, spec.Argv...)...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			oops(t.key, "build", fmt.Errorf("%v — %s", err, lastLine(out)))
+		// Only the last line is ever reported, so keep a bounded tail: a
+		// chatty multi-hour chart child used to have its entire output
+		// buffered in this process for the length of the build.
+		tail := &tailBuffer{}
+		cmd.Stdout, cmd.Stderr = tail, tail
+		if err := cmd.Run(); err != nil {
+			oops(t.key, "build", fmt.Errorf("%v — %s", err, lastLine(tail.bytes())))
 			return
 		}
 		mu.Lock()
@@ -400,11 +405,11 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 // windows and the style layering) plus every input zip's content hash.
 // Style documents and extracts are deliberately OUTSIDE it — the
 // manifest covers the feed only, by design (docs/SYNC.md).
-func fingerprintBuild(spec *buildSpec) (string, error) {
+func fingerprintBuild(spec *buildSpec, hc *hashCache) (string, error) {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00", strings.Join(spec.Argv, "\x00"))
 	for _, z := range spec.Zips {
-		c, err := ContentHash(z)
+		c, err := hc.get(z)
 		if err != nil {
 			return "", err
 		}
@@ -413,9 +418,63 @@ func fingerprintBuild(spec *buildSpec) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// hashCache memoizes ContentHash per zip for one Run: an overlay like
+// amtrak.zip is named by twenty-odd builds, and each used to pay a full
+// decompress-and-hash for the same unchanged file. Run-scoped, so a zip
+// swapped between runs is still re-read.
+type hashCache struct {
+	mu gosync.Mutex
+	m  map[string]string
+}
+
+func (c *hashCache) get(z string) (string, error) {
+	c.mu.Lock()
+	if v, ok := c.m[z]; ok {
+		c.mu.Unlock()
+		return v, nil
+	}
+	c.mu.Unlock()
+	v, err := ContentHash(z)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	if c.m == nil {
+		c.m = map[string]string{}
+	}
+	c.m[z] = v
+	c.mu.Unlock()
+	return v, nil
+}
+
 func exists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.Size() > 0
+}
+
+// tailBuffer keeps the last 64 KB written — plenty for lastLine's 200
+// chars, bounded no matter how chatty the child is. Writes come from the
+// child's stdout and stderr pipes concurrently, so it locks.
+type tailBuffer struct {
+	mu  gosync.Mutex
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	const keep = 64 << 10
+	t.mu.Lock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > keep {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-keep:]...)
+	}
+	t.mu.Unlock()
+	return len(p), nil
+}
+
+func (t *tailBuffer) bytes() []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.buf
 }
 
 func lastLine(out []byte) string {

@@ -73,6 +73,10 @@ func nodeSidePt(l *geo.Line, atEnd bool) geo.Pt {
 // positions (circular arcs preserve parallelism) and cuts zoom bands.
 var dbg3Pt geo.Pt
 
+// dbg3On is read once: os.Getenv is a linear scan of the environment
+// block, and these guards sit inside per-candidate loops.
+var dbg3On = os.Getenv("PORTOLAN_DBG3") != ""
+
 func SetDbg3(p geo.Pt) { dbg3Pt = p }
 
 // Fair is FairCtx without cancellation, for callers that run one build
@@ -456,7 +460,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 		// A phantom pairing (a circulator crossing its own path) separates
 		// by half a loop lap, kilometres — orders of magnitude clear.
 		sepMax := da + db + 400
-		dbg := os.Getenv("PORTOLAN_DBG3") != "" && n.Nodes[ni].At.Dist(dbg3Pt) < 100
+		dbg := dbg3On && n.Nodes[ni].At.Dist(dbg3Pt) < 100
 		for _, rid := range shared {
 			pis := patIdx[rid]
 			if len(pis) == 0 {
@@ -516,7 +520,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 						continue
 					}
 					rides := ridesPair(shared, a, b, ni)
-					if os.Getenv("PORTOLAN_DBG3") != "" && nd.At.Dist(dbg3Pt) < 100 {
+					if dbg3On && nd.At.Dist(dbg3Pt) < 100 {
 						fmt.Printf("GATE3 node=%d color=%s a=e%d(%v) b=e%d(%v) shared=%v rides=%v\n",
 							ni, c, a, n.Edges[a].Routes, b, n.Edges[b].Routes, shared, rides)
 					}
@@ -777,7 +781,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 			if belowFloor(a, c.color, band.min) {
 				continue // mode hidden in this band; its steady bodies skip too
 			}
-			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+			if dbg3On && band.min == 15 {
 				for _, e := range []int{a, cur} {
 					pts2 := n.Edges[e].Pts
 					if len(pts2) > 0 && pts2[len(pts2)-1].Dist(dbg3Pt) < 100 ||
@@ -798,14 +802,14 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 			ck := [5]int{a, boolIdx(c.aAtTo), cur, boolIdx(!c.bAtFrom), colorIdx(a, c.color)}
 			rk := [5]int{cur, boolIdx(!c.bAtFrom), a, boolIdx(c.aAtTo), colorIdx(cur, c.color)}
 			if skip || emitted[ck] || emitted[rk] {
-				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+				if dbg3On && band.min == 15 {
 					fmt.Printf("  REJ3 skip=%v em=%v/%v\n", skip, emitted[ck], emitted[rk])
 				}
 				continue
 			}
 			cutA := cutFor(a, boolIdx(c.aAtTo), colorIdx(a, c.color))
 			cutB := cutFor(cur, boolIdx(!c.bAtFrom), colorIdx(cur, c.color))
-			if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+			if dbg3On && band.min == 15 {
 				for _, e := range []int{a, cur} {
 					pts2 := n.Edges[e].Pts
 					if len(pts2) > 0 && (pts2[len(pts2)-1].Dist(dbg3Pt) < 100 || pts2[0].Dist(dbg3Pt) < 100) {
@@ -835,7 +839,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 			tl, hl := geo.NewLine(tail), geo.NewLine(head)
 			entry, exit := pairTangents(a, cur, c.aAtTo, c.bAtFrom)
 			if entry.Dot(exit) < -0.5 {
-				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+				if dbg3On && band.min == 15 {
 					fmt.Printf("  REJ3 hairpin\n")
 				}
 				continue
@@ -879,7 +883,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 				near := tail[len(tail)-1]
 				tc, _, _ := trackCurveBetween(p0, p3, near, geo.NewLine(tail), geo.NewLine(head),
 					patternLayer(routeType(a, c.color)))
-				if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 && near.Dist(dbg3Pt) < 150 {
+				if dbg3On && band.min == 15 && near.Dist(dbg3Pt) < 150 {
 					mt := -1.0
 					if tc != nil {
 						mt = maxTurn12(smoothPolyline(geo.NewLine(append(append([]geo.Pt{p0}, tc...), p3))))
@@ -963,7 +967,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 					mt = mb
 				}
 				if mt > allow {
-					if os.Getenv("PORTOLAN_DBG3") != "" && band.min == 15 {
+					if dbg3On && band.min == 15 {
 						fmt.Printf("  REJ3 drawgate mt=%.0f bez=%.0f allow=%.0f bend=%.0f\n", mt, mb, allow, bend)
 					}
 					continue
@@ -1239,7 +1243,7 @@ func trackCurveBetween(p0, p3, near geo.Pt, tl, hl *geo.Line, connLayer string) 
 	for arc := qb + 2; arc < hl.Len()-2; arc += 4 {
 		out = append(out, hl.AtArc(arc))
 	}
-	if os.Getenv("PORTOLAN_DBG3") != "" && near.Dist(dbg3Pt) < 150 {
+	if dbg3On && near.Dist(dbg3Pt) < 150 {
 		fmt.Printf("TCB len=%.0f total=%.3f startArc=%.0f o0=%.1f o1=%.1f qa=%.0f/%.0f qb=%.0f/%.0f\n",
 			l.Len(), total, startArc, o0, o1, qa, tl.Len(), qb, hl.Len())
 	}

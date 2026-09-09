@@ -10,8 +10,10 @@ package sync
 // feed.sh does exactly the same word-splitting hand-off.
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -455,17 +457,28 @@ func feedPreflight(cfg registry.Config, key, buildDir string,
 		area  float64
 		owned bool // an extract belonging to a group this feed is a member of
 	}
+	// Rank first, read after. The ranking keys — window area and group
+	// membership — come from the registry alone, so the candidates can be
+	// ordered before a single file is opened and railCovers (a full read
+	// of each extract) tested in rank order, stopping at the first hit.
+	// The old shape tested coverage on every extract in the registry —
+	// gigabytes of reads to pick the one file the sort would choose
+	// anyway. Feeds iterate in sorted key order and the sort is stable,
+	// so a tie between equally-ranked extracts lands deterministically.
 	var cands []cand
 	seen := map[string]bool{}
-	for _, other := range cfg.Feeds {
+	feedKeys := make([]string, 0, len(cfg.Feeds))
+	for k := range cfg.Feeds {
+		feedKeys = append(feedKeys, k)
+	}
+	sort.Strings(feedKeys)
+	for _, fk := range feedKeys {
+		other := cfg.Feeds[fk]
 		p := other.Rail
 		if p == "" || p == fc.Rail || seen[p] {
 			continue
 		}
 		if st, err := os.Stat(p); err != nil || st.Size() == 0 {
-			continue
-		}
-		if !railCovers(p, fc.BBox) {
 			continue
 		}
 		seen[p] = true
@@ -482,30 +495,33 @@ func feedPreflight(cfg registry.Config, key, buildDir string,
 		}
 		cands = append(cands, cand{p, a, owned})
 	}
-	if len(cands) == 0 {
-		// Nothing to cut from. The feed keeps the extract it has and draws
-		// what that covers, which is what it did before this step existed —
-		// a partial railroad beats refusing to build. Continental feeds are
-		// the normal case here: Amtrak's and VIA's windows are larger than
-		// any single extract in the registry.
-		logf("%s: window reaches past its rail extract and nothing else covers it — drawing what the extract has", key)
-		return nil
-	}
-	sort.Slice(cands, func(i, j int) bool {
+	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].owned != cands[j].owned {
 			return cands[i].owned
 		}
 		return cands[i].area < cands[j].area
 	})
-	dst := fc.Rail
-	if !strings.HasPrefix(dst, "build/") {
-		dst = filepath.Join(buildDir, key+"-rail.geojson")
+	for _, c := range cands {
+		if !railCovers(c.path, fc.BBox) {
+			continue
+		}
+		dst := fc.Rail
+		if !strings.HasPrefix(dst, "build/") {
+			dst = filepath.Join(buildDir, key+"-rail.geojson")
+		}
+		n, err := clipFC(dst, []string{c.path}, fc.BBox)
+		if err != nil {
+			return fmt.Errorf("%s: clipping rail extract: %w", key, err)
+		}
+		logf("%s: cut a rail extract to its window from %s (%d ways) — sync never calls Overpass", key, c.path, n)
+		return nil
 	}
-	n, err := clipFC(dst, []string{cands[0].path}, fc.BBox)
-	if err != nil {
-		return fmt.Errorf("%s: clipping rail extract: %w", key, err)
-	}
-	logf("%s: cut a rail extract to its window from %s (%d ways) — sync never calls Overpass", key, cands[0].path, n)
+	// Nothing to cut from. The feed keeps the extract it has and draws
+	// what that covers, which is what it did before this step existed —
+	// a partial railroad beats refusing to build. Continental feeds are
+	// the normal case here: Amtrak's and VIA's windows are larger than
+	// any single extract in the registry.
+	logf("%s: window reaches past its rail extract and nothing else covers it — drawing what the extract has", key)
 	return nil
 }
 
@@ -582,19 +598,22 @@ func railCovers(path string, bbox []float64) bool {
 	if len(bbox) != 4 {
 		return true
 	}
-	raw, err := os.ReadFile(path)
+	// Streamed, one feature at a time: this is a boolean predicate over a
+	// file that can be hundreds of MB, and the whole-collection Unmarshal
+	// it replaces held file + decoded copy live at once — per candidate,
+	// inside feedPreflight's scan. Any malformed input answers false,
+	// exactly as the Unmarshal did.
+	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
-	var fc struct {
-		Features []struct {
-			Geometry struct {
-				Type        string          `json:"type"`
-				Coordinates json.RawMessage `json:"coordinates"`
-			} `json:"geometry"`
-		} `json:"features"`
+	defer f.Close()
+	dec := json.NewDecoder(bufio.NewReaderSize(f, 1<<20))
+	t, err := dec.Token()
+	if err != nil {
+		return false
 	}
-	if json.Unmarshal(raw, &fc) != nil {
+	if d, ok := t.(json.Delim); !ok || d != '{' {
 		return false
 	}
 	w, s := math.Inf(1), math.Inf(1)
@@ -605,27 +624,66 @@ func railCovers(path string, bbox []float64) bool {
 		s = math.Min(s, c[1])
 		n = math.Max(n, c[1])
 	}
-	for _, f := range fc.Features {
-		switch f.Geometry.Type {
-		case "LineString":
-			var pts [][2]float64
-			if json.Unmarshal(f.Geometry.Coordinates, &pts) != nil {
-				continue
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		key, _ := kt.(string)
+		if key != "features" {
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return false
 			}
-			for _, c := range pts {
-				take(c)
+			continue
+		}
+		at, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if d, ok := at.(json.Delim); !ok || d != '[' {
+			return false
+		}
+		for dec.More() {
+			var ft struct {
+				Geometry struct {
+					Type        string          `json:"type"`
+					Coordinates json.RawMessage `json:"coordinates"`
+				} `json:"geometry"`
 			}
-		case "MultiLineString":
-			var parts [][][2]float64
-			if json.Unmarshal(f.Geometry.Coordinates, &parts) != nil {
-				continue
+			if dec.Decode(&ft) != nil {
+				return false
 			}
-			for _, pts := range parts {
+			switch ft.Geometry.Type {
+			case "LineString":
+				var pts [][2]float64
+				if json.Unmarshal(ft.Geometry.Coordinates, &pts) != nil {
+					continue
+				}
 				for _, c := range pts {
 					take(c)
 				}
+			case "MultiLineString":
+				var parts [][][2]float64
+				if json.Unmarshal(ft.Geometry.Coordinates, &parts) != nil {
+					continue
+				}
+				for _, pts := range parts {
+					for _, c := range pts {
+						take(c)
+					}
+				}
 			}
 		}
+		if _, err := dec.Token(); err != nil { // closing ]
+			return false
+		}
+	}
+	if _, err := dec.Token(); err != nil { // closing }
+		return false
+	}
+	if _, err := dec.Token(); err != io.EOF { // trailing garbage failed Unmarshal too
+		return false
 	}
 	return w-0.05 <= bbox[0] && s-0.05 <= bbox[1] && e+0.05 >= bbox[2] && n+0.05 >= bbox[3]
 }

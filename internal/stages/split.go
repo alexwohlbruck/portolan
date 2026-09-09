@@ -16,15 +16,20 @@ import (
 )
 
 // dbgRPt reports whether the line passes near the PORTOLAN_DBGR "x,y"
-// frame point (debug only).
+// frame point (debug only). The env is read and parsed once — these
+// guards run per edge inside refineEdges.
+var dbgR = os.Getenv("PORTOLAN_DBGR")
+var dbgRXY = func() geo.Pt {
+	var x, y float64
+	fmt.Sscanf(dbgR, "%f,%f", &x, &y)
+	return geo.Pt{X: x, Y: y}
+}()
+
 func dbgRPt(l *geo.Line) bool {
-	v := os.Getenv("PORTOLAN_DBGR")
-	if v == "" {
+	if dbgR == "" {
 		return false
 	}
-	var x, y float64
-	fmt.Sscanf(v, "%f,%f", &x, &y)
-	return l.DistTo(geo.Pt{X: x, Y: y}) < 60
+	return l.DistTo(dbgRXY) < 60
 }
 
 // SPLIT — owner's steps 2–3. Because MATCH converged co-running routes onto
@@ -1315,7 +1320,7 @@ func refineEdges(net *Network, strandLines []*geo.Line, sgrid *geo.Grid,
 				}
 				cl = bundle.Refine(cl, members, erp)
 			}
-			if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
+			if dbgR != "" && dbgRPt(cl) {
 				mid := cl.AtArc(cl.Len() / 2)
 				fmt.Printf("REFINE3 edge routes=%v members=%d\n", e.Routes, len(members))
 				for mi, m := range members {
@@ -1484,7 +1489,7 @@ func edgeTwins(cl *geo.Line, twinLines []*geo.Line, tgrid *geo.Grid, street bool
 			}
 		}
 	}
-	if os.Getenv("PORTOLAN_DBGR") != "" && dbgRPt(cl) {
+	if dbgR != "" && dbgRPt(cl) {
 		fmt.Printf("TWIN3 street=%v gauge=%.0f samples=%d cands=%d\n", street, twinMax, len(samples), len(bests))
 		for si, b := range bests {
 			fmt.Printf("  twin cand len=%.0f bestRun=%d count=%d\n", twinLines[si].Len(), b, counts[si])

@@ -158,19 +158,20 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 	// weekday actually recurs — see the package comment.
 	svcDays := map[string]*[7]int{}
 	if cf, ok := files["calendar.txt"]; ok {
-		dayCols := []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
-		if err := eachRow(cf, func(get func(string) string) {
-			var days [7]int
-			any := false
-			for i, c := range dayCols {
-				if get(c) == "1" {
-					days[i], any = 1, true
+		if err := eachRowVals(cf, []string{"monday", "tuesday", "wednesday",
+			"thursday", "friday", "saturday", "sunday", "service_id"},
+			func(v []string) {
+				var days [7]int
+				any := false
+				for i := 0; i < 7; i++ {
+					if v[i] == "1" {
+						days[i], any = 1, true
+					}
 				}
-			}
-			if any {
-				svcDays[get("service_id")] = &days
-			}
-		}); err != nil {
+				if any {
+					svcDays[strings.Clone(v[7])] = &days
+				}
+			}); err != nil {
 			return err
 		}
 	}
@@ -183,26 +184,27 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 		for sid := range svcDays {
 			fromCalendar[sid] = true
 		}
-		if err := eachRow(cd, func(get func(string) string) {
-			sid := get("service_id")
-			if fromCalendar[sid] {
-				return // calendar.txt owns this service; exceptions are holidays
-			}
-			if get("exception_type") != "1" {
-				return
-			}
-			t, err := time.Parse("20060102", strings.TrimSpace(get("date")))
-			if err != nil {
-				return
-			}
-			d := (int(t.Weekday()) + 6) % 7 // time.Sunday=0 → our Mon=0
-			days := svcDays[sid]
-			if days == nil {
-				days = &[7]int{}
-				svcDays[sid] = days
-			}
-			days[d]++
-		}); err != nil {
+		if err := eachRowVals(cd, []string{"service_id", "exception_type", "date"},
+			func(v []string) {
+				sid := v[0]
+				if fromCalendar[sid] {
+					return // calendar.txt owns this service; exceptions are holidays
+				}
+				if v[1] != "1" {
+					return
+				}
+				t, err := time.Parse("20060102", v[2])
+				if err != nil {
+					return
+				}
+				d := (int(t.Weekday()) + 6) % 7 // time.Sunday=0 → our Mon=0
+				days := svcDays[sid]
+				if days == nil {
+					days = &[7]int{}
+					svcDays[strings.Clone(sid)] = days
+				}
+				days[d]++
+			}); err != nil {
 			return err
 		}
 	}
@@ -217,17 +219,18 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 		return err
 	}
 	drawable, derive := map[string]bool{}, map[string]bool{}
-	if err := eachRow(rf, func(get func(string) string) {
-		id := pre + get("route_id")
-		c := get("route_color")
-		if c == "" {
-			c = id
-		}
-		si.routeColor[id] = c
-		t, _ := strconv.Atoi(get("route_type"))
-		drawable[id] = opts.drawable(t)
-		derive[id] = opts.derive(t)
-	}); err != nil {
+	if err := eachRowVals(rf, []string{"route_id", "route_color", "route_type"},
+		func(v []string) {
+			id := pre + strings.Clone(v[0])
+			c := strings.Clone(v[1])
+			if c == "" {
+				c = id
+			}
+			si.routeColor[id] = c
+			t, _ := strconv.Atoi(v[2])
+			drawable[id] = opts.drawable(t)
+			derive[id] = opts.derive(t)
+		}); err != nil {
 		return err
 	}
 
@@ -241,15 +244,31 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 		days *[7]int
 	}
 	trips := map[string]tripInfo{}
-	if err := eachRow(tf, func(get func(string) string) {
-		days, ok := svcDays[get("service_id")]
-		shape := get("shape_id")
-		route := pre + get("route_id")
-		if !ok || shape == "" || !drawable[route] {
-			return
+	// Retained strings are interned: a kept CSV field pins its whole
+	// source row (encoding/csv slices all fields out of one string per
+	// record), and stop_times-scale tables have millions of rows naming
+	// a few thousand distinct ids.
+	interned := map[string]string{}
+	intern := func(x string) string {
+		if c, ok := interned[x]; ok {
+			return c
 		}
-		trips[get("trip_id")] = tripInfo{PatKey{route, shape}, days}
-	}); err != nil {
+		c := strings.Clone(x)
+		interned[c] = c
+		return c
+	}
+	if err := eachRowVals(tf, []string{"service_id", "shape_id", "route_id", "trip_id"},
+		func(v []string) {
+			days, ok := svcDays[v[0]]
+			if !ok || v[1] == "" {
+				return
+			}
+			route := pre + v[2]
+			if !drawable[route] {
+				return
+			}
+			trips[intern(v[3])] = tripInfo{PatKey{intern(route), intern(v[1])}, days}
+		}); err != nil {
 		return err
 	}
 
@@ -263,29 +282,30 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 		freq     bool // span came from frequencies.txt, not the template
 	}
 	spans := map[string]*span{}
-	if err := eachRow(sf, func(get func(string) string) {
-		id := get("trip_id")
-		if _, ok := trips[id]; !ok {
-			return
-		}
-		for _, col := range []string{"arrival_time", "departure_time"} {
-			sec, ok := parseGTFSTime(get(col))
-			if !ok {
-				continue
+	if err := eachRowVals(sf, []string{"trip_id", "arrival_time", "departure_time"},
+		func(v []string) {
+			id := v[0]
+			if _, ok := trips[id]; !ok {
+				return
 			}
-			sp := spans[id]
-			if sp == nil {
-				sp = &span{min: sec, max: sec}
-				spans[id] = sp
+			for c := 1; c <= 2; c++ {
+				sec, ok := parseGTFSTime(v[c])
+				if !ok {
+					continue
+				}
+				sp := spans[id]
+				if sp == nil {
+					sp = &span{min: sec, max: sec}
+					spans[intern(id)] = sp
+				}
+				if sec < sp.min {
+					sp.min = sec
+				}
+				if sec > sp.max {
+					sp.max = sec
+				}
 			}
-			if sec < sp.min {
-				sp.min = sec
-			}
-			if sec > sp.max {
-				sp.max = sec
-			}
-		}
-	}); err != nil {
+		}); err != nil {
 		return err
 	}
 
@@ -296,13 +316,13 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 	// window runs from the first start_time to the last end_time plus one
 	// trip's running time — the final departure still completes its run.
 	if ff, ok := files["frequencies.txt"]; ok {
-		if err := eachRow(ff, func(get func(string) string) {
-			sp, ok := spans[get("trip_id")]
+		if err := eachRowVals(ff, []string{"trip_id", "start_time", "end_time"}, func(v []string) {
+			sp, ok := spans[v[0]]
 			if !ok {
 				return
 			}
-			start, ok1 := parseGTFSTime(get("start_time"))
-			end, ok2 := parseGTFSTime(get("end_time"))
+			start, ok1 := parseGTFSTime(v[1])
+			end, ok2 := parseGTFSTime(v[2])
 			if !ok1 || !ok2 || end < start {
 				return
 			}
@@ -363,15 +383,21 @@ func (si *ServiceInfo) loadOne(path, pre string, opts ServiceOpts) error {
 		lon, lat float64
 	}
 	rawShapes := map[string][]raw{}
-	if err := eachRow(shf, func(get func(string) string) {
-		lat, e1 := strconv.ParseFloat(get("shape_pt_lat"), 64)
-		lon, e2 := strconv.ParseFloat(get("shape_pt_lon"), 64)
-		seq, e3 := strconv.Atoi(get("shape_pt_sequence"))
-		if e1 == nil && e2 == nil && e3 == nil {
-			id := pre + get("shape_id")
-			rawShapes[id] = append(rawShapes[id], raw{seq, lon, lat})
-		}
-	}); err != nil {
+	if err := eachRowVals(shf, []string{"shape_pt_lat", "shape_pt_lon",
+		"shape_pt_sequence", "shape_id"},
+		func(v []string) {
+			lat, e1 := strconv.ParseFloat(v[0], 64)
+			lon, e2 := strconv.ParseFloat(v[1], 64)
+			seq, e3 := strconv.Atoi(v[2])
+			if e1 == nil && e2 == nil && e3 == nil {
+				id := pre + v[3]
+				pts, ok := rawShapes[id]
+				if !ok {
+					id = intern(id)
+				}
+				rawShapes[id] = append(pts, raw{seq, lon, lat})
+			}
+		}); err != nil {
 		return err
 	}
 	// geometry stays in DEGREES here: the projection anchor has to be one
@@ -432,13 +458,25 @@ func dist2(a, b spt2) float64 {
 
 // parseGTFSTime parses "HH:MM:SS" (hours may exceed 24) into seconds.
 func parseGTFSTime(s string) (int, bool) {
-	parts := strings.Split(strings.TrimSpace(s), ":")
-	if len(parts) != 3 {
+	// Substrings instead of Split: this runs twice per stop_times row.
+	// strconv.Atoi keeps the old parser's exact acceptances (signs and
+	// all); only the three-part shape is checked by hand.
+	s = strings.TrimSpace(s)
+	i := strings.IndexByte(s, ':')
+	if i < 0 {
 		return 0, false
 	}
-	h, e1 := strconv.Atoi(parts[0])
-	m, e2 := strconv.Atoi(parts[1])
-	sec, e3 := strconv.Atoi(parts[2])
+	j := strings.IndexByte(s[i+1:], ':')
+	if j < 0 {
+		return 0, false
+	}
+	j += i + 1
+	if strings.IndexByte(s[j+1:], ':') >= 0 {
+		return 0, false
+	}
+	h, e1 := strconv.Atoi(s[:i])
+	m, e2 := strconv.Atoi(s[i+1 : j])
+	sec, e3 := strconv.Atoi(s[j+1:])
 	if e1 != nil || e2 != nil || e3 != nil || h < 0 {
 		return 0, false
 	}
@@ -764,17 +802,25 @@ func groupPatterns(si *ServiceInfo, cells [7][24]bool, coverFrac float64, derive
 		n   int
 	}
 	byRoute := map[string][]pa{}
+	// the active cells once, not per pattern: BuildScenarios calls this
+	// 168 times with a single-cell mask, and the 7×24 scan per pattern
+	// was 168 integer reads to find one
+	type dh struct{ d, h int }
+	var on []dh
+	for d := 0; d < 7; d++ {
+		for h := 0; h < 24; h++ {
+			if cells[d][h] {
+				on = append(on, dh{d, h})
+			}
+		}
+	}
 	for key, act := range si.Activity {
 		if deriveOnly && !si.derive[key] {
 			continue
 		}
 		n := 0
-		for d := 0; d < 7; d++ {
-			for h := 0; h < 24; h++ {
-				if cells[d][h] {
-					n += act[d][h]
-				}
-			}
+		for _, c := range on {
+			n += act[c.d][c.h]
 		}
 		if n > 0 {
 			byRoute[key.Route] = append(byRoute[key.Route], pa{key, n})
@@ -956,11 +1002,17 @@ func (m Mask168) Empty() bool {
 
 // Hex renders 7 × 6 hex chars, day-major.
 func (m Mask168) Hex() string {
-	var b strings.Builder
+	// manual hex, same bytes as the old %06x: seven reflective Fprintf
+	// calls per pattern added up across every pattern of every feed
+	const digits = "0123456789abcdef"
+	b := make([]byte, 0, 42)
 	for _, d := range m {
-		fmt.Fprintf(&b, "%06x", d&0xffffff)
+		v := d & 0xffffff
+		for s := 20; s >= 0; s -= 4 {
+			b = append(b, digits[(v>>uint(s))&0xf])
+		}
 	}
-	return b.String()
+	return string(b)
 }
 
 // ParseMask168 is Hex's inverse; ok is false for anything but 42 hex

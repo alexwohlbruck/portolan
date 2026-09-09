@@ -103,6 +103,7 @@ const gapState = -1
 
 // dbgMatch gates match-stage diagnostics (PORTOLAN_DBGM=1).
 var dbgMatch = os.Getenv("PORTOLAN_DBGM") != ""
+var dbgMatch2 = os.Getenv("PORTOLAN_DBGM2")
 
 // crossoverWays: ways tagged service=crossover. Crossovers are kept in the
 // graph for CONNECTIVITY (dropping them severed the bridge→Broadway link),
@@ -650,7 +651,7 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 	// PORTOLAN_DBGM2=<route>:<shape> dumps the emission table for ONE
 	// pattern — the way to see WHY a stretch went to GAP instead of
 	// theorizing about it. Debug family (PORTOLAN_DBG*).
-	if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+	if want := dbgMatch2; want != "" &&
 		want == pat.Route.ID+":"+pat.ShapeID {
 		for i := 0; i < n; i++ {
 			best := math.Inf(1)
@@ -666,27 +667,47 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 		}
 	}
 
-	// Viterbi
+	// Viterbi. dp rows are DENSE — one slot per candidate plus a final
+	// gap slot — because a sample's states are exactly its candidate
+	// edges (unique: distinct pieces × two directions) plus GAP. The
+	// per-sample map this replaces was 20 000 live maps on an intercity
+	// pattern. An unreached slot keeps cost +Inf, which is inert in
+	// every comparison below, exactly as absence from the map was.
 	type cell struct {
 		cost float64
 		prev int // state at the previous sample
 	}
-	dp := make([]map[int]cell, n)
-	dp[0] = map[int]cell{gapState: {gapEmit[0], gapState}}
-	for _, c := range cands[0] {
-		dp[0][c.edge] = cell{c.emit, gapState}
+	stateOf := func(i, slot int) int {
+		if slot < len(cands[i]) {
+			return cands[i][slot].edge
+		}
+		return gapState
 	}
+	dp := make([][]cell, n)
+	mkRow := func(i int) []cell {
+		row := make([]cell, len(cands[i])+1)
+		for j := range row {
+			row[j] = cell{math.Inf(1), gapState}
+		}
+		return row
+	}
+	dp[0] = mkRow(0)
+	dp[0][len(cands[0])] = cell{gapEmit[0], gapState}
+	for j, c := range cands[0] {
+		dp[0][j] = cell{c.emit, gapState}
+	}
+	type pv struct {
+		state int
+		cost  float64
+	}
+	var prevs []pv
 	for i := 1; i < n; i++ {
-		dp[i] = map[int]cell{}
+		dp[i] = mkRow(i)
 		// previous states sorted by cost: transition costs are ≥0, so the
 		// scan can stop once the running best beats the remaining prevs
-		type pv struct {
-			state int
-			cost  float64
-		}
-		var prevs []pv
-		for s, c := range dp[i-1] {
-			prevs = append(prevs, pv{s, c.cost})
+		prevs = prevs[:0]
+		for j, c := range dp[i-1] {
+			prevs = append(prevs, pv{stateOf(i-1, j), c.cost})
 		}
 		// state id breaks exact-cost ties: the old map-iteration order fed
 		// an unstable sort, which is run-to-run random exactly when a tie
@@ -698,7 +719,7 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 			return prevs[a].state < prevs[b].state
 		})
 
-		relax := func(state int, emit float64) {
+		relax := func(slot, state int, emit float64) {
 			best := math.Inf(1)
 			bestPrev := gapState
 			for _, u := range prevs {
@@ -712,27 +733,36 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 				}
 			}
 			if !math.IsInf(best, 1) {
-				dp[i][state] = cell{best + emit, bestPrev}
+				dp[i][slot] = cell{best + emit, bestPrev}
 			}
 		}
-		for _, c := range cands[i] {
-			relax(c.edge, c.emit)
+		for j, c := range cands[i] {
+			relax(j, c.edge, c.emit)
 		}
-		relax(gapState, gapEmit[i])
+		relax(len(cands[i]), gapState, gapEmit[i])
 	}
 
 	// backtrack (smallest state id wins exact-cost ties — the map
 	// iteration here was run-to-run random exactly when a tie could matter)
 	last, best := gapState, math.Inf(1)
-	for s, c := range dp[n-1] {
-		if c.cost < best || (c.cost == best && s < last) {
+	for j, c := range dp[n-1] {
+		if s := stateOf(n-1, j); c.cost < best || (c.cost == best && s < last) {
 			best, last = c.cost, s
 		}
 	}
 	states := make([]int, n)
 	states[n-1] = last
 	for i := n - 1; i > 0; i-- {
-		states[i-1] = dp[i][states[i]].prev
+		slot := len(cands[i])
+		if states[i] != gapState {
+			for j, c := range cands[i] {
+				if c.edge == states[i] {
+					slot = j
+					break
+				}
+			}
+		}
+		states[i-1] = dp[i][slot].prev
 	}
 	return m.assemble(pat, shape, states, shapeArc)
 }
@@ -887,7 +917,7 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 		if len(events) > 0 && s != gapState && events[len(events)-1].edge != gapState {
 			// splice the connecting walk's intermediate edges
 			w := m.walks[[2]int{events[len(events)-1].edge, s}]
-			if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+			if want := dbgMatch2; want != "" &&
 				want == pat.Route.ID+":"+pat.ShapeID && len(w.via) > 0 {
 				wl := 0.0
 				for _, e := range w.via {
@@ -907,7 +937,7 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 	}
 	// PORTOLAN_DBGM2: where exactly did the DP fall to GAP? Arc ranges in
 	// km along the shape — the coordinates to aim the next probe at.
-	if want := os.Getenv("PORTOLAN_DBGM2"); want != "" &&
+	if want := dbgMatch2; want != "" &&
 		want == pat.Route.ID+":"+pat.ShapeID {
 		for _, ev := range events {
 			if ev.edge == gapState && ev.toArc-ev.fromArc > 1000 {

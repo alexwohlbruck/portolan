@@ -1,12 +1,15 @@
 package geo
 
-import "math"
+import (
+	"math"
+	"sync"
+)
 
 // Grid is a uniform spatial hash over line segments — the only index the
 // pipeline needs (cities fit in memory as vectors; no R-tree, no raster).
 type Grid struct {
 	cell  float64
-	cells map[[2]int][]segRef
+	cells map[uint64][]segRef
 	lines []*Line
 }
 
@@ -15,16 +18,23 @@ type segRef struct{ line, seg int }
 // NewGrid indexes every segment of every line at the given cell size
 // (choose ≥ the largest query reach, typically 32–64 m).
 func NewGrid(lines []*Line, cell float64) *Grid {
-	g := &Grid{cell: cell, cells: map[[2]int][]segRef{}, lines: lines}
+	g := &Grid{cell: cell, cells: map[uint64][]segRef{}, lines: lines}
 	for li, l := range lines {
 		for si := 1; si < len(l.Pts); si++ {
 			a, b := l.Pts[si-1], l.Pts[si]
 			g.eachCell(a, b, func(c [2]int) {
-				g.cells[c] = append(g.cells[c], segRef{li, si})
+				g.cells[packCell(c[0], c[1])] = append(g.cells[packCell(c[0], c[1])], segRef{li, si})
 			})
 		}
 	}
 	return g
+}
+
+// packCell folds a cell coordinate into one map key: hashing a uint64 is
+// materially cheaper than hashing a 16-byte [2]int, and Near does up to 49
+// lookups per call.
+func packCell(x, y int) uint64 {
+	return uint64(uint32(x))<<32 | uint64(uint32(y))
 }
 
 func (g *Grid) key(p Pt) [2]int {
@@ -109,28 +119,48 @@ func segWithinStrict(p, a, b Pt, reach float64) bool {
 
 // Near visits every distinct line with at least one segment within reach of
 // p, passing the line index. Visits are deduplicated.
+// nearScratch is a generation-stamped seen-set reused across Near calls: a
+// per-call map[int]bool was the single largest allocation site in the whole
+// pipeline. Pooled because Grid is queried from ParFor goroutines.
+type nearScratch struct {
+	seen  []uint32
+	epoch uint32
+}
+
+var nearPool = sync.Pool{New: func() any { return new(nearScratch) }}
+
 func (g *Grid) Near(p Pt, reach float64, fn func(line int)) {
 	// NOTE: the visit ORDER (cell scan order, first-witness per line) is
 	// load-bearing — callers break score ties by first visit (e.g. FAIR's
 	// trackCurveBetween). Changing the scan radius changes that order even
 	// though the visited SET is identical; keep +1.
+	sc := nearPool.Get().(*nearScratch)
+	if len(sc.seen) < len(g.lines) {
+		sc.seen = make([]uint32, len(g.lines))
+		sc.epoch = 0
+	}
+	sc.epoch++
+	if sc.epoch == 0 {
+		clear(sc.seen)
+		sc.epoch = 1
+	}
 	r := int(math.Ceil(reach/g.cell)) + 1
 	k := g.key(p)
-	seen := map[int]bool{}
 	for dx := -r; dx <= r; dx++ {
 		for dy := -r; dy <= r; dy++ {
-			for _, ref := range g.cells[[2]int{k[0] + dx, k[1] + dy}] {
-				if seen[ref.line] {
+			for _, ref := range g.cells[packCell(k[0]+dx, k[1]+dy)] {
+				if sc.seen[ref.line] == sc.epoch {
 					continue
 				}
 				l := g.lines[ref.line]
 				if segWithin(p, l.Pts[ref.seg-1], l.Pts[ref.seg], reach) {
-					seen[ref.line] = true
+					sc.seen[ref.line] = sc.epoch
 					fn(ref.line)
 				}
 			}
 		}
 	}
+	nearPool.Put(sc)
 }
 
 // NearestDist returns the distance from p to the nearest indexed segment
@@ -142,7 +172,7 @@ func (g *Grid) NearestDist(p Pt, maxReach float64) float64 {
 	k := g.key(p)
 	for dx := -r; dx <= r; dx++ {
 		for dy := -r; dy <= r; dy++ {
-			for _, ref := range g.cells[[2]int{k[0] + dx, k[1] + dy}] {
+			for _, ref := range g.cells[packCell(k[0]+dx, k[1]+dy)] {
 				l := g.lines[ref.line]
 				d2, ddx, ddy := segDist2(p, l.Pts[ref.seg-1], l.Pts[ref.seg])
 				if d2 < best2 {
