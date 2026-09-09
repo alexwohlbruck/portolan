@@ -168,3 +168,68 @@ func TestAbbreviationCreditIsCappedByTheStubsWeight(t *testing.T) {
 		t.Error("unrelated words are not abbreviations")
 	}
 }
+
+// ── class disagreement ────────────────────────────────────────────────
+
+// The MTA files the Staten Island Railway as route_type 2 (regional) and
+// OSM maps it station=subway (metro) — legally a railway, operationally a
+// subway, and neither source is wrong. Requiring exact agreement dropped
+// all 21 of its stations while their nodes sat 19-28 m away under
+// identical names.
+func TestRailClassesMayDisagree(t *testing.T) {
+	sts, stops := nycCorpus()
+	ms := MatchOSMStops(sts, stops, geo.NewFrame(geo.LL{Lat: 40.73, Lon: -74.0}))
+	if got := matchedID(ms, 3); got != "node/42969951" {
+		t.Errorf("Annadale (regional vs metro, 28 m, identical names): got %q", got)
+	}
+}
+
+// ...but only rail forgives rail. A tram stop still may not claim the bus
+// pole beside it, however close, and a ferry terminal is not a station.
+func TestNonRailClassesStayGated(t *testing.T) {
+	cases := []struct {
+		name           string
+		station, stop  []string
+		wantOK, wantEx bool
+	}{
+		{"same class", []string{"metro"}, []string{"metro"}, true, true},
+		{"regional vs metro", []string{"regional"}, []string{"metro"}, true, false},
+		{"tram vs metro", []string{"tram"}, []string{"metro"}, true, false},
+		{"metro vs bus", []string{"metro"}, []string{"bus"}, false, false},
+		{"tram vs bus", []string{"tram"}, []string{"bus"}, false, false},
+		{"regional vs ferry", []string{"regional"}, []string{"ferry"}, false, false},
+		{"bus vs bus", []string{"bus"}, []string{"bus"}, true, true},
+		{"unknown class station", nil, []string{"metro"}, false, false},
+		{"multi-mode picks exact", []string{"bus", "metro"}, []string{"metro"}, true, true},
+	}
+	for _, c := range cases {
+		sc, oc := map[string]bool{}, map[string]bool{}
+		for _, x := range c.station {
+			sc[x] = true
+		}
+		for _, x := range c.stop {
+			oc[x] = true
+		}
+		ok, exact := classAffinity(sc, oc)
+		if ok != c.wantOK || exact != c.wantEx {
+			t.Errorf("%s: got (ok=%v exact=%v), want (ok=%v exact=%v)",
+				c.name, ok, exact, c.wantOK, c.wantEx)
+		}
+	}
+}
+
+// A stop of the station's own class wins whenever both are in reach, so
+// the forgiveness never costs a match that exact agreement would have
+// made. The penalty must not outweigh real distance, though.
+func TestExactClassOutranksRailFamilyAtTheSameDistance(t *testing.T) {
+	same := 0.65*(1-50.0/osmMatchRadiusM) + 0.35*1.0
+	cross := 0.65*(1-50.0/osmMatchRadiusM) + 0.35*1.0 - crossClassPenalty
+	if cross >= same {
+		t.Error("a cross-class stop must not outrank an exact-class one at equal distance")
+	}
+	nearCross := 0.65*(1-10.0/osmMatchRadiusM) + 0.35*1.0 - crossClassPenalty
+	farSame := 0.65*(1-240.0/osmMatchRadiusM) + 0.35*1.0
+	if nearCross <= farSame {
+		t.Error("the penalty should not cost a stop that is 230 m nearer")
+	}
+}

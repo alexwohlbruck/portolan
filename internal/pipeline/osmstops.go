@@ -486,6 +486,49 @@ func needSim(d float64) float64 {
 // a genuinely nearer station.
 const osmStationBonus = 0.13
 
+// railFamily is the set of classes that mean "runs on rails in a city".
+// A feed and OSM routinely disagree about WHICH of them a line is, and
+// neither is wrong: the Staten Island Railway is filed by the MTA as
+// route_type 2 (regional) and mapped in OSM as station=subway (metro),
+// because it is legally a railway and operationally a subway. Requiring
+// the two to agree exactly threw away all 21 of its stations while their
+// OSM nodes sat 19-28 m away under identical names.
+//
+// Ferry, bus, aerial and the rest stay hard-gated. Those confusions are
+// real disagreements about what the thing IS, not two names for one
+// answer, and a tram stop must still not claim the bus pole beside it.
+var railFamily = map[string]bool{
+	"metro": true, "regional": true, "tram": true,
+}
+
+// crossClassPenalty prices a pairing that only agrees it is rail. Enough
+// that a stop of the station's own class wins whenever both are in reach,
+// not enough to lose to a stop that merely sits nearer.
+const crossClassPenalty = 0.10
+
+// classAffinity scores a station's classes against an OSM stop's: 1 for
+// a class both hold, railFamilyOnly when they merely agree it is rail,
+// and 0 for a pairing the gate should drop.
+func classAffinity(stationClasses, stopClasses map[string]bool) (ok, exact bool) {
+	for c := range stationClasses {
+		if stopClasses[c] {
+			return true, true
+		}
+	}
+	rail := func(cs map[string]bool) bool {
+		for c := range cs {
+			if railFamily[c] {
+				return true
+			}
+		}
+		return false
+	}
+	if rail(stationClasses) && rail(stopClasses) {
+		return true, false
+	}
+	return false, false
+}
+
 // MatchOSMStops pairs stations with OSM stops and returns the accepted
 // matches, best-first. It does not mutate the stations — the caller
 // decides whether a match renames anything (ApplyOSMStopMatches).
@@ -533,15 +576,10 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 				continue
 			}
 			// CLASS gates regardless of how close: a tram stop is not the
-			// bus pole beside it. A station of unknown class is left alone.
-			shared := false
-			for c := range classes {
-				if stops[oi].Classes[c] {
-					shared = true
-					break
-				}
-			}
-			if !shared {
+			// bus pole beside it. Two rail classes that disagree with each
+			// other still pass, at a price — see railFamily.
+			ok, exactClass := classAffinity(classes, stops[oi].Classes)
+			if !ok {
 				continue
 			}
 			sim := nameSim(stoks[si], stops[oi].toks, idf)
@@ -551,6 +589,9 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 			// proximity dominates the ranking too; the name only orders
 			// candidates that are similarly close
 			score := 0.65*(1-d/osmMatchRadiusM) + 0.35*sim
+			if !exactClass {
+				score -= crossClassPenalty
+			}
 			// ...but a station outranks a stopping point that is merely
 			// nearer. Both carry the station's name and sit metres apart, so
 			// without this the winner is whichever the feed's coordinate
