@@ -291,38 +291,114 @@ func idfOf(corpora ...[][]string) map[string]float64 {
 	return idf
 }
 
+// abbreviates reports one token written short for the other: a strict
+// prefix of it. This is the single structural fact about abbreviation
+// that needs no word list and no language — "st" for "street", "wash"
+// for "washington", "4" for "4th", "estac" for "estación" — and it is
+// what lets a feed that shortens every word still agree with an OSM name
+// that spells them all out.
+//
+// It says nothing about WHICH word was meant: "st" prefixes "stuyvesant"
+// as readily as "street". That ambiguity is priced in rather than
+// legislated away — see abbrevCredit and the pairing order in nameSim.
+func abbreviates(a, b string) bool {
+	if len(a) == len(b) {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a)
+}
+
+// abbrevCredit is a prefix pairing's worth against the same two words
+// spelled alike. An abbreviation is real but weaker evidence — the
+// shorter the stub, the more words it could have been — so it counts
+// for less, and a station that agrees outright always outranks one that
+// only agrees once expanded.
+const abbrevCredit = 0.75
+
+// uniqueToks drops repeats, keeping first-seen order so pairing is
+// deterministic across runs.
+func uniqueToks(t []string) []string {
+	seen := make(map[string]bool, len(t))
+	out := make([]string, 0, len(t))
+	for _, x := range t {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // nameSim is IDF-weighted containment: the shared weight over the lighter
 // side's total. Containment rather than Jaccard because abbreviation is
 // the norm — "Mint" against "Mint Street" should read as agreement, not
 // as half a disagreement — and the weighting means the words the city
 // repeats everywhere ("Street", "CityLYNX") contribute almost nothing to
 // either side of that ratio.
+//
+// Words pair one-to-one, exact spellings first and abbreviations after,
+// so a stub never consumes the token its own full form was waiting for:
+// against "Christopher Street–Stonewall", the feed's "st" must not take
+// "stonewall" and leave "christopher" to carry the name alone.
+//
+// A pairing is credited the LOWER of the two tokens' weights. A stub
+// cannot be worth more than the word it stands in for, and it is what
+// keeps promiscuous one-letter stubs cheap without a rule about their
+// length: "w" is on a tenth of the MTA's names, so it scores near zero
+// however rare the "washington" it reaches for.
 func nameSim(a, b []string, idf map[string]float64) float64 {
-	if len(a) == 0 || len(b) == 0 {
+	ta, tb := uniqueToks(a), uniqueToks(b)
+	if len(ta) == 0 || len(tb) == 0 {
 		return 0
 	}
 	wa, wb := 0.0, 0.0
-	setA := map[string]bool{}
-	for _, t := range a {
-		if !setA[t] {
-			setA[t] = true
-			wa += idf[t]
-		}
+	for _, t := range ta {
+		wa += idf[t]
 	}
-	setB := map[string]bool{}
-	shared := 0.0
-	for _, t := range b {
-		if !setB[t] {
-			setB[t] = true
-			wb += idf[t]
-			if setA[t] {
-				shared += idf[t]
-			}
-		}
+	for _, t := range tb {
+		wb += idf[t]
 	}
 	lighter := math.Min(wa, wb)
 	if lighter <= 0 {
 		return 0
+	}
+
+	pairedA := make([]bool, len(ta))
+	usedB := make([]bool, len(tb))
+	shared := 0.0
+	for i, x := range ta {
+		for j, y := range tb {
+			if usedB[j] || x != y {
+				continue
+			}
+			pairedA[i], usedB[j] = true, true
+			shared += idf[x]
+			break
+		}
+	}
+	for i, x := range ta {
+		if pairedA[i] {
+			continue
+		}
+		best, credit := -1, 0.0
+		for j, y := range tb {
+			if usedB[j] || !abbreviates(x, y) {
+				continue
+			}
+			c := abbrevCredit * math.Min(idf[x], idf[y])
+			// the closest expansion when several fit: "st" is likelier
+			// "street" than "stuyvesant"
+			if c > credit || (c == credit && best >= 0 && len(y) < len(tb[best])) {
+				best, credit = j, c
+			}
+		}
+		if best >= 0 {
+			pairedA[i], usedB[best] = true, true
+			shared += credit
+		}
 	}
 	return math.Min(1, shared/lighter)
 }
