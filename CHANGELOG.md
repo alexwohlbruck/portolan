@@ -5,6 +5,75 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.5.0
+
+### Fare gates, said out loud
+
+A router decides whether a rider can walk between two stations and carry
+on, and almost every router infers that from geometry, because most feeds'
+transfers.txt is incomplete. For a gated railway the inference is wrong in
+a way that costs money: Borough Hall and Jay St-MetroTech are 240 m apart
+and the MTA deliberately does not connect them — you leave the paid area
+and pay again — so a router that links stations by proximity offers the
+walk as a free change and hides the one-fare alternative, which in that
+case is no slower at all.
+
+GTFS already has the answer: `transfer_type=3`, "Transfers forbidden
+between routes at these stops". It is under-used because writing one row
+per unconnected pair by hand is absurd, so portolan derives them:
+
+```json
+"transfers": { "forbid_undeclared": true }
+```
+
+Every pair of GATED stations (metro, rail, funicular, monorail) within
+walking distance that the agency's own transfers.txt does not connect is,
+by the agency's own account, not a transfer. On the MTA subway feed that
+keeps all 613 declared transfers and adds 278 prohibitions.
+
+Bus, tram and ferry pairs are left alone: an undeclared walk between two of
+those is settled by the tariff's transfer window, not by a gate.
+
+`allow` and `forbid` lists state individual pairs by hand where derivation
+misses one. A prohibition beats a transfer from any source, including the
+feed's own row — a curator forbidding a declared pair is correcting the
+feed, which is what the file is for.
+
+Off by default: it is only safe for a feed whose transfers.txt is complete,
+and asserting that is a curator's call.
+
+### Curated fares for feeds that publish none
+
+GTFS has carried fares since the beginning and most agencies publish
+neither v1 nor v2. The MTA is the extreme case: not one of its seven feeds
+ships a single fare row, so a router reading them prices a trip across New
+York at nothing at all.
+
+A curation document can now state the tariff, and the exported feed carries
+it as standard Fares v2:
+
+```json
+"fares": {
+  "currency": "USD",
+  "price": 3.00,
+  "transfer": { "count": 1, "minutes": 120 }
+}
+```
+
+That renders `fare_products.txt`, `fare_leg_rules.txt` and — where a free
+transfer is allowed — `fare_transfer_rules.txt`. The transfer rule is the
+load-bearing one: a router that reads v2 groups an itinerary's legs into
+fare transfers, so the rule decides how many times a rider pays, not just
+how much a leg costs.
+
+Deliberately a FLAT fare with an optional free-transfer window, which is
+what the missing-fare feeds overwhelmingly charge. Zone, distance and
+time-of-day tariffs stay the agency's to publish: too big to hold by hand,
+too easy to hold wrongly. A curated tariff replaces whatever fare tables the
+feed shipped; a feed with no `fares` block passes its own through untouched.
+
+`style/mta-subway.json` carries the MTA's tariff.
+
 ## 0.4.11
 
 ### The same maps, faster and in less memory

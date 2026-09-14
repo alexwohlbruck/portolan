@@ -33,7 +33,7 @@ import (
 // ChartOpts.GTFS verbatim — the comma order defines the f<i>: route
 // prefixes, which is how each path finds its way home.
 func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
-	logf func(string, ...any)) error {
+	sty *style.Set, logf func(string, ...any)) error {
 
 	srcs := strings.Split(gtfsList, ",")
 	// (feed index, shape id) → matched geometry; first path wins when two
@@ -70,6 +70,19 @@ func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
 		geom[k] = lls
 	}
 
+	// One tariff for the whole feed, built once: it is network-wide by
+	// construction, so it does not vary per source zip.
+	var fares map[string]string
+	if sty != nil {
+		var err error
+		if fares, err = buildFares(sty.Fares); err != nil {
+			return fmt.Errorf("export: %w", err)
+		}
+		if len(fares) > 0 {
+			logf("export: fares — %s", fareSummary(sty.Fares))
+		}
+	}
+
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -88,11 +101,25 @@ func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
 			}
 		}
 		out := filepath.Join(dir, filepath.Base(src))
+		// Transfers are rebuilt per SOURCE zip, unlike fares: the
+		// derivation reads that feed's own stops and declared transfers,
+		// so an overlay's stations never forbid the base feed's.
+		var transfers string
+		if sty != nil {
+			body, n, err := buildTransfers(src, sty.Transfers)
+			if err != nil {
+				return fmt.Errorf("export %s: transfers: %w", src, err)
+			}
+			transfers = body
+			if transfers != "" {
+				logf("export: %s — transfers rewritten, %d gated pairs forbidden", out, n)
+			}
+		}
 		dirs, err := resolveDirections(src, style.Active())
 		if err != nil {
 			return fmt.Errorf("export %s: reading directions: %w", src, err)
 		}
-		if err := rewriteZip(src, out, shapes, dirs); err != nil {
+		if err := rewriteZip(src, out, shapes, dirs, fares, transfers); err != nil {
 			return fmt.Errorf("export %s: %w", src, err)
 		}
 		if len(dirs) > 0 {
@@ -127,7 +154,8 @@ func feedIndexOf(routeID string) int {
 // given; every other entry passes through byte-identical. A feed with no
 // shapes.txt gains one — pfaedle-less feeds exist, and the matched walk
 // is strictly better than nothing.
-func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]string) error {
+func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]string,
+	fares map[string]string, transfers string) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -142,11 +170,20 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]str
 	zw := zip.NewWriter(f)
 	sawShapes := false
 	sawDirections := false
+	sawTransfers := false
 	for _, e := range zr.File {
 		name := filepath.Base(e.Name)
 		r, err := e.Open()
 		if err != nil {
 			return err
+		}
+		// A curated tariff REPLACES the feed's fare tables rather than
+		// joining them: the source rows are dropped here and rewritten
+		// below. Interleaving two tariffs would produce a third that
+		// nobody authored.
+		if _, replaced := fares[name]; replaced {
+			r.Close()
+			continue
 		}
 		w, werr := zw.Create(e.Name)
 		if werr != nil {
@@ -157,6 +194,17 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]str
 		case "shapes.txt":
 			sawShapes = true
 			err = filterShapes(r, w, shapes)
+		case "transfers.txt":
+			// Already rebuilt from these very rows plus curation — see
+			// buildTransfers. Written whole rather than merged row by row
+			// because a prohibition has to be able to REMOVE a row, which
+			// a merge that only ever adds cannot do.
+			sawTransfers = true
+			if transfers != "" {
+				_, err = io.WriteString(w, transfers)
+			} else {
+				_, err = io.Copy(w, r)
+			}
 		case "directions.txt":
 			// The feed already publishes one (367 of the 1499 in the fleet
 			// do). Curation overrides row by row and keeps the rest, so an
@@ -179,6 +227,33 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]str
 			return err
 		}
 		if err := writeDirections(w, dirs); err != nil {
+			return err
+		}
+	}
+	// A feed that declares no transfers at all still gets the curated ones,
+	// which is the case for every agency that leaves the file out.
+	if !sawTransfers && transfers != "" {
+		w, err := zw.Create("transfers.txt")
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, transfers); err != nil {
+			return err
+		}
+	}
+	// The curated tariff, for a feed that publishes no fares of its own —
+	// the MTA's case, and why this exists. Written in a fixed order so an
+	// unchanged tariff exports a byte-identical zip and sync can skip it.
+	for _, name := range fareFiles {
+		body, ok := fares[name]
+		if !ok {
+			continue
+		}
+		w, err := zw.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, body); err != nil {
 			return err
 		}
 	}
