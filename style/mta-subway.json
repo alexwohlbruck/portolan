@@ -2,6 +2,14 @@
   "options": {
     "osm_stop_names": false
   },
+  "fares": {
+    "currency": "USD",
+    "price": 3.0,
+    "transfer": {
+      "count": 1,
+      "minutes": 120
+    }
+  },
   "agencies": {
     "MTA NYCT": {
       "directions": {

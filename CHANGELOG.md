@@ -5,6 +5,40 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### Curated fares for feeds that publish none
+
+GTFS has carried fares since the beginning and most agencies publish
+neither v1 nor v2. The MTA is the extreme case: not one of its seven feeds
+ships a single fare row, so a router reading them prices a trip across New
+York at nothing at all.
+
+A curation document can now state the tariff, and the exported feed carries
+it as standard Fares v2:
+
+```json
+"fares": {
+  "currency": "USD",
+  "price": 3.00,
+  "transfer": { "count": 1, "minutes": 120 }
+}
+```
+
+That renders `fare_products.txt`, `fare_leg_rules.txt` and — where a free
+transfer is allowed — `fare_transfer_rules.txt`. The transfer rule is the
+load-bearing one: a router that reads v2 groups an itinerary's legs into
+fare transfers, so the rule decides how many times a rider pays, not just
+how much a leg costs.
+
+Deliberately a FLAT fare with an optional free-transfer window, which is
+what the missing-fare feeds overwhelmingly charge. Zone, distance and
+time-of-day tariffs stay the agency's to publish: too big to hold by hand,
+too easy to hold wrongly. A curated tariff replaces whatever fare tables the
+feed shipped; a feed with no `fares` block passes its own through untouched.
+
+`style/mta-subway.json` carries the MTA's tariff.
+
 ## 0.4.11
 
 ### The same maps, faster and in less memory

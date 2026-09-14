@@ -33,7 +33,7 @@ import (
 // ChartOpts.GTFS verbatim — the comma order defines the f<i>: route
 // prefixes, which is how each path finds its way home.
 func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
-	logf func(string, ...any)) error {
+	sty *style.Set, logf func(string, ...any)) error {
 
 	srcs := strings.Split(gtfsList, ",")
 	// (feed index, shape id) → matched geometry; first path wins when two
@@ -70,6 +70,19 @@ func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
 		geom[k] = lls
 	}
 
+	// One tariff for the whole feed, built once: it is network-wide by
+	// construction, so it does not vary per source zip.
+	var fares map[string]string
+	if sty != nil {
+		var err error
+		if fares, err = buildFares(sty.Fares); err != nil {
+			return fmt.Errorf("export: %w", err)
+		}
+		if len(fares) > 0 {
+			logf("export: fares — %s", fareSummary(sty.Fares))
+		}
+	}
+
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -92,7 +105,7 @@ func exportGTFS(dir, gtfsList string, paths []stages.Path, frame geo.Frame,
 		if err != nil {
 			return fmt.Errorf("export %s: reading directions: %w", src, err)
 		}
-		if err := rewriteZip(src, out, shapes, dirs); err != nil {
+		if err := rewriteZip(src, out, shapes, dirs, fares); err != nil {
 			return fmt.Errorf("export %s: %w", src, err)
 		}
 		if len(dirs) > 0 {
@@ -127,7 +140,8 @@ func feedIndexOf(routeID string) int {
 // given; every other entry passes through byte-identical. A feed with no
 // shapes.txt gains one — pfaedle-less feeds exist, and the matched walk
 // is strictly better than nothing.
-func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]string) error {
+func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]string,
+	fares map[string]string) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -147,6 +161,14 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]str
 		r, err := e.Open()
 		if err != nil {
 			return err
+		}
+		// A curated tariff REPLACES the feed's fare tables rather than
+		// joining them: the source rows are dropped here and rewritten
+		// below. Interleaving two tariffs would produce a third that
+		// nobody authored.
+		if _, replaced := fares[name]; replaced {
+			r.Close()
+			continue
 		}
 		w, werr := zw.Create(e.Name)
 		if werr != nil {
@@ -179,6 +201,22 @@ func rewriteZip(src, dst string, shapes map[string][]geo.LL, dirs map[dirKey]str
 			return err
 		}
 		if err := writeDirections(w, dirs); err != nil {
+			return err
+		}
+	}
+	// The curated tariff, for a feed that publishes no fares of its own —
+	// the MTA's case, and why this exists. Written in a fixed order so an
+	// unchanged tariff exports a byte-identical zip and sync can skip it.
+	for _, name := range fareFiles {
+		body, ok := fares[name]
+		if !ok {
+			continue
+		}
+		w, err := zw.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, body); err != nil {
 			return err
 		}
 	}

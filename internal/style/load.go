@@ -143,6 +143,9 @@ type Doc struct {
 	Routes   map[string]Entity `json:"routes,omitempty"`
 	Stops    map[string]Entity `json:"stops,omitempty"`
 	Options  Options           `json:"options,omitempty"`
+	// Fares is whole-feed, not subject-keyed: a tariff belongs to the
+	// network, not to any one route or agency in it.
+	Fares *Fares `json:"fares,omitempty"`
 }
 
 // Config flattens a Doc into the prefixed tables the resolver works in.
@@ -155,6 +158,7 @@ func (d Doc) Config() Config {
 		BulletOrder:  d.Options.BulletOrder,
 		Caterpillars: d.Options.Caterpillars,
 		OSMStopNames: d.Options.OSMStopNames,
+		Fares:        d.Fares,
 	}
 	add := func(prefix string, m map[string]Entity) {
 		for k, e := range m {
