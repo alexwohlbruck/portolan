@@ -128,7 +128,7 @@ func TestRewriteZipReplacesFeedFareTables(t *testing.T) {
 	}
 
 	dst := filepath.Join(dir, "out.zip")
-	if err := rewriteZip(src, dst, nil, nil, fares); err != nil {
+	if err := rewriteZip(src, dst, nil, nil, fares, ""); err != nil {
 		t.Fatalf("rewriteZip: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestRewriteZipKeepsFeedFaresWhenUncurated(t *testing.T) {
 		"fare_products.txt": "fare_product_id,amount,currency\nown,3.50,EUR\n",
 	})
 	dst := filepath.Join(dir, "out.zip")
-	if err := rewriteZip(src, dst, nil, nil, nil); err != nil {
+	if err := rewriteZip(src, dst, nil, nil, nil, ""); err != nil {
 		t.Fatalf("rewriteZip: %v", err)
 	}
 	if got := readTestZip(t, dst)["fare_products.txt"]; !strings.Contains(got, "3.50,EUR") {

@@ -10,6 +10,9 @@
       "minutes": 120
     }
   },
+  "transfers": {
+    "forbid_undeclared": true
+  },
   "agencies": {
     "MTA NYCT": {
       "directions": {
