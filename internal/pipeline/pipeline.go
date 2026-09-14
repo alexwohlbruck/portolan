@@ -501,7 +501,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		return err
 	}
 	if o.ExportGTFS != "" && o.GTFS != "" {
-		if err := exportGTFS(o.ExportGTFS, o.GTFS, paths, frame, logf); err != nil {
+		if err := exportGTFS(o.ExportGTFS, o.GTFS, paths, frame, style.Active(), logf); err != nil {
 			return fmt.Errorf("EXPORT: %w", err)
 		}
 	}

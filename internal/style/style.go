@@ -153,6 +153,15 @@ type Config struct {
 	// inherits (default on); a feed whose detection misfires can switch
 	// it off and keep the legacy density heuristics everywhere.
 	Yards *bool `json:"yards,omitempty"`
+	// Fares: the tariff to publish for a feed that ships none. Nil
+	// inherits; a later layer that sets it replaces the block WHOLE
+	// rather than field by field, because half a tariff — a price with
+	// someone else's transfer window — is not a tariff. See style.Fares.
+	Fares *Fares `json:"fares,omitempty"`
+	// Transfers: which stations connect, and which only look as though
+	// they do. Nil inherits; a later layer replaces the block whole, for
+	// the same reason Fares does. See style.Transfers.
+	Transfers *Transfers `json:"transfers,omitempty"`
 }
 
 // defaults are the shipped behaviour: change these and every city moves.
@@ -215,6 +224,12 @@ type Set struct {
 	OSMStopNames bool `json:"osm_stop_names"`
 	// Yards: resolved on/off for yard-region detection.
 	Yards bool `json:"yards"`
+	// Fares: the resolved tariff, or nil where no layer supplied one and
+	// the feed's own fare data (if any) stands unaltered.
+	Fares *Fares `json:"fares,omitempty"`
+	// Transfers: the resolved transfer curation, or nil where the feed's
+	// own transfers.txt stands unaltered.
+	Transfers *Transfers `json:"transfers,omitempty"`
 
 	// lookup tables for overrides, lowercased; built by New.
 	byAgency map[string]string
@@ -339,6 +354,24 @@ func New(layers ...Config) *Set {
 		}
 		if l.Yards != nil {
 			s.Yards = *l.Yards
+		}
+		if l.Fares != nil {
+			// WHOLE-BLOCK, not field by field. Merging tariffs would let a
+			// city that only states a price inherit the global layer's
+			// transfer window, and quietly charge New York's transfers
+			// under someone else's rules.
+			f := *l.Fares
+			if f.Transfer != nil {
+				t := *f.Transfer
+				f.Transfer = &t
+			}
+			s.Fares = &f
+		}
+		if l.Transfers != nil {
+			t := *l.Transfers
+			t.Allow = append([]TransferRule(nil), t.Allow...)
+			t.Forbid = append([]TransferRule(nil), t.Forbid...)
+			s.Transfers = &t
 		}
 	}
 	for k, v := range s.Colors {

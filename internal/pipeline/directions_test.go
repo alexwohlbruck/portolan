@@ -92,7 +92,7 @@ func TestExportNamesDirectionsAFeedDoesNotPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(dir, "out.zip")
-	if err := rewriteZip(src, dst, nil, dirs); err != nil {
+	if err := rewriteZip(src, dst, nil, dirs, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,7 +139,7 @@ func TestExportMergesIntoAFeedsOwnDirections(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(dir, "out.zip")
-	if err := rewriteZip(src, dst, nil, dirs); err != nil {
+	if err := rewriteZip(src, dst, nil, dirs, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := readZipFile(t, dst, "directions.txt")
@@ -175,7 +175,7 @@ func TestExportWritesNothingWhenNothingIsNamed(t *testing.T) {
 		t.Fatalf("named %d directions with no curation: %v", len(dirs), dirs)
 	}
 	dst := filepath.Join(dir, "out.zip")
-	if err := rewriteZip(src, dst, nil, dirs); err != nil {
+	if err := rewriteZip(src, dst, nil, dirs, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := readZipFile(t, dst, "directions.txt"); ok {
