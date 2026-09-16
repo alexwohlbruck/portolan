@@ -5,6 +5,28 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### Bus-only operators can be drawn
+
+`chart` loaded the rail extract and stopped if it held no regular-service
+ways, before it ever read the street extract. A bus-only operator has no
+rail by definition, so its extract is legitimately empty and the build
+died with "no regular-service rail ways" no matter how good its streets
+were — every bus-only agency was unbuildable. A US-wide run hit this on
+192 feeds: Pace, COTA, Omaha Metro, PVTA, Corpus Christi and most other
+city bus systems.
+
+Streets now load before that check, and the check fails only when there is
+neither rail nor streets to draw on.
+
+The projection frame still comes from the rail pool alone. Letting streets
+into `FrameOf` would shift every emitted coordinate in every existing build
+by rounding, and `sync patch` must stay byte-identical to `sync global`.
+The frame falls back to the streets only when the rail pool is empty — the
+one case where there is nothing else to centre on, and by construction a
+case no existing build is in.
+
 ## 0.5.0
 
 ### Fare gates, said out loud
