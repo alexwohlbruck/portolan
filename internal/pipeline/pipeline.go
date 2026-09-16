@@ -255,13 +255,29 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	if err != nil {
 		return err
 	}
-	if len(ways) == 0 {
-		return fmt.Errorf("no regular-service rail ways in %s", o.Rail)
+	// Streets load up front because a bus-only operator has no rail at all:
+	// its extract is legitimately empty, and bailing on that made every
+	// bus-only agency unbuildable — 192 of them in a US-wide run.
+	var sways []osm.Way
+	if o.Streets != "" {
+		if sways, err = osm.LoadStreets(o.Streets); err != nil {
+			return err
+		}
+	}
+	if len(ways) == 0 && len(sways) == 0 {
+		return fmt.Errorf("no regular-service rail ways in %s and no street extract", o.Rail)
 	}
 	// The projection center comes from the REGULAR pool only — service
 	// ways joining FrameOf would shift every emitted coordinate in every
-	// existing build by rounding.
-	frame := FrameOf(ways)
+	// existing build by rounding. Streets are held out for that same
+	// reason, so every feed that HAS rail keeps byte-identical geometry.
+	// A bus-only feed has no rail pool to center on, so there — and only
+	// there — the frame falls back to the streets.
+	frameWays := ways
+	if len(frameWays) == 0 {
+		frameWays = sways
+	}
+	frame := FrameOf(frameWays)
 	xover := map[string]bool{}
 	for _, w := range ways {
 		if w.Tags["service"] == "crossover" {
@@ -287,11 +303,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	// a street way IS the drawn road centerline already, and 100k street
 	// lines through bundling would be pure cost.
 	var streetTracks []bundle.Track
-	if o.Streets != "" {
-		sways, serr := osm.LoadStreets(o.Streets)
-		if serr != nil {
-			return serr
-		}
+	if len(sways) > 0 {
 		streetTracks = toTracks(sways)
 		ways = append(ways, sways...)
 	}
