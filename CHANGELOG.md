@@ -7,6 +7,13 @@ that more than it cares about the API.
 
 ## Unreleased
 
+### A missing stops extract is reported
+
+A feed whose config names a stops extract that is missing or empty on the
+build host used to build without a word, shipping stations with no `osm`
+ids and the feed's own names. It now logs a `WARNING`, so an unjoined
+pyramid shows up in the build log instead of in a downstream app.
+
 ### Bus-only operators can be drawn
 
 `chart` loaded the rail extract and stopped if it held no regular-service

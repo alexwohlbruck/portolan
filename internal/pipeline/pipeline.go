@@ -712,7 +712,11 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 		if err != nil {
 			return err
 		}
-		if len(ostops) > 0 {
+		if len(ostops) == 0 {
+			// the file is configured, so an empty load is a missing extract
+			// on this host, not an opted-out city
+			logf("WARNING osm stops: %s is missing or empty — stations ship without OSM ids", o.Stops)
+		} else {
 			ms := MatchOSMStops(sts, ostops, frame)
 			renamed := ApplyOSMStopMatches(sts, ms, style.Active().OSMStopNames)
 			logf("osm stops: %d/%d stations matched of %d osm stops, %d renamed",
