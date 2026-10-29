@@ -15,6 +15,15 @@ onto bridges or sinks them into tunnels can look up exactly those ways
 instead of matching the smoothed ribbon against nearby track by shape.
 Gap bridges carry none. Bus ribbons carry their street ways.
 
+### Shared services no longer merge corridors across levels
+
+Two corridors on different levels (an el over a subway) were kept apart
+only when they shared no route. One shared service was enough to fuse them
+into one ribbon. Now they merge across levels only when they carry exactly
+the same routes. New York's subway draws the same as before. The LIRR
+junction east of Jamaica, where tracks cross on flyovers, regroups over a
+few hundred metres.
+
 ### A missing stops extract is reported
 
 A feed whose config names a stops extract that is missing or empty on the
