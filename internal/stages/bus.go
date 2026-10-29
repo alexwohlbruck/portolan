@@ -56,6 +56,13 @@ func DirectSegments(paths []Path) []Segment {
 				hex = "888888"
 			}
 		}
+		var pieces []int
+		for _, st := range p.Steps {
+			if st.Piece >= 0 {
+				pieces = append(pieces, st.Piece)
+			}
+		}
+		pieces = unionPieces(nil, pieces)
 		var run []geo.Pt
 		flush := func() {
 			if len(run) >= 2 {
@@ -65,8 +72,9 @@ func DirectSegments(paths []Path) []Segment {
 					RouteType: r.Type, Mode: cls.String(),
 					NSlots:  1,
 					BandMin: cs.BandFloor, BandMax: 24,
-					Acts: acts,
-					Line: geo.NewLine(append([]geo.Pt{}, run...)),
+					Acts:   acts,
+					Line:   geo.NewLine(append([]geo.Pt{}, run...)),
+					Pieces: pieces,
 				})
 			}
 			run = nil

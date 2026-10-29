@@ -986,6 +986,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 				BandMax:   band.max,
 				Acts:      actsAcross(a, cur, c.color),
 				Line:      geo.NewLine(chain),
+				Pieces:    transitionPieces(n, a, cur, c.mids),
 			})
 			served[[3]int{a, boolIdx(c.aAtTo), colorIdx(a, c.color)}] = true
 			served[[3]int{cur, boolIdx(!c.bAtFrom), colorIdx(cur, c.color)}] = true
@@ -1045,6 +1046,7 @@ func FairCtx(ctx context.Context, n *Network, slots map[int][]string,
 					BandMax:   band.max,
 					Acts:      actsFor(ei, color),
 					Line:      body,
+					Pieces:    e.Pieces,
 				})
 			}
 		}
@@ -1381,7 +1383,6 @@ func smoothPolylineOnce(l *geo.Line, s float64) *geo.Line {
 	return geo.NewLine(simp)
 }
 
-
 func segDistPt(p, a, b geo.Pt) float64 {
 	ab := b.Sub(a)
 	t := p.Sub(a).Dot(ab) / math.Max(1e-12, ab.Dot(ab))
@@ -1555,4 +1556,14 @@ func rayMeet(p1, d1, p2, d2 geo.Pt) (geo.Pt, bool) {
 		return geo.Pt{}, false
 	}
 	return p1.Add(d1.Scale(s)), true
+}
+
+// transitionPieces: a connector's candidate pieces are those of every
+// edge it chains through.
+func transitionPieces(n *Network, a, b int, mids [][2]int) []int {
+	out := unionPieces(n.Edges[a].Pieces, n.Edges[b].Pieces)
+	for _, m := range mids {
+		out = unionPieces(out, n.Edges[m[0]].Pieces)
+	}
+	return out
 }

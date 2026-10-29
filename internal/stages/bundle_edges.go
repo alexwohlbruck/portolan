@@ -835,6 +835,7 @@ func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan
 			From: nFrom, To: nTo, Pts: sub.Pts,
 			Routes: net.Edges[src].Routes, Tracks: net.Edges[src].Tracks,
 			Gap: net.Edges[src].Gap, Acts: net.Edges[src].Acts,
+			Pieces: net.Edges[src].Pieces,
 		})
 	}
 	// keep the outer parts of a and b
@@ -848,7 +849,8 @@ func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan
 		addPart(b, lb, tb2, lb.Len(), n1, net.Edges[b].To)
 	}
 	merged := Edge{From: n1, To: n2, Pts: mpts, Routes: routes, Tracks: tracks,
-		Gap: net.Edges[a].Gap && net.Edges[b].Gap, Acts: mergeActMaps(net.Edges[a].Acts, net.Edges[b].Acts)}
+		Gap: net.Edges[a].Gap && net.Edges[b].Gap, Acts: mergeActMaps(net.Edges[a].Acts, net.Edges[b].Acts),
+		Pieces: unionPieces(net.Edges[a].Pieces, net.Edges[b].Pieces)}
 
 	if mergeLog != nil {
 		mergeLog("merge a=%v(len %.0f, itv %.0f-%.0f) b=%v(len %.0f, itv %.0f-%.0f rev=%v) parts=%d mergedLen=%.0f at (%.0f,%.0f)",

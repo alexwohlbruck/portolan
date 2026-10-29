@@ -80,6 +80,9 @@ type Edge struct {
 	// rendering can put the tail to sleep while the core stays lit. Nil
 	// when the pipeline ran without service info.
 	Acts map[string]gtfs.Mask168
+	// Pieces: the ridden track-graph pieces this edge was built from,
+	// sorted. Shared, never mutated — merges allocate a new union.
+	Pieces []int
 }
 
 // RebuildAdj recomputes every node's incident-edge list. Adjacency is an
@@ -109,4 +112,8 @@ type Segment struct {
 	// member actually rides THIS segment (empty when no service info).
 	Acts []string
 	Line *geo.Line
+	// Pieces: candidate track-graph pieces; AttributeWays narrows them to
+	// Ways, the OSM way ids under Line in order along it.
+	Pieces []int
+	Ways   []string
 }
