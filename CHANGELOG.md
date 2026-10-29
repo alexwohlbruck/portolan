@@ -5,6 +5,52 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.5.1
+
+### Ribbons name the OSM ways under them
+
+Every ribbon feature carries `ways`: the comma-separated OSM way ids of the
+track it draws, in order along the segment. A consumer that lifts ribbons
+onto bridges or sinks them into tunnels can look up exactly those ways
+instead of matching the smoothed ribbon against nearby track by shape.
+Gap bridges carry none. Bus ribbons carry their street ways.
+
+### Shared services no longer merge corridors across levels
+
+Two corridors on different levels (an el over a subway) were kept apart
+only when they shared no route. One shared service was enough to fuse them
+into one ribbon. Now they merge across levels only when they carry exactly
+the same routes. New York's subway draws the same as before. The LIRR
+junction east of Jamaica, where tracks cross on flyovers, regroups over a
+few hundred metres.
+
+### A missing stops extract is reported
+
+A feed whose config names a stops extract that is missing or empty on the
+build host used to build without a word, shipping stations with no `osm`
+ids and the feed's own names. It now logs a `WARNING`, so an unjoined
+pyramid shows up in the build log instead of in a downstream app.
+
+### Bus-only operators can be drawn
+
+`chart` loaded the rail extract and stopped if it held no regular-service
+ways, before it ever read the street extract. A bus-only operator has no
+rail by definition, so its extract is legitimately empty and the build
+died with "no regular-service rail ways" no matter how good its streets
+were — every bus-only agency was unbuildable. A US-wide run hit this on
+192 feeds: Pace, COTA, Omaha Metro, PVTA, Corpus Christi and most other
+city bus systems.
+
+Streets now load before that check, and the check fails only when there is
+neither rail nor streets to draw on.
+
+The projection frame still comes from the rail pool alone. Letting streets
+into `FrameOf` would shift every emitted coordinate in every existing build
+by rounding, and `sync patch` must stay byte-identical to `sync global`.
+The frame falls back to the streets only when the rail pool is empty — the
+one case where there is nothing else to centre on, and by construction a
+case no existing build is in.
+
 ## 0.5.0
 
 ### Fare gates, said out loud

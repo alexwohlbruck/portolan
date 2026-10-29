@@ -2,6 +2,7 @@ package stages
 
 import (
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
@@ -148,9 +149,9 @@ func levelAt(q geo.Pt, routes []string) (int, bool) {
 
 // sameLevel: majority-vote vertical agreement of two lines over a span of
 // a-samples (b probed at the a-sample's projection).
-// lvlOK gates DISJOINT-route merges on vertical agreement: same-service
-// doubling is one corridor by definition, but a cross-service pair must
-// not merge across levels (el over subway).
+// lvlOK gates merges on vertical agreement: same-service doubling is one
+// corridor by definition, but any pair carrying a service the other lacks
+// must not merge across levels (el over subway).
 func lvlOK(net *Network, a, b int, la, lb *geo.Line, samples []geo.Pt, i, j int) bool {
 	// family gate before anything else: bus, ferry and rail edges never
 	// merge across families, however parallel — Lake St buses run directly
@@ -158,7 +159,7 @@ func lvlOK(net *Network, a, b int, la, lb *geo.Line, samples []geo.Pt, i, j int)
 	if edgeFamily(&net.Edges[a]) != edgeFamily(&net.Edges[b]) {
 		return false
 	}
-	if edgeRoutesIntersect(net.Edges[a].Routes, net.Edges[b].Routes) {
+	if sameRouteSet(net.Edges[a].Routes, net.Edges[b].Routes) {
 		return true
 	}
 	return sameLevel(net, a, b, lb, samples, i, j)
@@ -835,6 +836,7 @@ func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan
 			From: nFrom, To: nTo, Pts: sub.Pts,
 			Routes: net.Edges[src].Routes, Tracks: net.Edges[src].Tracks,
 			Gap: net.Edges[src].Gap, Acts: net.Edges[src].Acts,
+			Pieces: net.Edges[src].Pieces,
 		})
 	}
 	// keep the outer parts of a and b
@@ -848,7 +850,8 @@ func applyMerge(net *Network, st *bundleState, a, b int, a1, a2 float64, minSpan
 		addPart(b, lb, tb2, lb.Len(), n1, net.Edges[b].To)
 	}
 	merged := Edge{From: n1, To: n2, Pts: mpts, Routes: routes, Tracks: tracks,
-		Gap: net.Edges[a].Gap && net.Edges[b].Gap, Acts: mergeActMaps(net.Edges[a].Acts, net.Edges[b].Acts)}
+		Gap: net.Edges[a].Gap && net.Edges[b].Gap, Acts: mergeActMaps(net.Edges[a].Acts, net.Edges[b].Acts),
+		Pieces: unionPieces(net.Edges[a].Pieces, net.Edges[b].Pieces)}
 
 	if mergeLog != nil {
 		mergeLog("merge a=%v(len %.0f, itv %.0f-%.0f) b=%v(len %.0f, itv %.0f-%.0f rev=%v) parts=%d mergedLen=%.0f at (%.0f,%.0f)",
@@ -915,6 +918,20 @@ func edgeRoutesIntersect(a, b []string) bool {
 		}
 	}
 	return false
+}
+
+func sameRouteSet(a, b []string) bool {
+	for _, r := range a {
+		if !slices.Contains(b, r) {
+			return false
+		}
+	}
+	for _, r := range b {
+		if !slices.Contains(a, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func unionRoutes(a, b []string) []string {

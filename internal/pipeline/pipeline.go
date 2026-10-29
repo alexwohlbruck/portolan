@@ -255,13 +255,29 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	if err != nil {
 		return err
 	}
-	if len(ways) == 0 {
-		return fmt.Errorf("no regular-service rail ways in %s", o.Rail)
+	// Streets load up front because a bus-only operator has no rail at all:
+	// its extract is legitimately empty, and bailing on that made every
+	// bus-only agency unbuildable — 192 of them in a US-wide run.
+	var sways []osm.Way
+	if o.Streets != "" {
+		if sways, err = osm.LoadStreets(o.Streets); err != nil {
+			return err
+		}
+	}
+	if len(ways) == 0 && len(sways) == 0 {
+		return fmt.Errorf("no regular-service rail ways in %s and no street extract", o.Rail)
 	}
 	// The projection center comes from the REGULAR pool only — service
 	// ways joining FrameOf would shift every emitted coordinate in every
-	// existing build by rounding.
-	frame := FrameOf(ways)
+	// existing build by rounding. Streets are held out for that same
+	// reason, so every feed that HAS rail keeps byte-identical geometry.
+	// A bus-only feed has no rail pool to center on, so there — and only
+	// there — the frame falls back to the streets.
+	frameWays := ways
+	if len(frameWays) == 0 {
+		frameWays = sways
+	}
+	frame := FrameOf(frameWays)
 	xover := map[string]bool{}
 	for _, w := range ways {
 		if w.Tags["service"] == "crossover" {
@@ -287,11 +303,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	// a street way IS the drawn road centerline already, and 100k street
 	// lines through bundling would be pure cost.
 	var streetTracks []bundle.Track
-	if o.Streets != "" {
-		sways, serr := osm.LoadStreets(o.Streets)
-		if serr != nil {
-			return serr
-		}
+	if len(sways) > 0 {
 		streetTracks = toTracks(sways)
 		ways = append(ways, sways...)
 	}
@@ -588,7 +600,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	return layout(layoutIn{
 		ctx: ctx, o: o, d: d, frame: frame, t0: t0,
 		net: net, feed: feed, rail: railPaths, bus: busPaths,
-		pats: rail, acts: patActs,
+		pats: rail, acts: patActs, tracks: matchTracks,
 	}, logf)
 }
 
@@ -615,6 +627,9 @@ type layoutIn struct {
 	// pats: the patterns the stations stage groups stops from.
 	pats []gtfs.Pattern
 	acts map[string]gtfs.Mask168
+	// tracks: the slice MATCH and SPLIT ran on, which path steps index
+	// into. Nil on a corridor graph: there are no OSM ways to attribute.
+	tracks []bundle.Track
 }
 
 // layout: ORDER → FAIR → terminal cuts → stations → caterpillars → emit.
@@ -700,7 +715,11 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 		if err != nil {
 			return err
 		}
-		if len(ostops) > 0 {
+		if len(ostops) == 0 {
+			// the file is configured, so an empty load is a missing extract
+			// on this host, not an opted-out city
+			logf("WARNING osm stops: %s is missing or empty — stations ship without OSM ids", o.Stops)
+		} else {
 			ms := MatchOSMStops(sts, ostops, frame)
 			renamed := ApplyOSMStopMatches(sts, ms, style.Active().OSMStopNames)
 			logf("osm stops: %d/%d stations matched of %d osm stops, %d renamed",
@@ -738,6 +757,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 		}
 	}
 	step("emit", 95)
+	stages.AttributeWays(segs, append(append([]stages.Path{}, in.rail...), in.bus...), in.tracks)
 	if err := writeSegments(o, segs, frame, logf); err != nil {
 		return err
 	}
@@ -1108,6 +1128,9 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 			"band_min":    s.BandMin, "band_max": s.BandMax,
 			"len_m": int(s.Line.Len()),
 		}, s.Line, frame); ok {
+			if len(s.Ways) > 0 {
+				f.Props["ways"] = strings.Join(s.Ways, ",")
+			}
 			if len(s.Acts) > 0 {
 				f.Props["acts"] = strings.Join(s.Acts, ";")
 				if idx := actsIndex(s.Routes, len(s.Acts)); idx != "" {

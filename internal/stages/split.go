@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -197,6 +198,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		routes   map[string]bool
 		acts     map[string]gtfs.Mask168
 		gap      bool
+		piece    int // -1 for a gap bridge
 	}
 	var ue []uedge
 	for piece, rs := range pieceRoutes {
@@ -204,7 +206,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			continue
 		}
 		e := g.edges[2*piece]
-		ue = append(ue, uedge{e.From, e.To, g.pieces[piece], rs, pieceActs[piece], false})
+		ue = append(ue, uedge{e.From, e.To, g.pieces[piece], rs, pieceActs[piece], false, piece})
 	}
 
 	// synthetic nodes for gap ends that anchor to no graph node
@@ -270,7 +272,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			if haveGapMask {
 				acts = map[string]gtfs.Mask168{rid: gapMask}
 			}
-			ue = append(ue, uedge{from, to, st.Gap, map[string]bool{rid: true}, acts, true})
+			ue = append(ue, uedge{from, to, st.Gap, map[string]bool{rid: true}, acts, true, -1})
 		}
 	}
 
@@ -371,6 +373,10 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		// (docs/DYNAMIC-SERVICE.md).
 		var acts map[string]gtfs.Mask168
 		acts = mergeActs(acts, e0.acts)
+		var pieces []int
+		if e0.piece >= 0 {
+			pieces = append(pieces, e0.piece)
+		}
 		curEdge, cur := first.edge, first.other
 		for !isNet[cur] {
 			incs := adj[cur]
@@ -384,6 +390,9 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 			pts = appendOriented(pts, ue[nx.edge], cur)
 			visited[nx.edge] = true
 			acts = mergeActs(acts, ue[nx.edge].acts)
+			if ue[nx.edge].piece >= 0 {
+				pieces = append(pieces, ue[nx.edge].piece)
+			}
 			curEdge, cur = nx.edge, nx.other
 		}
 		routes := make([]string, 0, len(e0.routes))
@@ -394,6 +403,7 @@ func Split(paths []Path, tracks []bundle.Track) (*Network, error) {
 		net.Edges = append(net.Edges, Edge{
 			From: netNode(start), To: netNode(cur),
 			Pts: pts, Routes: routes, Gap: e0.gap, Acts: acts,
+			Pieces: unionPieces(nil, pieces),
 		})
 	}
 	var netNodes []int
@@ -818,6 +828,7 @@ func mergeDirectionLenses(net *Network) {
 				}
 				a.Pts = mid
 				a.Tracks += b.Tracks
+				a.Pieces = unionPieces(a.Pieces, b.Pieces)
 				net.Edges = append(net.Edges[:j], net.Edges[j+1:]...)
 				merged = true
 				break
@@ -1039,7 +1050,8 @@ func contractChains(net *Network) {
 			to = b.From
 		}
 		merged := Edge{From: from, To: to, Pts: pts, Routes: a.Routes,
-			Tracks: max(a.Tracks, b.Tracks), Acts: mergeActMaps(a.Acts, b.Acts)}
+			Tracks: max(a.Tracks, b.Tracks), Acts: mergeActMaps(a.Acts, b.Acts),
+			Pieces: unionPieces(a.Pieces, b.Pieces)}
 		var out []Edge
 		for ei, e := range net.Edges {
 			if ei != ea && ei != eb {
@@ -1091,6 +1103,7 @@ func dropShadowStubs(net *Network) {
 				}
 				if far <= 40 {
 					drop = ei
+					net.Edges[oj].Pieces = unionPieces(o.Pieces, e.Pieces)
 					break
 				}
 			}
@@ -1675,4 +1688,13 @@ func mergeActMaps(a, b map[string]gtfs.Mask168) map[string]gtfs.Mask168 {
 		out[r] = out[r].Or(m)
 	}
 	return out
+}
+
+// unionPieces returns the sorted, deduplicated union of a and b as a new
+// slice; neither input is modified.
+func unionPieces(a, b []int) []int {
+	out := make([]int, 0, len(a)+len(b))
+	out = append(append(out, a...), b...)
+	sort.Ints(out)
+	return slices.Compact(out)
 }
