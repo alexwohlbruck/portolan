@@ -44,7 +44,12 @@ type RunOpts struct {
 	StyleDir   string
 	Jobs       int    // ≤0 means DefaultJobs()
 	Portolan   string // chart child binary; "" = os.Executable()
-	Log        func(format string, a ...any)
+	// TileHook is a shell command run on each new pyramid before it is
+	// published, with PORTOLAN_FEED, PORTOLAN_TILES (the new pyramid) and
+	// PORTOLAN_LIVE (the one it replaces) set. A failing hook is reported
+	// and the pyramid published as the hook left it.
+	TileHook string
+	Log      func(format string, a ...any)
 }
 
 // DefaultJobs is deliberately modest: chart holds a whole region in
@@ -303,20 +308,38 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 			}
 		}
 
-		stats, err := tiles.Build(tiles.Opts{Build: spec.Out, Out: tileDir, Name: t.key})
+		// The pyramid is built beside the live one and swapped in whole,
+		// so the map keeps serving the old tiles until the new are done.
+		next := filepath.Join(o.TilesDir, stagingPrefix+t.key)
+		if err := os.RemoveAll(next); err != nil {
+			oops(t.key, "tiles", err)
+			return
+		}
+		stats, err := tiles.Build(tiles.Opts{Build: spec.Out, Out: next, Prev: tileDir, Name: t.key})
 		if err != nil {
+			os.RemoveAll(next)
 			oops(t.key, "tiles", err)
 			return
 		}
 		// the resolved style manifest rides into the pyramid: the tile
 		// consumer fetches <feed>/style.json (docs/SYNC.md tile contract)
 		sty, err := os.ReadFile(spec.Out + ".style.json")
+		if err == nil {
+			err = atomicWrite(filepath.Join(next, "style.json"), sty)
+		}
 		if err != nil {
+			os.RemoveAll(next)
 			oops(t.key, "style manifest", err)
 			return
 		}
-		if err := atomicWrite(filepath.Join(tileDir, "style.json"), sty); err != nil {
-			oops(t.key, "style manifest", err)
+		if o.TileHook != "" {
+			if err := runTileHook(o.TileHook, t.key, next, tileDir); err != nil {
+				oops(t.key, "tile hook", err)
+			}
+		}
+		if err := publish(next, tileDir); err != nil {
+			os.RemoveAll(next)
+			oops(t.key, "publishing pyramid", err)
 			return
 		}
 		mu.Lock()

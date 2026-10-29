@@ -14,8 +14,13 @@ import (
 // Opts configures one tiling run. Build is the ribbon GeoJSON `chart`
 // wrote; its .stations.geojson sibling is picked up when present.
 type Opts struct {
-	Build   string
-	Out     string // tile directory; {z}/{x}/{y}.mvt is created under it
+	Build string
+	Out   string // tile directory; {z}/{x}/{y}.mvt is created under it
+	// Prev is the pyramid Out replaces, when Out starts empty: a tile
+	// identical to Prev's is hard-linked rather than rewritten, and Prev's
+	// tiles the build no longer produces count as Removed. Empty means Out
+	// is rebuilt in place.
+	Prev    string
 	MaxZoom int    // top of the pyramid; 18 matches a GeoJSON source's own
 	Name    string // tileset name for tiles.json (the feed/region key)
 }
@@ -144,6 +149,10 @@ func Build(o Opts) (Stats, error) {
 
 	var st Stats
 	produced := map[string]bool{}
+	prevDir := o.Prev
+	if prevDir == "" {
+		prevDir = o.Out
+	}
 	minx, miny := math.Inf(1), math.Inf(1)
 	maxx, maxy := math.Inf(-1), math.Inf(-1)
 	for _, l := range lines {
@@ -312,17 +321,16 @@ func Build(o Opts) (Stats, error) {
 					return st, err
 				}
 			}
-			path := filepath.Join(lastDir, strconv.Itoa(ty)+".mvt")
-			produced[path] = true
-			// Stat first: a changed tile usually changes size, and the
-			// full read is only needed to prove byte equality.
-			if fi, err := os.Stat(path); err == nil && fi.Size() == int64(len(blob)) {
-				if old, err := os.ReadFile(path); err == nil && string(old) == string(blob) {
+			rel := filepath.Join(zStr, strconv.Itoa(tx), strconv.Itoa(ty)+".mvt")
+			path := filepath.Join(o.Out, rel)
+			produced[rel] = true
+			if prev := filepath.Join(prevDir, rel); sameBytes(prev, blob) {
+				if prev == path || os.Link(prev, path) == nil {
 					st.Unchanged++
 					continue
 				}
 			}
-			if err := os.WriteFile(path, blob, 0o644); err != nil {
+			if err := writeAtomic(path, blob); err != nil {
 				return st, err
 			}
 			st.Tiles++
@@ -333,13 +341,17 @@ func Build(o Opts) (Stats, error) {
 	// prune tiles the new build no longer produces — a route that moved
 	// leaves stale tiles behind, and a stale tile is a rendering bug the
 	// viewer cannot detect
-	err = filepath.WalkDir(o.Out, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(p) != ".mvt" || produced[p] {
-			return err
-		}
-		st.Removed++
-		return os.Remove(p)
-	})
+	if o.Prev == "" {
+		err = walkTiles(o.Out, produced, func(p string) error {
+			st.Removed++
+			return os.Remove(p)
+		})
+	} else {
+		err = walkTiles(o.Prev, produced, func(string) error {
+			st.Removed++
+			return nil
+		})
+	}
 	if err != nil && !os.IsNotExist(err) {
 		return st, err
 	}
@@ -351,6 +363,58 @@ func Build(o Opts) (Stats, error) {
 		return st, err
 	}
 	return st, writeTileJSON(o, minx, miny, maxx, maxy)
+}
+
+// walkTiles calls fn on every tile under dir whose path relative to it
+// is not in produced.
+func walkTiles(dir string, produced map[string]bool, fn func(path string) error) error {
+	return filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(p) != ".mvt" {
+			return err
+		}
+		if rel, _ := filepath.Rel(dir, p); produced[rel] {
+			return nil
+		}
+		return fn(p)
+	})
+}
+
+// sameBytes reports whether path holds exactly blob. Stat first: a changed
+// tile usually changes size, and the full read only proves byte equality.
+func sameBytes(path string, blob []byte) bool {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() != int64(len(blob)) {
+		return false
+	}
+	old, err := os.ReadFile(path)
+	return err == nil && string(old) == string(blob)
+}
+
+// writeAtomic replaces path whole, so a reader never sees half a tile and
+// a file hard-linked into another pyramid is never written through.
+func writeAtomic(path string, blob []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(blob); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }
 
 // spanTiles lists the tiles a line can reach at this zoom. Walking the
