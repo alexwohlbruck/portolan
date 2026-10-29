@@ -168,7 +168,13 @@ The executor walks a Plan in this order:
 5. **Tiles.** Each successful build is cut into `--tiles/<key>` and the
    build's resolved style manifest (`<out>.style.json`) is copied into
    the pyramid as `--tiles/<key>/style.json`. Differ stats aggregate
-   into the RESULT line.
+   into the RESULT line. The pyramid is cut into `--tiles/.next-<key>`
+   beside the live one (unchanged tiles hard-linked from it), and
+   swapped in whole once complete, so a build that fails or is killed
+   never touches the tiles being served. `--tile-hook` runs a shell
+   command on the new pyramid before the swap, with `PORTOLAN_FEED`,
+   `PORTOLAN_TILES` (the new pyramid) and `PORTOLAN_LIVE` set; a failing
+   hook lands in `errors` and the pyramid is published as it left it.
 6. **Export.** With `--export-gtfs`, each feed-OWN build (standalone,
    overlay background, member pyramid) writes its corrected zips into
    the export dir. Group builds do not export: their member zips belong

@@ -772,7 +772,7 @@ bullets at z12, matching the viewer's own symbol floors. A tiles.json
 
 type syncFlags struct {
 	config, data, build, tiles, exportGTFS string
-	state, styleDir, feeds                 string
+	state, styleDir, feeds, tileHook       string
 	jobs                                   int
 	dryRun, jsonOut                        bool
 }
@@ -801,7 +801,7 @@ hash is the identity that matters (docs/SYNC.md).`,
 	groups: []flagGroup{
 		{"inputs", []string{"config", "data", "feeds"}},
 		{"outputs", []string{"build", "tiles", "export-gtfs", "state", "style-dir"}},
-		{"run", []string{"jobs", "dry-run", "json"}},
+		{"run", []string{"jobs", "tile-hook", "dry-run", "json"}},
 	},
 	example: []string{
 		"portolan sync check --config portolan.json --dry-run",
@@ -818,6 +818,7 @@ hash is the identity that matters (docs/SYNC.md).`,
 		fs.StringVar(&s.state, "state", "", "state manifest (default <build>/sync-state.json)")
 		fs.StringVar(&s.styleDir, "style-dir", style.DefaultDir, "curation directory")
 		fs.StringVar(&s.feeds, "feeds", "", "comma list of feed keys (patch only)")
+		fs.StringVar(&s.tileHook, "tile-hook", "", "shell command run on each new pyramid before it goes live; PORTOLAN_FEED, PORTOLAN_TILES, PORTOLAN_LIVE set")
 		fs.IntVar(&s.jobs, "jobs", sync.DefaultJobs(), "parallel feed builds (chart is memory-heavy; the default is deliberately modest)")
 		fs.BoolVar(&s.dryRun, "dry-run", false, "plan only: print what would happen, change nothing")
 		fs.BoolVar(&s.jsonOut, "json", false, "final stdout line is RESULT {…} for a supervising process")
@@ -1018,7 +1019,7 @@ func execSync(sf *syncFlags, changed []string, global bool) resultLine {
 	res, err := sync.Run(plan, sync.RunOpts{
 		ConfigPath: sf.config, StatePath: sf.state,
 		BuildDir: sf.build, TilesDir: sf.tiles, ExportDir: sf.exportGTFS,
-		StyleDir: sf.styleDir, Jobs: sf.jobs, Portolan: exe,
+		StyleDir: sf.styleDir, Jobs: sf.jobs, Portolan: exe, TileHook: sf.tileHook,
 		Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
 	})
 	die(err)
