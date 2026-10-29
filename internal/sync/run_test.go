@@ -279,7 +279,7 @@ func writeMicroWorkspace(t *testing.T, dir string) {
 
 // ------------------------------------------------------------ helpers
 
-func planAndRun(t *testing.T, changed []string, global bool, bin string) (*Plan, *RunResult) {
+func planAndRun(t *testing.T, changed []string, global bool, bin string, tileHook ...string) (*Plan, *RunResult) {
 	t.Helper()
 	raw, err := os.ReadFile("portolan.json")
 	if err != nil {
@@ -306,6 +306,7 @@ func planAndRun(t *testing.T, changed []string, global bool, bin string) (*Plan,
 		ConfigPath: "portolan.json", StatePath: "build/sync-state.json",
 		BuildDir: "build", TilesDir: "build/tiles", ExportDir: "build/export",
 		StyleDir: "style", Jobs: 2, Portolan: bin, Log: t.Logf,
+		TileHook: strings.Join(tileHook, " "),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -573,6 +574,56 @@ func TestRunResumesIncrementally(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rebuilt, []string{"m3"}) {
 		t.Fatalf("rerun rebuilt %v, want just m3", r2.Rebuilt)
+	}
+}
+
+// TestRunPublishesWhole: a rebuild leaves the live pyramid untouched
+// until the new one, hook output included, is swapped in.
+func TestRunPublishesWhole(t *testing.T) {
+	bin := portolanBin(t)
+	ws := t.TempDir()
+	writeMicroWorkspace(t, ws)
+	t.Chdir(ws)
+
+	_, r1 := planAndRun(t, nil, true, bin)
+	if len(r1.Errors) != 0 {
+		t.Fatalf("run1 errors: %v", r1.Errors)
+	}
+	before := hashTree(t, "build/tiles/m1")
+	if err := os.WriteFile("build/tiles/m1/marker", []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadState("build/sync-state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := st.Feeds["m1"]
+	row.Tiled = ""
+	st.Feeds["m1"] = row
+	if err := st.Save("build/sync-state.json"); err != nil {
+		t.Fatal(err)
+	}
+	hook := `[ "$PORTOLAN_FEED" != m1 ] || test -f "$PORTOLAN_LIVE/marker" && test ! -f "$PORTOLAN_TILES/marker" && echo "$PORTOLAN_FEED" > "$PORTOLAN_TILES/hooked"`
+	_, r2 := planAndRun(t, nil, true, bin, hook)
+	if len(r2.Errors) != 0 {
+		t.Fatalf("run2 errors: %v", r2.Errors)
+	}
+	after := hashTree(t, "build/tiles/m1")
+	if _, ok := after["marker"]; ok {
+		t.Error("the old pyramid's files survived the swap")
+	}
+	if after["hooked"] == "" {
+		t.Error("the hook's output did not go live")
+	}
+	delete(after, "hooked")
+	if !reflect.DeepEqual(before, after) {
+		t.Error("an unchanged rebuild changed the pyramid")
+	}
+	entries, _ := os.ReadDir("build/tiles")
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			t.Errorf("staging left behind: %s", e.Name())
+		}
 	}
 }
 
