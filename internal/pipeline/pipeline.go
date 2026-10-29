@@ -600,7 +600,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	return layout(layoutIn{
 		ctx: ctx, o: o, d: d, frame: frame, t0: t0,
 		net: net, feed: feed, rail: railPaths, bus: busPaths,
-		pats: rail, acts: patActs,
+		pats: rail, acts: patActs, tracks: matchTracks,
 	}, logf)
 }
 
@@ -627,6 +627,9 @@ type layoutIn struct {
 	// pats: the patterns the stations stage groups stops from.
 	pats []gtfs.Pattern
 	acts map[string]gtfs.Mask168
+	// tracks: the slice MATCH and SPLIT ran on, which path steps index
+	// into. Nil on a corridor graph: there are no OSM ways to attribute.
+	tracks []bundle.Track
 }
 
 // layout: ORDER → FAIR → terminal cuts → stations → caterpillars → emit.
@@ -754,6 +757,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 		}
 	}
 	step("emit", 95)
+	stages.AttributeWays(segs, append(append([]stages.Path{}, in.rail...), in.bus...), in.tracks)
 	if err := writeSegments(o, segs, frame, logf); err != nil {
 		return err
 	}
@@ -1124,6 +1128,9 @@ func WriteSegmentsGeoJSON(path string, segs []stages.Segment, frame geo.Frame) e
 			"band_min":    s.BandMin, "band_max": s.BandMax,
 			"len_m": int(s.Line.Len()),
 		}, s.Line, frame); ok {
+			if len(s.Ways) > 0 {
+				f.Props["ways"] = strings.Join(s.Ways, ",")
+			}
 			if len(s.Acts) > 0 {
 				f.Props["acts"] = strings.Join(s.Acts, ";")
 				if idx := actsIndex(s.Routes, len(s.Acts)); idx != "" {
