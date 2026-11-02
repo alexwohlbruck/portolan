@@ -885,6 +885,7 @@ type resultLine struct {
 	Tiles           sync.TileTally `json:"tiles"`
 	Exported        []string       `json:"exported"`
 	Skipped         []string       `json:"skipped"`
+	Undrawn         []string       `json:"undrawn"`
 	Errors          []string       `json:"errors"`
 }
 
@@ -906,6 +907,9 @@ func emitResult(sf *syncFlags, rl resultLine) {
 	}
 	if rl.Skipped == nil {
 		rl.Skipped = []string{}
+	}
+	if rl.Undrawn == nil {
+		rl.Undrawn = []string{}
 	}
 	if rl.Errors == nil {
 		rl.Errors = []string{}
@@ -1028,7 +1032,8 @@ func execSync(sf *syncFlags, changed []string, global bool) resultLine {
 		len(res.Exported), len(res.Errors))
 	return resultLine{Changed: res.Changed, Affected: res.Affected,
 		Rebuilt: res.Rebuilt, GroupsRewritten: res.GroupsRewritten,
-		Tiles: res.Tiles, Exported: res.Exported, Skipped: skipped, Errors: res.Errors}
+		Tiles: res.Tiles, Exported: res.Exported, Skipped: skipped, Undrawn: res.Undrawn,
+		Errors: res.Errors}
 }
 
 // printPlan: the derivation the way groups.py reports it, then the

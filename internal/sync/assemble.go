@@ -556,16 +556,20 @@ func groupPreflight(cfg registry.Config, key, buildDir string,
 		if len(srcs) == 0 {
 			return fmt.Errorf("%s: rail extract at %s does not cover the window and no member extract exists to merge", key, fc.Rail)
 		}
-		n, err := mergeFC(fc.Rail, srcs)
+		// clipped to the group's window, not merged whole: an overlay's
+		// extract is continental (Amtrak's is the whole US rail network,
+		// ~371k ways), and charting every group against all of it is what
+		// OOM-killed Denver, Boston, San Diego, St. Louis and Toronto
+		n, err := clipFC(fc.Rail, srcs, fc.BBox)
 		if err != nil {
 			return fmt.Errorf("%s: merging rail extracts: %w", key, err)
 		}
-		logf("%s: merged rail extract from %d member extracts (%d ways) — sync never calls Overpass", key, len(srcs), n)
+		logf("%s: merged rail extract from %d member extracts, clipped to its window (%d ways) — sync never calls Overpass", key, len(srcs), n)
 	}
 	if fc.Stops != "" {
 		if st, err := os.Stat(fc.Stops); err != nil || st.Size() == 0 {
 			if srcs := collect(func(m registry.FeedCfg) string { return m.Stops }); len(srcs) > 0 {
-				n, err := mergeFC(fc.Stops, srcs)
+				n, err := clipFC(fc.Stops, srcs, fc.BBox)
 				if err != nil {
 					return fmt.Errorf("%s: merging stops extracts: %w", key, err)
 				}
@@ -577,11 +581,26 @@ func groupPreflight(cfg registry.Config, key, buildDir string,
 	// the group draws only the buses of whichever member's file it names
 	if len(fc.StreetsFrom) > 0 && fc.Streets != "" {
 		if st, err := os.Stat(fc.Streets); err != nil || st.Size() == 0 {
-			n, err := mergeFC(fc.Streets, fc.StreetsFrom)
-			if err != nil {
-				return fmt.Errorf("%s: merging streets: %w", key, err)
+			// a missing source costs that member its buses, not the whole
+			// group its map: a standalone feed with no streets builds
+			// rail-only, and so does this part of a group. Failing here
+			// took Chicago's CTA, Metra and South Shore off the map over
+			// one never-cut extract for Metra, which runs no buses.
+			var have []string
+			for _, p := range fc.StreetsFrom {
+				if st, err := os.Stat(p); err != nil || st.Size() == 0 {
+					logf("%s: streets source missing at %s — its buses are left out", key, p)
+					continue
+				}
+				have = append(have, p)
 			}
-			logf("%s: merged streets from %v (%d ways)", key, fc.StreetsFrom, n)
+			if len(have) > 0 {
+				n, err := mergeFC(fc.Streets, have)
+				if err != nil {
+					return fmt.Errorf("%s: merging streets: %w", key, err)
+				}
+				logf("%s: merged streets from %v (%d ways)", key, have, n)
+			}
 		}
 	}
 	return nil

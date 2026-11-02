@@ -183,7 +183,11 @@ The executor walks a Plan in this order:
 7. **Index.** After all tiling, a static `--tiles/index.json` is
    written: the same composer the atlas serves `/api/tiles/index.json`
    from (internal/tiles.Index), over the post-run registry, so the
-   static file and the live endpoint cannot drift.
+   static file and the live endpoint cannot drift. A group's members are
+   left out only while the group's own pyramid exists; a group with no
+   pyramid hides nothing, and its members draw from their own. The run
+   then names every feed that has GTFS on disk but is on no map
+   (`undrawn:` in the log, `undrawn` in RESULT), whichever run broke it.
 8. **State**, stamped and saved after each feed completes — kill the
    run anywhere and rerunning the SAME command resumes, skipping what
    finished. One asymmetry to know: an interrupted `sync check` cannot
@@ -207,14 +211,19 @@ With `--json`, the final stdout line is:
     RESULT {"changed":["a"],"affected":["a","b","dallas"],
             "rebuilt":["a","dallas"],"groups_rewritten":false,
             "tiles":{"written":1234,"unchanged":56789,"removed":12},
-            "exported":["a.zip","amtrak.zip"],"skipped":[],"errors":[]}
+            "exported":["a.zip","amtrak.zip"],"skipped":[],"undrawn":[],
+            "errors":[]}
 
 One schema for check, patch and global (check's original `changed`/
 `skipped`/`errors` keys are all present, so a parser built against it
 keeps working). `rebuilt` is the builds that actually ran — clean skips
 excluded; `exported` is exactly the `<feedkey>.zip` names present flat
 under the `--export-gtfs` dir; `skipped` is feeds without an onestop id
-(check) or without a zip on disk (global). `--dry-run` emits the same
+(check) or without a zip on disk (global); `undrawn` is every feed with
+its GTFS on disk that the written index leaves off the map — no pyramid
+of its own and no group drawing it. It is a report, not an error: a
+flex-only or bus feed with no streets extract has nothing to draw.
+`--dry-run` emits the same
 line with the planned rebuild set, zero tiles and exit 0.
 
 Barrelman parses this line; everything above it is human progress output.

@@ -5,6 +5,39 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### A failed group no longer takes its members off the map
+
+The world index leaves out a group's members because the group draws
+them. It did that even when the group had no pyramid, so one failed group
+build removed every network in it. Chicago's group failed, and CTA, Metra
+and South Shore were on no map, although all three had pyramids of their
+own. Boston, St. Louis, San Diego, Denver and Toronto were missing the
+same way. Now a group with no pyramid hides nothing.
+
+### Every run names the feeds that are on no map
+
+After writing the index, sync lists every feed whose GTFS is on disk but
+that nothing draws, in the log (`undrawn:`) and in RESULT (`undrawn`). It
+does this on every run, so a feed lost to an older failure is reported by
+whichever run comes next.
+
+### Group extracts are clipped to the group's window
+
+A group whose rail extract did not cover its window merged its members'
+and overlays' extracts whole. Amtrak's is the whole US rail network, so
+every group charted against about 371,000 ways, and the larger ones were
+OOM-killed. The merged rail and stops extracts are now cut to the group's
+window. A group's existing merged extract is kept until it is deleted.
+
+### A missing streets source no longer fails a group
+
+A group that merges several members' street extracts failed preflight if
+any one of them was missing. Now the missing one is logged and skipped,
+and that member's buses are left out, as they would be for a standalone
+feed with no streets extract.
+
 ## 0.5.1
 
 ### Ribbons name the OSM ways under them
