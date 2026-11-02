@@ -367,3 +367,71 @@ func featuresOf(t *testing.T, path string) []clippedFeature {
 	}
 	return fc.Features
 }
+
+// A group merges its members' rail extracts when its own does not cover
+// its window. Amtrak rides along as an overlay with the whole US rail
+// network as its extract, so the merge has to be cut to the group's
+// window, or every group charts against ~371k ways and the big ones are
+// OOM-killed.
+func TestGroupPreflightClipsMergedRailToTheWindow(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll("build", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := func(id string, w, s, e, n float64) string {
+		return `{"type":"Feature","id":"` + id + `","geometry":{"type":"LineString","coordinates":[[` +
+			ff(w) + `,` + ff(s) + `],[` + ff(e) + `,` + ff(n) + `]]}}`
+	}
+	write(t, "build/cta-rail.geojson", `{"type":"FeatureCollection","features":[`+
+		line("loop", -87.64, 41.87, -87.62, 41.89)+`]}`)
+	write(t, "build/amtrak-rail.geojson", `{"type":"FeatureCollection","features":[`+
+		line("lakeshore", -87.7, 41.8, -87.6, 41.9)+`,`+
+		line("coast-starlight", -122.4, 37.7, -118.2, 34.0)+`]}`)
+
+	cfg, _ := loadFixtureCfg(t, `{"feeds":{
+	  "chicago-cta":{"rail":"build/cta-rail.geojson"},
+	  "amtrak":{"rail":"build/amtrak-rail.geojson"},
+	  "chicago":{"bbox":[-88.7,41.3,-86.2,42.7],"rail":"build/chicago-rail.geojson",
+	    "members":["chicago-cta"],"overlays":["amtrak"]}
+	}}`)
+	if err := groupPreflight(cfg, "chicago", "build", func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, f := range featuresOf(t, "build/chicago-rail.geojson") {
+		ids = append(ids, fmt.Sprint(f.ID))
+	}
+	if strings.Join(ids, ",") != "loop,lakeshore" {
+		t.Fatalf("merged rail = %v, want [loop lakeshore]", ids)
+	}
+}
+
+// Metra names a streets extract that was never cut. The chicago group
+// failed preflight over it, and with no group pyramid the whole of
+// Chicago's rail left the map. One missing source costs only its buses.
+func TestGroupPreflightMergesTheStreetsItHas(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll("build", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, "build/cta-streets.geojson", `{"type":"FeatureCollection","features":[`+
+		`{"type":"Feature","id":"w1","geometry":{"type":"LineString","coordinates":[[-87.63,41.88],[-87.62,41.88]]}}]}`)
+	cfg, _ := loadFixtureCfg(t, `{"feeds":{
+	  "chicago":{"bbox":[-88.7,41.3,-86.2,42.7],"streets":"build/chicago-streets.geojson",
+	    "streets_from":["build/cta-streets.geojson","build/chi-streets.geojson"],"members":[]}
+	}}`)
+	var logged string
+	if err := groupPreflight(cfg, "chicago", "build", func(f string, a ...any) {
+		logged += fmt.Sprintf(f, a...) + "\n"
+	}); err != nil {
+		t.Fatalf("a missing streets source failed the group: %v", err)
+	}
+	if n := len(featuresOf(t, "build/chicago-streets.geojson")); n != 1 {
+		t.Fatalf("merged streets has %d ways, want 1", n)
+	}
+	if !strings.Contains(logged, "build/chi-streets.geojson") {
+		t.Errorf("the missing source went unreported: %q", logged)
+	}
+}

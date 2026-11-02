@@ -81,6 +81,7 @@ type RunResult struct {
 	GroupsRewritten bool
 	Tiles           TileTally
 	Exported        []string // "<feedkey>.zip" names present under ExportDir, flat
+	Undrawn         []string // feeds with GTFS on disk that the index leaves off the map
 	Errors          []string
 }
 
@@ -402,6 +403,14 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 		return nil, fmt.Errorf("writing index.json: %w", err)
 	}
 	logf("index.json: %d feeds", len(idx))
+	// Said every run, not only when this run broke something: a feed can
+	// leave the map through a build that failed weeks ago, and the run
+	// that notices is whichever comes next.
+	res.Undrawn = tiles.Undrawn(finalCfg, idx, hasGTFS)
+	if len(res.Undrawn) > 0 {
+		logf("undrawn: %d feeds have GTFS but are on no map: %s",
+			len(res.Undrawn), strings.Join(res.Undrawn, " "))
+	}
 	if len(plan.Widened) > 0 {
 		logf("windows widened to cover their own shapes: %s", strings.Join(plan.Widened, " "))
 	}
@@ -556,4 +565,20 @@ func jsonMarshal(v any) ([]byte, error) {
 		return nil, err
 	}
 	return append(raw, '\n'), nil
+}
+
+// hasGTFS: every zip a feed names is on disk and non-empty — the same
+// test assemble applies before it will build the feed at all.
+func hasGTFS(fc registry.FeedCfg) bool {
+	found := false
+	for _, part := range strings.Split(fc.GTFS, ",") {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		if st, err := os.Stat(part); err != nil || st.Size() == 0 {
+			return false
+		}
+		found = true
+	}
+	return found
 }
