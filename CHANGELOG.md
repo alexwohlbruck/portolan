@@ -5,7 +5,7 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
-## Unreleased
+## 0.5.3
 
 ### A failed group no longer takes its members off the map
 
@@ -37,6 +37,23 @@ A group that merges several members' street extracts failed preflight if
 any one of them was missing. Now the missing one is logged and skipped,
 and that member's buses are left out, as they would be for a standalone
 feed with no streets extract.
+
+## 0.5.2
+
+### Pyramids go live whole
+
+`sync` cuts each pyramid beside the live one, in `--tiles/.next-<key>`, and
+swaps it in with one atomic rename once every tile and manifest is written.
+A build that fails or is killed partway no longer leaves the served pyramid
+half old, half new. Unchanged tiles are hard-linked from the live pyramid,
+so they keep their mtime. Every tile write is atomic, `portolan tile` too.
+
+### `--tile-hook`
+
+`sync --tile-hook '<command>'` runs a shell command on each new pyramid
+before the swap, with `PORTOLAN_FEED`, `PORTOLAN_TILES` and `PORTOLAN_LIVE`
+set, for a consumer that post-processes tiles to publish them in the same
+swap.
 
 ## 0.5.1
 
