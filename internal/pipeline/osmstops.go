@@ -125,16 +125,23 @@ func osmStopClasses(p map[string]any) map[string]bool {
 		cl["aerial"] = true
 		cl["cable"] = true
 	}
-	if s("amenity") == "ferry_terminal" {
+	if s("amenity") == "ferry_terminal" || yes("ferry") {
 		cl["ferry"] = true
 	}
-	// A bare railway=station with no sub-tag is still rail of some kind;
-	// let it serve the rail classes rather than dropping a real station.
-	if len(cl) == 0 && s("railway") == "station" {
+	if s("highway") == "bus_stop" || yes("bus") || yes("trolleybus") {
+		cl["bus"] = true
+	}
+	// A bare railway=station (or the stop_position railway=stop) with no
+	// sub-tag is still rail of some kind; let it serve the rail classes
+	// rather than dropping a real station.
+	if len(cl) == 0 && (s("railway") == "station" || s("railway") == "stop") {
 		cl["metro"], cl["regional"], cl["tram"], cl["monorail"] = true, true, true, true
 	}
 	// public_transport=station with nothing else is usually a bus station.
-	if len(cl) == 0 {
+	// A stop_position or platform with no mode tag says nothing about what
+	// stops there, and guessing "bus" let a rail stop position claim a bus
+	// stop on its corner: it serves no class, so it matches nothing.
+	if len(cl) == 0 && s("public_transport") == "station" {
 		cl["bus"] = true
 	}
 	return cl
@@ -292,7 +299,7 @@ func idfOf(corpora ...[][]string) map[string]float64 {
 }
 
 // abbreviates reports one token written short for the other: a strict
-// prefix of it. This is the single structural fact about abbreviation
+// prefix of it, or a contraction (see contracts). This is the single structural fact about abbreviation
 // that needs no word list and no language — "st" for "street", "wash"
 // for "washington", "4" for "4th", "estac" for "estación" — and it is
 // what lets a feed that shortens every word still agree with an OSM name
@@ -301,6 +308,11 @@ func idfOf(corpora ...[][]string) map[string]float64 {
 // It says nothing about WHICH word was meant: "st" prefixes "stuyvesant"
 // as readily as "street". That ambiguity is priced in rather than
 // legislated away — see abbrevCredit and the pairing order in nameSim.
+//
+// A number is the exception: it abbreviates only its own ordinal form, a
+// digit run followed by letters ("4" → "4th", "4e", "4ª"), never a longer
+// number. As plain prefixes "4" paired with "42nd" and "8" with "81", and
+// 5 Av/E 81 St took the name of the pole on 80th.
 func abbreviates(a, b string) bool {
 	if len(a) == len(b) {
 		return false
@@ -308,7 +320,51 @@ func abbreviates(a, b string) bool {
 	if len(a) > len(b) {
 		a, b = b, a
 	}
-	return strings.HasPrefix(b, a)
+	if allDigits(a) {
+		if !strings.HasPrefix(b, a) {
+			return false
+		}
+		r := []rune(b[len(a):])
+		return len(r) > 0 && !unicode.IsDigit(r[0])
+	}
+	return strings.HasPrefix(b, a) || contracts(a, b)
+}
+
+// contracts reports a written as a contraction of b: same first letter,
+// same last letter past two letters, and every letter of a found in b in
+// order — "blvd" in "boulevard",
+// "pkwy" in "parkway", "rd" in "road". Prefixes alone missed every one of
+// them, and NYC's bus feed abbreviates street types exactly this way.
+// Letters only: a number is never a contraction of anything.
+func contracts(a, b string) bool {
+	ra, rb := []rune(a), []rune(b)
+	// a contraction drops letters ("rd" for "road"); two spellings a
+	// letter apart are a misspelling ("Rockway", "Sedgewick"), and taking
+	// OSM's would copy its typo onto the stop
+	if len(ra) < 2 || len(rb)-len(ra) < 2 || ra[0] != rb[0] || allDigits(a) || allDigits(b) {
+		return false
+	}
+	// past two letters a contraction keeps the word's last letter too
+	// ("blvd", "pkwy", "jr"); without it "rer" read as "routière"
+	if len(ra) > 2 && ra[len(ra)-1] != rb[len(rb)-1] {
+		return false
+	}
+	j := 1
+	for i := 1; i < len(rb) && j < len(ra); i++ {
+		if rb[i] == ra[j] {
+			j++
+		}
+	}
+	return j == len(ra)
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // abbrevCredit is a prefix pairing's worth against the same two words
@@ -402,6 +458,145 @@ func nameSim(a, b []string, idf map[string]float64) float64 {
 	}
 	return math.Min(1, shared/lighter)
 }
+
+// nameCover is nameSim from both sides at once: the share of each name's
+// weight that pairs with the other, exactly or as an abbreviation. Two
+// names agree only when both are high; nameSim's one-sided containment
+// lets "Rockaway Blvd" claim "Farmers Blvd & Rockaway Blvd".
+//
+// swapped reports a word left over on BOTH sides: one name says something
+// in a place where the other says something else. That is a different
+// street, however little the words weigh — "147 Av" is not "147th
+// Street", and "Rockaway Tpke" is not "Rockaway Boulevard". A word left
+// over on one side only is detail ("Astoria Boulevard South").
+func nameCover(a, b []string, idf map[string]float64, plausible func(short, long string) bool) (ca, cb float64, swapped bool) {
+	// every word counts, repeats included: "E 34th Ave & Park Ave" deduped
+	// to one "ave", which paired with "Avenue" and hid the "Street" OSM
+	// had where the feed's first "Ave" stood
+	ta, tb := a, b
+	wa, wb := 0.0, 0.0
+	for _, t := range ta {
+		wa += idf[t]
+	}
+	for _, t := range tb {
+		wb += idf[t]
+	}
+	if wa <= 0 || wb <= 0 {
+		return 0, 0, false
+	}
+	pairedA := make([]bool, len(ta))
+	usedB := make([]bool, len(tb))
+	for i, x := range ta {
+		for j, y := range tb {
+			if !usedB[j] && x == y {
+				pairedA[i], usedB[j] = true, true
+				ca += idf[x]
+				cb += idf[y]
+				break
+			}
+		}
+	}
+	for i, x := range ta {
+		if pairedA[i] {
+			continue
+		}
+		best := -1
+		for j, y := range tb {
+			if usedB[j] || !abbreviates(x, y) {
+				continue
+			}
+			short, long := x, y
+			if len(short) > len(long) {
+				short, long = long, short
+			}
+			if !plausible(short, long) {
+				continue
+			}
+			if best < 0 || len(y) < len(tb[best]) {
+				best = j
+			}
+		}
+		if best >= 0 {
+			pairedA[i], usedB[best] = true, true
+			ca += idf[x]
+			cb += idf[tb[best]]
+		}
+	}
+	leftA, leftB := false, false
+	for i := range ta {
+		leftA = leftA || !pairedA[i]
+	}
+	for j := range tb {
+		leftB = leftB || !usedB[j]
+	}
+	return ca / wa, cb / wb, leftA && leftB
+}
+
+// expansions measures, for this city, which long words each short form
+// stands for and how often: OSM's own vocabulary says "st" is "street"
+// hundreds of times and "sreet" once. A pairing that expands a short form
+// to a spelling the city almost never uses is a typo being copied, not an
+// abbreviation being read.
+type expansions struct {
+	df    map[string]int // OSM name count per token
+	vocab []string
+	best  map[string]int // short form → df of its commonest expansion
+}
+
+func newExpansions(osm [][]string) *expansions {
+	e := &expansions{df: map[string]int{}, best: map[string]int{}}
+	for _, toks := range osm {
+		seen := map[string]bool{}
+		for _, t := range toks {
+			if !seen[t] {
+				seen[t] = true
+				e.df[t]++
+			}
+		}
+	}
+	for t := range e.df {
+		e.vocab = append(e.vocab, t)
+	}
+	sort.Strings(e.vocab)
+	return e
+}
+
+// typoShare: an expansion used less than this share as often as the
+// commonest one is taken for a misspelling.
+const typoShare = 0.05
+
+func (e *expansions) plausible(short, long string) bool {
+	top, ok := e.best[short]
+	if !ok {
+		for _, t := range e.vocab {
+			if len(t) > len(short) && abbreviates(short, t) && e.df[t] > top {
+				top = e.df[t]
+			}
+		}
+		e.best[short] = top
+	}
+	n, inOSM := e.df[long]
+	if !inOSM {
+		return true // the long form is the feed's: nothing to copy
+	}
+	return float64(n) >= typoShare*float64(top)
+}
+
+// busOnly: every route at this stop is a bus.
+func busOnly(s Station) bool {
+	for _, m := range s.Modes {
+		if m != "bus" {
+			return false
+		}
+	}
+	return len(s.Modes) > 0
+}
+
+// busAgree is how much of each name a bus stop pairing must cover. A bus
+// pole is not a station: every corner has two to eight of them metres
+// apart, each named for a different street or block, so proximity says
+// nothing and the names must say the same thing on both sides.
+const busAgree = 0.85
 
 // StopMatch is one accepted pairing, for logging and for the report.
 type StopMatch struct {
@@ -550,6 +745,7 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 		sxy[i] = frame.ToXY(sts[i].LL)
 	}
 	idf := idfOf(stoks, ocorp)
+	exp := newExpansions(ocorp)
 	// every word OSM uses anywhere in this city
 	osmVocab := map[string]bool{}
 	for _, toks := range ocorp {
@@ -586,6 +782,11 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 			if sim < needSim(d) {
 				continue
 			}
+			if busOnly(sts[si]) {
+				if ca, cb, swapped := nameCover(stoks[si], stops[oi].toks, idf, exp.plausible); swapped || math.Min(ca, cb) < busAgree {
+					continue
+				}
+			}
 			// proximity dominates the ranking too; the name only orders
 			// candidates that are similarly close
 			score := 0.65*(1-d/osmMatchRadiusM) + 0.35*sim
@@ -620,12 +821,22 @@ func MatchOSMStops(sts []Station, stops []OSMStop, frame geo.Frame) []StopMatch 
 	usedO := make([]bool, len(stops))
 	var out []StopMatch
 	for _, c := range cands {
-		if usedS[c.si] || usedO[c.oi] {
+		// one-to-one, except that a bus pole may name every stop its name
+		// fully agrees with: a feed often files both directions of a
+		// corner, OSM one pole, and the agreement test already made the
+		// pairing as sure as a name can be
+		if usedS[c.si] || (usedO[c.oi] && !busOnly(sts[c.si])) {
 			continue
+		}
+		// the id stays one-to-one even where the name is shared: the
+		// second direction is not that node
+		id := stops[c.oi].ID
+		if usedO[c.oi] {
+			id = ""
 		}
 		usedS[c.si], usedO[c.oi] = true, true
 		out = append(out, StopMatch{
-			Station: c.si, OSM: stops[c.oi].ID,
+			Station: c.si, OSM: id,
 			FeedName: sts[c.si].Name, OSMName: stops[c.oi].Name,
 			Dist: c.dist, Sim: c.sim,
 			LostInfo: lostInfo(stoks[c.si], stops[c.oi].toks, idf, osmVocab),
@@ -758,7 +969,9 @@ func metersBetween(a, b geo.LL) float64 {
 // "Parkway" beside two "Pkwy".
 func ApplyOSMStopMatches(sts []Station, ms []StopMatch, rename bool) (renamed int) {
 	for _, m := range ms {
-		sts[m.Station].OSMID = m.OSM
+		if m.OSM != "" {
+			sts[m.Station].OSMID = m.OSM
+		}
 	}
 	if !rename {
 		return 0
@@ -814,6 +1027,7 @@ func ApplyOSMStopMatches(sts []Station, ms []StopMatch, rename bool) (renamed in
 		}
 		for _, si := range g.idx {
 			sts[si].Name = g.target
+			sts[si].Renamed = true
 			renamed++
 		}
 		delete(held, old)

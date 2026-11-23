@@ -723,6 +723,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	// OSM stop matching: give each station its OSM object id, and adopt
 	// the name on the sign over the feed's bookkeeping. Entirely opt-in —
 	// a city with no stops extract loads nothing and matches nothing.
+	var busStops []Station
 	if o.Stops != "" {
 		ostops, err := LoadOSMStops(o.Stops)
 		if err != nil {
@@ -737,6 +738,13 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 			renamed := ApplyOSMStopMatches(sts, ms, style.Active().OSMStopNames)
 			logf("osm stops: %d/%d stations matched of %d osm stops, %d renamed",
 				len(ms), len(sts), len(ostops), renamed)
+			// buses draw no stations but their stops still have a sign
+			busStops = BuildBusStops(feed, feed.Patterns, o.BBox)
+			if len(busStops) > 0 {
+				bm := withSiblings(busStops, MatchOSMStops(busStops, ostops, frame))
+				br := ApplyOSMStopMatches(busStops, bm, style.Active().OSMStopNames)
+				logf("osm stops: %d/%d bus stops matched, %d renamed", len(bm), len(busStops), br)
+			}
 		}
 	}
 	// caterpillars: inline route bullets riding the ribbons, anchored on
@@ -760,6 +768,16 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	if err := writeStations(o.Out+".stations.geojson", sts, cats,
 		onestopByPrefix(o.GTFS, o.Onestop)); err != nil {
 		return err
+	}
+	// the corrected export says what the map says: every stop whose
+	// station took its OSM name carries that name in stops.txt, so the
+	// planner, departure boards and route lists name it alike
+	if o.ExportGTFS != "" && o.GTFS != "" {
+		n, err := renameExportStops(o.ExportGTFS, o.GTFS, signNames(sts, busStops))
+		if err != nil {
+			return fmt.Errorf("EXPORT stop names: %w", err)
+		}
+		logf("export: %d stop names taken from OSM", n)
 	}
 	// the resolved style travels WITH the build: the viewer renders widths,
 	// opacities and floors from this manifest instead of duplicating the
