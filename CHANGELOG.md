@@ -37,6 +37,19 @@ is unchanged.
 `tools/match_audit.py` measures all of this from the build's paths dump,
 the feed and the extract, trusting nothing in the pipeline.
 
+### OSM stop names reach the planner, and bus and ferry stops get them
+
+A station's OSM name only ever reached its map label: the corrected GTFS
+export left stops.txt alone, so the planner, departure boards and route
+lists kept the feed's names. The export now writes each renamed stop's
+OSM name into stops.txt. Bus stops, which draw no stations, are matched
+too, under stricter rules than stations because a corner's poles sit
+metres apart: the names must agree on both sides. Ferry stops tagged
+`ferry=yes` now class as ferry instead of bus, and the stops extract
+gains bus stops and platforms. Numbers no longer abbreviate longer
+numbers ("4" for "42nd"), and contractions ("Blvd", "Pkwy") pair with
+their full forms.
+
 ## 0.5.4
 
 ### `sync check` fetches the zips a feed actually reads
