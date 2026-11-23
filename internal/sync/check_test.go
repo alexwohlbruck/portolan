@@ -204,6 +204,12 @@ func TestCheckSkipsFeedsWithoutOnestop(t *testing.T) {
 	o.Config = registry.Config{Feeds: map[string]registry.FeedCfg{
 		"handmade": {GTFS: "data/gtfs/handmade.zip"},
 	}}
+	if err := os.MkdirAll(o.DataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(o.DataDir, "handmade.zip"), stub.zip, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	res, err := Check(o)
 	if err != nil {
 		t.Fatal(err)
@@ -304,5 +310,74 @@ func TestDownloadRejectsNonZip(t *testing.T) {
 	}
 	if _, err := os.Stat(dest); err == nil {
 		t.Error("bad download left a file behind")
+	}
+}
+
+func TestCheckWritesTheZipTheRegistryReads(t *testing.T) {
+	// wmata's entry reads data/gtfs/dc.zip; a download to wmata.zip
+	// would sit beside it unread and the feed would never build
+	stub := &tlStub{sha1: "s1", zip: zipBytes(t, []member{{"routes.txt", "route_id\nA\n"}})}
+	o := checkOpts(t, newTL(t, stub), false)
+	o.Config = registry.Config{Feeds: map[string]registry.FeedCfg{
+		"wmata": {GTFS: "data/gtfs/dc.zip", Onestop: "f-dqc-wmata~rail"},
+	}}
+	if _, err := Check(o); err != nil {
+		t.Fatal(err)
+	}
+	if !nonEmpty(filepath.Join(o.DataDir, "dc.zip")) {
+		t.Error("dc.zip not installed")
+	}
+	if nonEmpty(filepath.Join(o.DataDir, "wmata.zip")) {
+		t.Error("wrote wmata.zip, which nothing reads")
+	}
+}
+
+func TestCheckRefetchesAMissingZipAtTheSameSha(t *testing.T) {
+	stub := &tlStub{sha1: "s1", zip: zipBytes(t, []member{{"routes.txt", "route_id\nA\n"}})}
+	o := checkOpts(t, newTL(t, stub), false)
+	if _, err := Check(o); err != nil {
+		t.Fatal(err)
+	}
+	zip := filepath.Join(o.DataDir, "metro.zip")
+	if err := os.Remove(zip); err != nil {
+		t.Fatal(err)
+	}
+
+	// upstream has not moved, but the zip is gone: fetch it again, and
+	// count it as changed so the patch that follows builds the feed
+	res, err := Check(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.dlHits != 2 {
+		t.Errorf("dlHits = %d, want 2", stub.dlHits)
+	}
+	if !nonEmpty(zip) {
+		t.Error("zip not restored")
+	}
+	if len(res.Changed) != 1 || res.Changed[0] != "metro" {
+		t.Errorf("changed = %v, want [metro]", res.Changed)
+	}
+}
+
+func TestCheckFailsAnUnfetchableFeedWithNoZip(t *testing.T) {
+	// no onestop and nothing on disk: no run would ever build it, so the
+	// check has to say so rather than skip it quietly
+	stub := &tlStub{sha1: "s1"}
+	o := checkOpts(t, newTL(t, stub), false)
+	o.Config = registry.Config{Feeds: map[string]registry.FeedCfg{
+		"dc-streetcar": {GTFS: "data/gtfs/dc-streetcar.zip"},
+		// a group's zips belong to its members, which report for themselves
+		"washington": {GTFS: "data/gtfs/dc.zip", Members: []string{"wmata"}},
+	}}
+	res, err := Check(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 1 || !strings.HasPrefix(res.Errors[0], "dc-streetcar: no onestop id and no zip") {
+		t.Errorf("errors = %v", res.Errors)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0] != "washington" {
+		t.Errorf("skipped = %v", res.Skipped)
 	}
 }
