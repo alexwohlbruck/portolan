@@ -17,6 +17,7 @@ type FeedCfg struct {
 	Rail    string    `json:"rail"`
 	Streets string    `json:"streets"` // optional street extract — enables bus routes
 	Stops   string    `json:"stops"`   // optional OSM stop extract — station name/id matching
+	Water   string    `json:"water,omitempty"` // optional shoreline extract — ferries ride river centerlines
 	Out     string    `json:"out"`
 	Network string    `json:"network"` // drawn ground truth for scoring
 	BBox    []float64 `json:"bbox"`    // [w,s,e,n] Overpass window + shape clip

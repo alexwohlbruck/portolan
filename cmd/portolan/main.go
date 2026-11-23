@@ -290,7 +290,7 @@ func fail(format string, a ...any) {
 
 type chartFlags struct {
 	gtfs, rail, corridors, corridorNodes  string
-	streets, stops, bbox, anchor          string
+	streets, stops, water, bbox, anchor   string
 	excludeBBox                           string
 	out, format, band                     string
 	styleDir, city, stylePath, lineAgency string
@@ -321,7 +321,7 @@ valid --corridors input.
 --gtfs may be omitted with --rail, which dumps the bundled track strands
 and stops: a quick check that an OSM extract is usable, with no map.`,
 	groups: []flagGroup{
-		{"inputs", []string{"gtfs", "rail", "corridors", "corridor-nodes", "streets", "stops"}},
+		{"inputs", []string{"gtfs", "rail", "corridors", "corridor-nodes", "streets", "stops", "water"}},
 		{"window and projection", []string{"bbox", "exclude-bbox", "anchor"}},
 		{"output", []string{"out", "format", "band", "export-gtfs", "onestop", "set", "allow-unmatched"}},
 		{"curation", []string{"style-dir", "feed", "style", "line-agencies"}},
@@ -343,6 +343,7 @@ and stops: a quick check that an OSM extract is usable, with no map.`,
 		fs.StringVar(&c.corridorNodes, "corridor-nodes", "", "nodes half of the corridor graph, if split across two files")
 		fs.StringVar(&c.streets, "streets", "", "OSM street extract (GeoJSON) — enables bus routes")
 		fs.StringVar(&c.stops, "stops", "", "OSM transit-stop extract (GeoJSON) — station names and ids")
+		fs.StringVar(&c.water, "water", "", "shoreline extract (GeoJSON) — ferries ride river centerlines")
 		fs.StringVar(&c.bbox, "bbox", "", "clip to a window: w,s,e,n (LONGITUDE first)")
 		fs.StringVar(&c.excludeBBox, "exclude-bbox", "", "cut these windows OUT: w,s,e,n[;w,s,e,n...] — territory a group build draws")
 		fs.StringVar(&c.anchor, "anchor", "", "pin the projection origin: lat,lon (LATITUDE first)")
@@ -534,7 +535,7 @@ func runChart(c *chartFlags) {
 		die(json.Unmarshal(raw, &d))
 	}
 	die(pipeline.Chart(pipeline.ChartOpts{
-		GTFS: c.gtfs, Rail: c.rail, Streets: c.streets, Stops: c.stops, BBox: bbox, Exclude: exclude,
+		GTFS: c.gtfs, Rail: c.rail, Streets: c.streets, Stops: c.stops, Water: c.water, BBox: bbox, Exclude: exclude,
 		Corridors: c.corridors, CorridorNodes: c.corridorNodes, Anchor: anchorLL,
 		LineAgencies: las, Scenario: c.scenario, Style: sty, ExportGTFS: c.exportGTFS, Onestop: onestop, AllowUnmatched: c.allowUnmatched,
 		Out: out, Format: c.format, Band: bandPtr, Dials: &d,

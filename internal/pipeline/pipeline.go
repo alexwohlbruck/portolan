@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/alexwohlbruck/portolan/internal/bundle"
+	"github.com/alexwohlbruck/portolan/internal/fairway"
 	"github.com/alexwohlbruck/portolan/internal/geo"
 	"github.com/alexwohlbruck/portolan/internal/gtfs"
 	"github.com/alexwohlbruck/portolan/internal/mode"
@@ -168,6 +169,10 @@ type ChartOpts struct {
 	// When present, drawn stations are matched against it for their OSM
 	// id and — unless style osm_stop_names is off — their name.
 	Stops string
+	// Water: optional shoreline extract (tools/feed.sh water). When set,
+	// ferries ride river centerlines derived from it (internal/fairway)
+	// instead of the OSM ferry lanes that fan across a river.
+	Water string
 	// LineAgencies: regional agencies whose routes keep per-line identity
 	// instead of collapsing into one agency trunk (Paris RER A–E). Config
 	// curation — see mode.SetLineAgencies.
@@ -278,6 +283,12 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		frameWays = sways
 	}
 	frame := FrameOf(frameWays)
+	var fw *fairway.Net
+	if o.Water != "" {
+		if fw, ways, err = withFairway(o.Water, o.BBox, frame, ways, logf); err != nil {
+			return err
+		}
+	}
 	xover := map[string]bool{}
 	for _, w := range ways {
 		if w.Tags["service"] == "crossover" {
@@ -462,6 +473,9 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		before := len(rail)
 		rail = excludePatterns(rail, o.Exclude)
 		logf("chart: %d exclude window(s): %d patterns → %d pieces outside", len(o.Exclude), before, len(rail))
+	}
+	if fw != nil {
+		snapFerries(rail, fw, frame)
 	}
 
 	if v := os.Getenv("PORTOLAN_DBG3"); v != "" {

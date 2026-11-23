@@ -7,6 +7,16 @@ that more than it cares about the API.
 
 ## Unreleased
 
+### Ferries run down the middle of the river
+
+A feed with a `water` extract now draws its ferries along river
+centerlines derived from the shoreline, instead of along OSM's ferry lanes.
+On the East River that turns a band of six parallel lanes into one line
+that eases off toward each pier. Ferries also share one ribbon per feed
+(trunk policy `class`), so a shared stretch is one line, not parallel
+ribbons. Feeds without `water` are unchanged apart from the trunk policy.
+See [docs/FAIRWAY.md](docs/FAIRWAY.md).
+
 ### A failed group no longer takes its members off the map
 
 The world index leaves out a group's members because the group draws

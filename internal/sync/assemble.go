@@ -113,6 +113,13 @@ func assembleChart(doc *Obj, cfg registry.Config, key, buildDir, styleDir,
 			argv = append(argv, "--stops", fc.Stops)
 		}
 	}
+	if fc.Water != "" {
+		if st, err := os.Stat(fc.Water); err == nil && st.Size() > 0 {
+			argv = append(argv, "--water", fc.Water)
+		} else {
+			logf("%s: water configured but missing at %s — ferries keep their lanes", key, fc.Water)
+		}
+	}
 	if exportGTFS != "" {
 		argv = append(argv, "--export-gtfs", exportGTFS)
 	}

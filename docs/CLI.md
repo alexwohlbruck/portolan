@@ -71,6 +71,7 @@ Exactly one geometry source is required, and the two are alternatives:
 | `--corridor-nodes` | The nodes half of that graph, when it arrives as two files rather than one mixed collection. |
 | `--streets` | OSM street extract (GeoJSON). Bus routes are drawn only when this is given — without street geometry there is nothing to match them onto. |
 | `--stops` | OSM transit-stop extract (GeoJSON). Gives each drawn station its OSM id and, unless curation says otherwise, the name on the sign. |
+| `--water` | Shoreline extract (GeoJSON). `tools/feed.sh water <city>` fetches one. Ferries then run down river centerlines instead of OSM's ferry lanes ([FAIRWAY.md](FAIRWAY.md)). |
 
 `--gtfs` may be omitted **with `--rail`**, which dumps the bundled track
 strands and stops without drawing a map. It is a quick check that an OSM
