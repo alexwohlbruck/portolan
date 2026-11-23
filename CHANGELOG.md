@@ -5,26 +5,7 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
-## 0.5.4
-
-### `sync check` fetches the zips a feed actually reads
-
-`sync check` saved each download as `data/gtfs/<key>.zip`. A few curated
-feeds read a file with another name: wmata reads `dc.zip`, la-metro-rail
-`la.zip`, barcelona-tmb `barcelona.zip`. Their downloads went to a file
-nothing read, so those feeds never picked up new schedules. Downloads now
-go to the file the feed's `gtfs` entry names.
-
-A check also downloads a feed again when its zip is missing, even when
-the upstream sha hasn't moved. Patch and global runs plan only feeds that
-changed, so a zip lost from the workspace was never rebuilt and never
-mentioned again. Now the next check restores it and builds the feed.
-
-A feed with no `onestop` id and no zip on disk is now an error on every
-check instead of a quiet skip. Nothing can fetch it, so it stays off the
-map until someone places the zip by hand.
-
-## 0.5.3
+## Unreleased
 
 ### Ferries ride OSM's ferry lanes pier to pier
 
@@ -55,6 +36,27 @@ is unchanged.
 
 `tools/match_audit.py` measures all of this from the build's paths dump,
 the feed and the extract, trusting nothing in the pipeline.
+
+## 0.5.4
+
+### `sync check` fetches the zips a feed actually reads
+
+`sync check` saved each download as `data/gtfs/<key>.zip`. A few curated
+feeds read a file with another name: wmata reads `dc.zip`, la-metro-rail
+`la.zip`, barcelona-tmb `barcelona.zip`. Their downloads went to a file
+nothing read, so those feeds never picked up new schedules. Downloads now
+go to the file the feed's `gtfs` entry names.
+
+A check also downloads a feed again when its zip is missing, even when
+the upstream sha hasn't moved. Patch and global runs plan only feeds that
+changed, so a zip lost from the workspace was never rebuilt and never
+mentioned again. Now the next check restores it and builds the feed.
+
+A feed with no `onestop` id and no zip on disk is now an error on every
+check instead of a quiet skip. Nothing can fetch it, so it stays off the
+map until someone places the zip by hand.
+
+## 0.5.3
 
 ### A failed group no longer takes its members off the map
 
