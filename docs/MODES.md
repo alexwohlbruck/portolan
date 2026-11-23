@@ -89,7 +89,8 @@ the slot unit:
 | `metro`, `tram`, `monorail` | `color` (law 5, unchanged) | NYC/Chicago behaviour is bit-for-bit preserved |
 | `regional` | **`agency`** by default; `color` for configured `line_agencies` | LIRR's twelve branch-diagram colours draw as ONE line, the way Apple draws them |
 | `bus` | *(none — never trunked)* | matched bus paths bypass SPLIT/ORDER/FAIR entirely; see below |
-| `ferry`, `aerial`, `funicular`, `cable` | `route` | too few to bundle; never merge them |
+| `ferry` | `class` | one ribbon for every ferry, the way Apple draws one blue line down a river ([FAIRWAY.md](FAIRWAY.md)) |
+| `aerial`, `funicular`, `cable` | `route` | too few to bundle; never merge them |
 
 The regional rule was settled by evidence, not the original inference
 (which had colour first). Owner's Apple screenshots: Penn Station is one

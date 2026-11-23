@@ -43,6 +43,10 @@ const (
 	// key means one slot, so a corridor's ordering never depends on which
 	// distant operator's trains happen to ride it.
 	TrunkIntercity = "intercity"
+	// TrunkClass pools every route of the class into one ribbon, whatever
+	// the agency. The ferry default: Apple draws one blue line down a
+	// river however many boats share it.
+	TrunkClass = "class"
 )
 
 // Class is the look and merge policy for one transit class. Zero values
@@ -178,7 +182,7 @@ var defaults = map[string]Class{
 	"funicular": {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(1), BandFloor: i(0)},
 	"cable":     {Trunk: TrunkRoute, Width: f(0.75), Opacity: f(1), BandFloor: i(0)},
 	"aerial":    {Trunk: TrunkRoute, Width: f(0.6), Opacity: f(0.75), BandFloor: i(0)},
-	"ferry":     {Trunk: TrunkRoute, Width: f(0.7), Opacity: f(0.65), BandFloor: i(13), Color: "4A9EDB"},
+	"ferry":     {Trunk: TrunkClass, Width: f(0.7), Opacity: f(0.65), BandFloor: i(13), Color: "4A9EDB"},
 	"bus":       {Trunk: TrunkNone, Width: f(0.5), Opacity: f(0.9), BandFloor: i(15), Color: "888888"},
 	"unknown":   {Trunk: TrunkColor, Width: f(1.0), Opacity: f(1), BandFloor: i(0)},
 }

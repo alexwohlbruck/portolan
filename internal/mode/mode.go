@@ -174,6 +174,8 @@ func TrunkKey(r gtfs.Route) string {
 		return "route:" + r.ID
 	case style.TrunkIntercity:
 		return IntercityKey
+	case style.TrunkClass:
+		return "class:" + c.String()
 	}
 	// color trunking (law 5): the key IS the color string, byte for byte —
 	// unless the caller scoped it. A trunk group narrows how far a colour

@@ -22,7 +22,7 @@ func TestDefaultsMatchShippedBehaviour(t *testing.T) {
 		{"tram", TrunkColor, "", 0.75, 1, 0},
 		{"regional", TrunkAgency, "", 1, 1, 0},
 		{"monorail", TrunkColor, "", 0.85, 1, 0},
-		{"ferry", TrunkRoute, "4A9EDB", 0.7, 0.65, 13},
+		{"ferry", TrunkClass, "4A9EDB", 0.7, 0.65, 13},
 		{"bus", TrunkNone, "888888", 0.5, 0.9, 15},
 		{"aerial", TrunkRoute, "", 0.6, 0.75, 0},
 		{"funicular", TrunkRoute, "", 0.7, 1, 0},
@@ -44,7 +44,7 @@ func TestLayeringIsPerField(t *testing.T) {
 	if f.Color != "FF0000" {
 		t.Errorf("color override not applied: %q (the # must be stripped)", f.Color)
 	}
-	if f.Width != 0.7 || f.BandFloor != 13 || f.Trunk != TrunkRoute {
+	if f.Width != 0.7 || f.BandFloor != 13 || f.Trunk != TrunkClass {
 		t.Errorf("naming color disturbed other fields: %+v", f)
 	}
 }
