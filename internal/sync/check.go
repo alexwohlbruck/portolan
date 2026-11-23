@@ -15,7 +15,7 @@ import (
 type CheckOpts struct {
 	Config    registry.Config
 	StatePath string
-	DataDir   string // downloaded zips land here as <feedkey>.zip
+	DataDir   string // downloaded zips land here, named as the feed's gtfs entry names them
 	Client    *Client
 	DryRun    bool // stop after the diff: no downloads, no state writes
 	Log       func(format string, a ...any)
@@ -64,6 +64,15 @@ func Check(o CheckOpts) (CheckResult, error) {
 	for _, key := range keys {
 		fc := o.Config.Feeds[key]
 		if fc.Onestop == "" {
+			// Nothing upstream to ask, so the zip on disk is all there will
+			// ever be. Without one the feed cannot build, and since only
+			// changed feeds are planned, no later run would mention it: a
+			// silent, permanent gap on the map. Say it on every check.
+			if len(fc.Members) == 0 && fc.PrimaryGTFS() != "" && !nonEmpty(zipDest(o.DataDir, key, fc)) {
+				oops(key, fmt.Errorf("no onestop id and no zip at %s — nothing can fetch it; place it by hand or add an onestop",
+					zipDest(o.DataDir, key, fc)))
+				continue
+			}
 			res.Skipped = append(res.Skipped, key)
 			logf("%s: no onestop id — skipped", key)
 			continue
@@ -78,7 +87,13 @@ func Check(o CheckOpts) (CheckResult, error) {
 			continue
 		}
 		prev := st.Feeds[key]
-		if info.SHA1 == prev.SHA1 {
+		dest := zipDest(o.DataDir, key, fc)
+		// The sha says what upstream has, not what is on disk. A manifest
+		// can outlive its zip (a workspace copied from another host, a
+		// pruned data dir), and a sha match would then leave the feed
+		// unbuildable for good, since nothing else ever fetches it.
+		onDisk := nonEmpty(dest)
+		if info.SHA1 == prev.SHA1 && onDisk {
 			logf("%s: unchanged (%s)", key, short(info.SHA1))
 			continue
 		}
@@ -87,7 +102,6 @@ func Check(o CheckOpts) (CheckResult, error) {
 			logf("%s: upstream %s, have %s — would download", key, short(info.SHA1), short(prev.SHA1))
 			continue
 		}
-		dest := filepath.Join(o.DataDir, key+".zip")
 		tmp := dest + ".sync"
 		if err := o.Client.Download(fc.Onestop, info.StaticCurrent, tmp); err != nil {
 			oops(key, err)
@@ -102,7 +116,7 @@ func Check(o CheckOpts) (CheckResult, error) {
 		cur := prev
 		cur.Onestop = fc.Onestop
 		cur.SHA1 = info.SHA1
-		if content == prev.Content && prev.Content != "" {
+		if content == prev.Content && prev.Content != "" && onDisk {
 			// a republish: new sha, same tables — record the sha so the
 			// next check is quiet, but nothing downstream needs to move
 			os.Remove(tmp)
@@ -139,4 +153,20 @@ func short(sha string) string {
 		return sha[:8]
 	}
 	return sha
+}
+
+// zipDest is where a feed's download lands: the file its gtfs entry names,
+// in DataDir. Most feeds are data/gtfs/<key>.zip, but a few curated ones
+// predate that convention (wmata reads dc.zip, la-metro-rail la.zip), and
+// writing <key>.zip for those fills a file nothing reads.
+func zipDest(dataDir, key string, fc registry.FeedCfg) string {
+	if p := fc.PrimaryGTFS(); p != "" {
+		return filepath.Join(dataDir, filepath.Base(p))
+	}
+	return filepath.Join(dataDir, key+".zip")
+}
+
+func nonEmpty(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Size() > 0
 }
