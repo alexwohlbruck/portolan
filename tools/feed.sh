@@ -300,8 +300,9 @@ stops() { # $1 = feed key
   out=$(get "$feed" stops)
   [ -n "$out" ] || { echo "$feed: no 'stops' path in $CFG"; exit 2; }
   bbox "$feed"
-  # every element that can carry a station name: nodes for stop positions
-  # and tram stops, ways/relations for station buildings and complexes.
+  # every element that can carry a station name: nodes for stop positions,
+  # tram stops, bus stops and platforms, ways/relations for station
+  # buildings and complexes.
   # 'out center' gives ways and relations a representative point.
   query="[out:json][timeout:600];
 (
@@ -312,6 +313,8 @@ node[\"public_transport\"~\"^(station|stop_position)\$\"]($s,$w,$n,$e);
 way[\"public_transport\"=\"station\"]($s,$w,$n,$e);
 relation[\"public_transport\"=\"station\"]($s,$w,$n,$e);
 node[\"aerialway\"=\"station\"]($s,$w,$n,$e);
+node[\"highway\"=\"bus_stop\"]($s,$w,$n,$e);
+node[\"public_transport\"=\"platform\"]($s,$w,$n,$e);
 node[\"amenity\"=\"ferry_terminal\"]($s,$w,$n,$e);
 way[\"amenity\"=\"ferry_terminal\"]($s,$w,$n,$e);
 );

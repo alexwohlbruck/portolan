@@ -26,6 +26,7 @@ for region in "$@"; do
     nwr/public_transport=station,stop_position \
     nwr/railway=station,halt \
     n/aerialway=station nwr/amenity=ferry_terminal \
+    n/highway=bus_stop n/public_transport=platform \
     -o "$stops" --overwrite && rm -f "$pbf"
 done
 echo RAILALL-DONE
