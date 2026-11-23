@@ -298,6 +298,13 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		return ts
 	}
 	tracks := toTracks(ways)
+	{
+		cls := make(map[string]string, len(ways))
+		for _, w := range ways {
+			cls[w.ID] = w.Tags["railway"]
+		}
+		tracks = stages.WeldSeaways(tracks, cls)
+	}
 	// streets are a separate opt-in layer for bus matching: they join the
 	// class/level maps and the MATCH graph, but never the strand pool —
 	// a street way IS the drawn road centerline already, and 100k street
@@ -470,6 +477,11 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
 	stages.SetFerryRoutes(routeSetOf(feed.Routes, mode.Ferry))
+	stopLL := make(map[string]geo.LL, len(feed.Stops))
+	for id, s := range feed.Stops {
+		stopLL[id] = s.LL
+	}
+	stages.SetStopCoords(stopLL)
 	// per-pattern activity masks power dynamic time rendering AND per-
 	// segment service (docs/DYNAMIC-SERVICE.md): SPLIT ORs them onto the
 	// edges each pattern rides, so a short-turned route's tail carries

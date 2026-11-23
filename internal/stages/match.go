@@ -256,6 +256,7 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 		return pa.ShapeID < pb.ShapeID
 	})
 
+	m.piers = ferryPiers(patterns, frame)
 	var out []Path
 	var laid []Path // trusted patterns' paths — the guide pool
 	for _, oi := range order {
@@ -272,7 +273,13 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 					"off-network", int(off[oi]*100), "% guide", guideID)
 			}
 		}
-		path, ok := m.matchOne(pat, frame, guide)
+		path, ok := Path{}, false
+		if mode.Of(pat.Route.Type) == mode.Ferry {
+			path, ok = m.routeFerry(pat, frame)
+		}
+		if !ok {
+			path, ok = m.matchOne(pat, frame, guide)
+		}
 		if !ok {
 			continue
 		}
@@ -397,6 +404,7 @@ type matcher struct {
 	usedColor map[int]map[string]bool // piece → colors that ride it
 	walks     map[[2]int]walkRes
 	ws        walkScratch // walk() is serial (Viterbi + assemble): safe to reuse
+	piers     []geo.Pt    // every ferry stop of the feed (ferryPiers)
 }
 
 // walkScratch replaces walk()'s per-call map and slice allocations with
