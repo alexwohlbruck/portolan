@@ -5,7 +5,7 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
-## 0.5.3
+## 0.5.4
 
 ### `sync check` fetches the zips a feed actually reads
 
@@ -23,6 +23,8 @@ mentioned again. Now the next check restores it and builds the feed.
 A feed with no `onestop` id and no zip on disk is now an error on every
 check instead of a quiet skip. Nothing can fetch it, so it stays off the
 map until someone places the zip by hand.
+
+## 0.5.3
 
 ### A failed group no longer takes its members off the map
 
