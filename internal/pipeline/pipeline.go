@@ -298,6 +298,13 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		return ts
 	}
 	tracks := toTracks(ways)
+	{
+		cls := make(map[string]string, len(ways))
+		for _, w := range ways {
+			cls[w.ID] = w.Tags["railway"]
+		}
+		tracks = stages.WeldSeaways(tracks, cls)
+	}
 	// streets are a separate opt-in layer for bus matching: they join the
 	// class/level maps and the MATCH graph, but never the strand pool —
 	// a street way IS the drawn road centerline already, and 100k street
@@ -470,6 +477,11 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		stages.SetDbg3(frame.ToXY(geo.LL{Lat: la, Lon: lo}))
 	}
 	stages.SetFerryRoutes(routeSetOf(feed.Routes, mode.Ferry))
+	stopLL := make(map[string]geo.LL, len(feed.Stops))
+	for id, s := range feed.Stops {
+		stopLL[id] = s.LL
+	}
+	stages.SetStopCoords(stopLL)
 	// per-pattern activity masks power dynamic time rendering AND per-
 	// segment service (docs/DYNAMIC-SERVICE.md): SPLIT ORs them onto the
 	// edges each pattern rides, so a short-turned route's tail carries
@@ -509,6 +521,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	}
 	logf("match: %d patterns → %d paths (%.1fs)",
 		len(rail), len(paths), time.Since(t0).Seconds())
+	stages.TidyBusPaths(paths, frame)
 	if err := writePaths(o.Out+".paths.geojson", paths, frame); err != nil {
 		return err
 	}
@@ -710,6 +723,7 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	// OSM stop matching: give each station its OSM object id, and adopt
 	// the name on the sign over the feed's bookkeeping. Entirely opt-in —
 	// a city with no stops extract loads nothing and matches nothing.
+	var busStops []Station
 	if o.Stops != "" {
 		ostops, err := LoadOSMStops(o.Stops)
 		if err != nil {
@@ -724,6 +738,13 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 			renamed := ApplyOSMStopMatches(sts, ms, style.Active().OSMStopNames)
 			logf("osm stops: %d/%d stations matched of %d osm stops, %d renamed",
 				len(ms), len(sts), len(ostops), renamed)
+			// buses draw no stations but their stops still have a sign
+			busStops = BuildBusStops(feed, feed.Patterns, o.BBox)
+			if len(busStops) > 0 {
+				bm := withSiblings(busStops, MatchOSMStops(busStops, ostops, frame))
+				br := ApplyOSMStopMatches(busStops, bm, style.Active().OSMStopNames)
+				logf("osm stops: %d/%d bus stops matched, %d renamed", len(bm), len(busStops), br)
+			}
 		}
 	}
 	// caterpillars: inline route bullets riding the ribbons, anchored on
@@ -747,6 +768,16 @@ func layout(in layoutIn, logf func(string, ...any)) error {
 	if err := writeStations(o.Out+".stations.geojson", sts, cats,
 		onestopByPrefix(o.GTFS, o.Onestop)); err != nil {
 		return err
+	}
+	// the corrected export says what the map says: every stop whose
+	// station took its OSM name carries that name in stops.txt, so the
+	// planner, departure boards and route lists name it alike
+	if o.ExportGTFS != "" && o.GTFS != "" {
+		n, err := renameExportStops(o.ExportGTFS, o.GTFS, signNames(sts, busStops))
+		if err != nil {
+			return fmt.Errorf("EXPORT stop names: %w", err)
+		}
+		logf("export: %d stop names taken from OSM", n)
 	}
 	// the resolved style travels WITH the build: the viewer renders widths,
 	// opacities and floors from this manifest instead of duplicating the

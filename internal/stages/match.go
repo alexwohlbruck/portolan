@@ -256,6 +256,7 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 		return pa.ShapeID < pb.ShapeID
 	})
 
+	m.piers = ferryPiers(patterns, frame)
 	var out []Path
 	var laid []Path // trusted patterns' paths — the guide pool
 	for _, oi := range order {
@@ -272,7 +273,13 @@ func Match(patterns []gtfs.Pattern, ways []bundle.Track, frame geo.Frame) ([]Pat
 					"off-network", int(off[oi]*100), "% guide", guideID)
 			}
 		}
-		path, ok := m.matchOne(pat, frame, guide)
+		path, ok := Path{}, false
+		if mode.Of(pat.Route.Type) == mode.Ferry {
+			path, ok = m.routeFerry(pat, frame)
+		}
+		if !ok {
+			path, ok = m.matchOne(pat, frame, guide)
+		}
 		if !ok {
 			continue
 		}
@@ -397,6 +404,7 @@ type matcher struct {
 	usedColor map[int]map[string]bool // piece → colors that ride it
 	walks     map[[2]int]walkRes
 	ws        walkScratch // walk() is serial (Viterbi + assemble): safe to reuse
+	piers     []geo.Pt    // every ferry stop of the feed (ferryPiers)
 }
 
 // walkScratch replaces walk()'s per-call map and slice allocations with
@@ -425,6 +433,7 @@ type walkRes struct {
 type candidate struct {
 	edge int     // directed edge id
 	emit float64 // emission cost at this sample
+	arc  float64 // where the sample projects along the edge, in riding direction
 }
 
 // emitSample computes one sample's candidate list and gap emission — the
@@ -527,6 +536,12 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 		}
 		bonus := 0.0
 		switch {
+		case wantLayer == "street":
+			// No convergence pull on streets. It exists so a rail
+			// corridor's routes land on one track; a road beside an
+			// expressway is a different road, and the pull of every local
+			// bus laid on a service road dragged express buses off the
+			// expressway they ride, onto a road that never meets its ramp.
 		case m.usedBy[c.piece][pat.Route.ID]:
 			bonus = m.p.BonusRoute
 		case m.usedColor[c.piece][pat.Route.Color]:
@@ -553,7 +568,11 @@ func (m *matcher) emitSample(pat gtfs.Pattern, q geo.Pt, i int, shape *geo.Line,
 			// (w=0.05) made riding a freight line nearly free while the true
 			// corridor 300 m away still paid distance — the Met triangled
 			// over the Dudden Hill loop wherever its shape had a hole.
-			cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)) + pen - bonus})
+			arc := c.arc
+			if dir == 1 {
+				arc = m.g.pieces[c.piece].Len() - c.arc
+			}
+			cands[i] = append(cands[i], candidate{e, w*(c.d+m.p.WHead*(1-dd)) + pen - bonus, arc})
 		}
 	}
 	gapEmit[i] = barredGap
@@ -699,7 +718,16 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 	type pv struct {
 		state int
 		cost  float64
+		arc   float64
 	}
+	// Streets only: a step between samples must cover about as much street
+	// as it covers shape (Newson & Krumm's transition term). Bus shapes are
+	// dense surveys of the street ridden, and without this a side street a
+	// few metres nearer the shape won on emission alone: the path wandered
+	// round the block, took the wrong ramp of a cloverleaf, or backed up a
+	// piece to rejoin it. Rail keeps its tuned costs untouched.
+	travel := patternLayer(pat.Route.Type) == "street"
+	stepLen := shape.Len() / float64(max(n-1, 1))
 	var prevs []pv
 	for i := 1; i < n; i++ {
 		dp[i] = mkRow(i)
@@ -707,7 +735,11 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 		// scan can stop once the running best beats the remaining prevs
 		prevs = prevs[:0]
 		for j, c := range dp[i-1] {
-			prevs = append(prevs, pv{stateOf(i-1, j), c.cost})
+			arc := 0.0
+			if j < len(cands[i-1]) {
+				arc = cands[i-1][j].arc
+			}
+			prevs = append(prevs, pv{stateOf(i-1, j), c.cost, arc})
 		}
 		// state id breaks exact-cost ties: the old map-iteration order fed
 		// an unstable sort, which is run-to-run random exactly when a tie
@@ -719,7 +751,7 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 			return prevs[a].state < prevs[b].state
 		})
 
-		relax := func(slot, state int, emit float64) {
+		relax := func(slot, state int, emit, arc float64) {
 			best := math.Inf(1)
 			bestPrev := gapState
 			for _, u := range prevs {
@@ -727,6 +759,9 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 					break
 				}
 				t := m.trans(u.state, state)
+				if travel && !math.IsInf(t, 1) && u.state != gapState && state != gapState {
+					t += travelPen * math.Abs(m.streetDist(u.state, u.arc, state, arc)-stepLen)
+				}
 				if u.cost+t < best {
 					best = u.cost + t
 					bestPrev = u.state
@@ -737,9 +772,9 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 			}
 		}
 		for j, c := range cands[i] {
-			relax(j, c.edge, c.emit)
+			relax(j, c.edge, c.emit, c.arc)
 		}
-		relax(len(cands[i]), gapState, gapEmit[i])
+		relax(len(cands[i]), gapState, gapEmit[i], 0)
 	}
 
 	// backtrack (smallest state id wins exact-cost ties — the map
@@ -765,6 +800,30 @@ func (m *matcher) matchOne(pat gtfs.Pattern, frame geo.Frame, guide []geo.Pt) (P
 		states[i-1] = dp[i][slot].prev
 	}
 	return m.assemble(pat, shape, states, shapeArc)
+}
+
+// travelPen: cost per metre that a street step's length differs from the
+// shape step it stands for.
+const travelPen = 1.0
+
+// streetDist: metres ridden from arc au on edge u to arc av on edge v.
+// Backing up along one edge comes out as a long trip, not a short one.
+func (m *matcher) streetDist(u int, au float64, v int, av float64) float64 {
+	if u == v {
+		if av >= au {
+			return av - au
+		}
+		return 2*(au-av) + m.g.edges[u].Line.Len()
+	}
+	w, ok := m.walks[[2]int{u, v}]
+	if !ok || !w.ok {
+		return math.Inf(1)
+	}
+	d := m.g.edges[u].Line.Len() - au + av
+	for _, e := range w.via {
+		d += m.g.edges[e].Line.Len()
+	}
+	return d
 }
 
 // trans is the cost of moving between states across one sample step.
@@ -982,8 +1041,15 @@ func (m *matcher) assemble(pat gtfs.Pattern, shape *geo.Line,
 				// station apart) — budget on whichever is larger
 				anchorDist := g.nodes[g.edges[events[i-1].edge].To].At.
 					Dist(g.nodes[g.edges[events[i+1].edge].From].At)
-				w := m.walk(events[i-1].edge, events[i+1].edge,
-					math.Max(m.p.MaxWalk, 4*math.Max(gapArc, anchorDist)+400))
+				budget := math.Max(m.p.MaxWalk, 4*math.Max(gapArc, anchorDist)+400)
+				if patternLayer(pat.Route.Type) == "street" {
+					// a bus shape is a survey of the street ridden: a
+					// walk much longer than the gap is a U-turn loop
+					// through an interchange, not the bus's route, and
+					// the shape itself draws the gap better
+					budget = 1.3*math.Max(gapArc, anchorDist) + 60
+				}
+				w := m.walk(events[i-1].edge, events[i+1].edge, budget)
 				if !w.ok && dbgMatch {
 					a := g.nodes[g.edges[events[i-1].edge].To].At
 					b := g.nodes[g.edges[events[i+1].edge].From].At

@@ -68,6 +68,9 @@ type Station struct {
 	// empty when nothing matched confidently. Emitted so a consumer can
 	// join a drawn station back to OpenStreetMap (docs/STOP-LABELS.md).
 	OSMID string
+	// Renamed: Name is the OSM name on the sign, adopted over the feed's.
+	// The corrected GTFS export carries it into stops.txt.
+	Renamed bool
 
 	// StopIDs: every GTFS stop merged into this station — platforms and
 	// parent-station records, still carrying loadFeeds' overlay prefix

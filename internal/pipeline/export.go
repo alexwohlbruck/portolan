@@ -15,6 +15,7 @@ package pipeline
 
 import (
 	"archive/zip"
+	"bufio"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -535,4 +536,141 @@ func mergeDirections(r io.Reader, w io.Writer, dirs map[dirKey]string) error {
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// renameExportStops gives the exported zips' stops.txt the names the map
+// shows: names maps a stop id, as loadFeeds prefixed it ("f1:GCT" for an
+// overlay), to its OSM sign name. It runs after the station stage, which
+// is where those names are decided, and rewrites only stop_name; every
+// other entry is copied through untouched. Returns how many stops changed.
+func renameExportStops(dir, gtfsList string, names map[string]string) (int, error) {
+	if len(names) == 0 {
+		return 0, nil
+	}
+	total := 0
+	for fi, src := range strings.Split(gtfsList, ",") {
+		out := filepath.Join(dir, filepath.Base(strings.TrimSpace(src)))
+		if _, err := os.Stat(out); err != nil {
+			continue // nothing exported for this zip
+		}
+		prefix := ""
+		if fi > 0 {
+			prefix = fmt.Sprintf("f%d:", fi)
+		}
+		n, err := renameStopsInZip(out, func(id string) string { return names[prefix+id] })
+		if err != nil {
+			return total, fmt.Errorf("%s: %w", out, err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
+func renameStopsInZip(path string, nameOf func(string) string) (int, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return 0, err
+	}
+	defer zr.Close()
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmp)
+	zw := zip.NewWriter(f)
+	changed := 0
+	for _, e := range zr.File {
+		if filepath.Base(e.Name) != "stops.txt" {
+			if err := zw.Copy(e); err != nil {
+				f.Close()
+				return 0, err
+			}
+			continue
+		}
+		r, err := e.Open()
+		if err != nil {
+			f.Close()
+			return 0, err
+		}
+		w, err := zw.Create(e.Name)
+		if err != nil {
+			r.Close()
+			f.Close()
+			return 0, err
+		}
+		changed, err = renameStopRows(r, w, nameOf)
+		r.Close()
+		if err != nil {
+			f.Close()
+			return 0, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		f.Close()
+		return 0, err
+	}
+	if err := f.Close(); err != nil {
+		return 0, err
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	return changed, os.Rename(tmp, path)
+}
+
+// renameStopRows copies stops.txt, replacing stop_name wherever nameOf
+// has one for the row's stop_id.
+func renameStopRows(r io.Reader, w io.Writer, nameOf func(string) string) (int, error) {
+	cr := csv.NewReader(bomless(r))
+	cr.FieldsPerRecord = -1
+	cr.LazyQuotes = true
+	cw := csv.NewWriter(w)
+	header, err := cr.Read()
+	if err != nil {
+		return 0, err
+	}
+	idCol, nameCol := -1, -1
+	for i, h := range header {
+		switch strings.TrimSpace(h) {
+		case "stop_id":
+			idCol = i
+		case "stop_name":
+			nameCol = i
+		}
+	}
+	if err := cw.Write(header); err != nil {
+		return 0, err
+	}
+	changed := 0
+	for {
+		row, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return changed, err
+		}
+		if idCol >= 0 && nameCol >= 0 && idCol < len(row) && nameCol < len(row) {
+			if n := nameOf(strings.TrimSpace(row[idCol])); n != "" && n != row[nameCol] {
+				row[nameCol] = n
+				changed++
+			}
+		}
+		if err := cw.Write(row); err != nil {
+			return changed, err
+		}
+	}
+	cw.Flush()
+	return changed, cw.Error()
+}
+
+// bomless drops a leading UTF-8 byte-order mark, which would otherwise
+// glue itself to the first header name and hide the stop_id column.
+func bomless(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	if b, err := br.Peek(3); err == nil && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+		br.Discard(3)
+	}
+	return br
 }

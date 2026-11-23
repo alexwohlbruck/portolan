@@ -62,12 +62,20 @@ Two notes that matter:
   `internal/gtfs/service.go` already computes exactly this), or agency
   route naming. Treat BRT as a *promotion rule* applied to `bus`, not a
   class of its own.
-- **`ferry` matches the seaway layer.** OSM maps ferry lanes as
-  `route=ferry` ways; the loader gives them the synthetic class `seaway`
-  and ferries Viterbi-match onto them like every other mode (NYC: 20 of
-  27 paths fully snapped; Berlin's F-lines all ride lanes). Where the
-  harbor has no mapped lane, the gap machinery chords the crossing — the
-  original shape-is-geometry behaviour survives as the fallback. Seaway
+- **`ferry` is routed over the seaway layer.** OSM maps ferry lanes as
+  `route=ferry` ways; the loader gives them the synthetic class `seaway`.
+  Ferries are not Viterbi-matched: a ferry shape is often a few straight
+  chords between piers, hundreds of metres off the lane, and matched
+  sample by sample it walked spurs and doubled back (NYC Ferry's SG came
+  out 315 km for a 28 km trip). Instead each trip is routed stop to stop
+  over the lanes (`stages/ferry.go`): every lane end within 600 m of a
+  pier is a candidate, the lane end standing for each pier is chosen for
+  the whole trip at once (the lane a boat arrives on is the lane it
+  leaves on), and the shape only breaks ties between parallel lanes.
+  Lane ends within 60 m of another lane get a connector onto it first
+  (`WeldSeaways`), since OSM routinely leaves two lanes into one terminal
+  unjoined. Where no lane joins two piers, or the lanes only join them
+  by way of other piers, the leg follows the shape. Seaway
   is the third hard layer beside rail and street: no candidate mixing
   (a train must never ride a ferry lane across a river whose bridge is
   unmapped — the no-compat leniency would allow exactly that), no

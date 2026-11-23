@@ -22,6 +22,8 @@ cd "$(dirname "$0")/.."
 
 CFG=portolan.json
 OVERPASS="${OVERPASS_URL:-https://overpass-api.de/api/interpreter}"
+# overpass-api.de answers 406 to curl's default user agent
+UA="portolan-feed/1.0"
 
 need() { command -v "$1" >/dev/null || { echo "need $1 on PATH"; exit 2; }; }
 need jq
@@ -138,7 +140,7 @@ out geom;"
   # as a JSON traceback that read like a broken script.
   local try ok=0
   for try in 1 2 3; do
-    if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+    if curl -sS --fail -A "$UA" --max-time 1800 --data-urlencode "data=$query" \
        "$OVERPASS" -o "$tmp.json"; then ok=1; break; fi
     echo "$feed: attempt $try failed — public Overpass under load; waiting…"
     sleep $((try * 20))
@@ -274,7 +276,7 @@ out geom;"
   echo "$feed: Overpass streets $w,$s,$e,$n → $out (this one is BIG — minutes)"
   local try ok=0
   for try in 1 2 3; do
-    if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+    if curl -sS --fail -A "$UA" --max-time 1800 --data-urlencode "data=$query" \
        "$OVERPASS" -o "$tmp.json"; then ok=1; break; fi
     echo "$feed: attempt $try failed — public Overpass under load; waiting…"
     sleep $((try * 30))
@@ -298,8 +300,9 @@ stops() { # $1 = feed key
   out=$(get "$feed" stops)
   [ -n "$out" ] || { echo "$feed: no 'stops' path in $CFG"; exit 2; }
   bbox "$feed"
-  # every element that can carry a station name: nodes for stop positions
-  # and tram stops, ways/relations for station buildings and complexes.
+  # every element that can carry a station name: nodes for stop positions,
+  # tram stops, bus stops and platforms, ways/relations for station
+  # buildings and complexes.
   # 'out center' gives ways and relations a representative point.
   query="[out:json][timeout:600];
 (
@@ -310,6 +313,8 @@ node[\"public_transport\"~\"^(station|stop_position)\$\"]($s,$w,$n,$e);
 way[\"public_transport\"=\"station\"]($s,$w,$n,$e);
 relation[\"public_transport\"=\"station\"]($s,$w,$n,$e);
 node[\"aerialway\"=\"station\"]($s,$w,$n,$e);
+node[\"highway\"=\"bus_stop\"]($s,$w,$n,$e);
+node[\"public_transport\"=\"platform\"]($s,$w,$n,$e);
 node[\"amenity\"=\"ferry_terminal\"]($s,$w,$n,$e);
 way[\"amenity\"=\"ferry_terminal\"]($s,$w,$n,$e);
 );
@@ -320,7 +325,7 @@ out center;"
   echo "$feed: Overpass stops $w,$s,$e,$n → $out"
   local try ok=0
   for try in 1 2 3; do
-    if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+    if curl -sS --fail -A "$UA" --max-time 1800 --data-urlencode "data=$query" \
        "$OVERPASS" -o "$tmp.json"; then ok=1; break; fi
     echo "$feed: attempt $try failed — public Overpass under load; waiting…"
     sleep $((try * 20))
@@ -376,7 +381,7 @@ way[\"aerialway\"]($s,$w,$n,$e);
 out;"
     local try ok=0
     for try in 1 2 3; do
-      if curl -sS --fail --max-time 1800 --data-urlencode "data=$query" \
+      if curl -sS --fail -A "$UA" --max-time 1800 --data-urlencode "data=$query" \
          "$OVERPASS" -o "$xml.tmp"; then ok=1; break; fi
       echo "$feed: attempt $try failed — public Overpass under load; waiting…"
       sleep $((try * 20))

@@ -126,6 +126,23 @@ tool found the corner-cutting bug that three rounds of theory missed.
 Print a feature's vertices with spans and turn angles, flagging turns >20°.
 First stop for any spike the scorer reports.
 
+## 6 · Match audit (`tools/match_audit.py`)
+
+Checks every matched path against the feed and the OSM extract, with
+none of the pipeline's own bookkeeping: metres off the network, the
+farthest the path strays from its shape and the shape from the path,
+length against the shape, and the farthest stop from the path. A shape
+whose vertices average more than 150 m apart is chords between stops,
+and is reported rather than held against the path.
+
+```
+tools/match_audit.py --paths build/mta-bus.geojson.paths.geojson \
+    --gtfs data/gtfs/mta-bus.zip --osm build/mta-bus-streets.geojson --mode bus
+tools/match_audit.py --paths build/nyc-ferry.geojson.paths.geojson \
+    --gtfs data/gtfs/nyc-ferry.zip --osm testdata/nyc-rail.geojson \
+    --mode ferry --stop-tol 400 --offnet-tol 60
+```
+
 ## Tuning discipline
 
 - Candidate builds are cheap and named (`--out build/cand-N.geojson`);
