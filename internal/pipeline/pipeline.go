@@ -521,6 +521,7 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 	}
 	logf("match: %d patterns → %d paths (%.1fs)",
 		len(rail), len(paths), time.Since(t0).Seconds())
+	stages.TidyBusPaths(paths, frame)
 	if err := writePaths(o.Out+".paths.geojson", paths, frame); err != nil {
 		return err
 	}
