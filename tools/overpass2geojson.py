@@ -62,6 +62,77 @@ if "--stops" in sys.argv:
     json.dump({"type": "FeatureCollection", "features": feats}, sys.stdout)
     sys.exit(0)
 
+# --water: the shoreline for the ferry fairway. Coastline ways pass through
+# as LineStrings in OSM's own direction (land on the left, water on the
+# right), which is what tells the fairway which side of a shore is sea.
+# Areas (natural=water, waterway=riverbank) become one Polygon per element
+# whose rings are filled even-odd: a relation's member ways are joined
+# end to end into rings, and inner/outer roles need not be trusted.
+def join_rings(segs):
+    rings, open_ = [], [list(s) for s in segs if len(s) >= 2]
+    while open_:
+        cur = open_.pop()
+        grown = True
+        while cur[0] != cur[-1] and grown:
+            grown = False
+            for i, s in enumerate(open_):
+                if s[0] == cur[-1]:
+                    cur += s[1:]
+                elif s[-1] == cur[-1]:
+                    cur += s[-2::-1]
+                elif s[-1] == cur[0]:
+                    cur = s[:-1] + cur
+                elif s[0] == cur[0]:
+                    cur = s[:0:-1] + cur
+                else:
+                    continue
+                open_.pop(i)
+                grown = True
+                break
+        if cur[0] != cur[-1]:
+            cur.append(cur[0])  # clipped at the window: close it on itself
+        if len(cur) >= 4:
+            rings.append(cur)
+    return rings
+
+if "--water" in sys.argv:
+    data = json.load(sys.stdin)
+    feats = []
+    for el in data.get("elements", []):
+        tags = el.get("tags") or {}
+        if el["type"] == "way":
+            coords = [(p["lon"], p["lat"]) for p in el.get("geometry") or [] if "lon" in p]
+            if len(coords) < 2:
+                continue
+            if tags.get("natural") == "coastline":
+                geom = {"type": "LineString", "coordinates": coords}
+                kind = "coastline"
+            else:
+                geom = {"type": "Polygon", "coordinates": join_rings([coords])}
+                kind = "area"
+        elif el["type"] == "relation":
+            segs = [[(p["lon"], p["lat"]) for p in m.get("geometry") or [] if p and "lon" in p]
+                    for m in el.get("members", []) if m.get("type") == "way"]
+            rings = join_rings(segs)
+            if not rings:
+                continue
+            geom = {"type": "Polygon", "coordinates": rings}
+            kind = "area"
+        else:
+            continue
+        if geom["type"] == "Polygon" and not geom["coordinates"]:
+            continue
+        feats.append({
+            "type": "Feature",
+            "id": "%s/%s" % (el["type"], el["id"]),
+            "properties": {"water": kind},
+            "geometry": geom,
+        })
+    if not feats:
+        sys.exit("overpass2geojson: no water in the response — check the bbox")
+    json.dump({"type": "FeatureCollection", "features": feats}, sys.stdout)
+    sys.exit(0)
+
 data = json.load(sys.stdin)
 feats = []
 for el in data.get("elements", []):

@@ -63,7 +63,8 @@
       ],
       "out": "build/nyc-ferry.geojson",
       "network": "sketches/network-nyc-ferry.json",
-      "onestop": "f-dr5r-nycferry"
+      "onestop": "f-dr5r-nycferry",
+      "water": "build/nyc-water.geojson"
     },
     "roosevelt-tram": {
       "name": "Roosevelt Island Tram",

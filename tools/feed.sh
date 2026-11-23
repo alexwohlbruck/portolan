@@ -292,6 +292,45 @@ out geom;"
   echo "$feed: $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["features"]),"ways")' "$out"), $(du -h "$out" | cut -f1)"
 }
 
+# water: the coastline and water areas of the window, for the ferry
+# fairway (docs/FAIRWAY.md). Coastline ways keep OSM's orientation (land on
+# the left); areas arrive as closed rings, each feature's rings filled
+# even-odd so a relation's holes stay land.
+water() { # $1 = feed key
+  local feed=$1 out w s e n query tmp
+  out=$(get "$feed" water)
+  [ -n "$out" ] || { echo "$feed: no 'water' path in $CFG"; exit 2; }
+  bbox "$feed"
+  query="[out:json][timeout:600];
+(
+way[\"natural\"=\"coastline\"]($s,$w,$n,$e);
+way[\"natural\"=\"water\"]($s,$w,$n,$e);
+relation[\"natural\"=\"water\"]($s,$w,$n,$e);
+way[\"waterway\"=\"riverbank\"]($s,$w,$n,$e);
+relation[\"waterway\"=\"riverbank\"]($s,$w,$n,$e);
+);
+out geom;"
+  mkdir -p "$(dirname "$out")"
+  tmp="$out.tmp"
+  echo "$feed: Overpass water $w,$s,$e,$n → $out"
+  local try ok=0
+  for try in 1 2 3; do
+    if curl -sS --fail -A "$UA" --max-time 1800 --data-urlencode "data=$query" \
+       "$OVERPASS" -o "$tmp.json"; then ok=1; break; fi
+    echo "$feed: attempt $try failed — public Overpass under load; waiting…"
+    sleep $((try * 20))
+  done
+  if [ "$ok" = 0 ]; then
+    echo "$feed: Overpass gave up after 3 tries."; rm -f "$tmp.json"; exit 1
+  fi
+  head -c 200 "$tmp.json" | grep -q '"elements"\|"version"' || {
+    echo "$feed: not Overpass JSON:"; head -c 300 "$tmp.json"; rm -f "$tmp.json"; exit 1; }
+  python3 tools/overpass2geojson.py --water < "$tmp.json" > "$tmp"
+  rm -f "$tmp.json"
+  mv "$tmp" "$out"
+  echo "$feed: $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["features"]),"features")' "$out"), $(du -h "$out" | cut -f1)"
+}
+
 # stops: the named transit STOPS of the window — what the station-name
 # matcher scores GTFS stops against. Small next to the rail extract (a few
 # thousand points), and opt-in per city via a 'stops' path.
@@ -471,6 +510,7 @@ case "${1:-list}" in
   rail)  known "${2:-}" rail;  rail "$2" ;;
   streets) known "${2:-}" streets; streets "$2" ;;
   stops) known "${2:-}" stops; stops "$2" ;;
+  water) known "${2:-}" water; water "$2" ;;
   shapes) known "${2:-}" shapes; shapes "$2" ;;
   build) known "${2:-}" build; build "$2" ;;
   shapesrail) known "${2:-}" shapesrail; shapesrail "$2" ;;
@@ -478,5 +518,5 @@ case "${1:-list}" in
   refresh) known "${2:-}" refresh; refresh "$2" ;;
   railwindows) shift; exec tools/fetchwindows.sh "$@" ;;
   all)   known "${2:-}" all;   rail "$2"; build "$2" ;;
-  *) echo "usage: $0 list|gtfs|rail|shapesrail|stops|streets|shapes|build|all|refresh [feed] [transitland-feed-id]"; exit 2 ;;
+  *) echo "usage: $0 list|gtfs|rail|shapesrail|stops|streets|water|shapes|build|all|refresh [feed] [transitland-feed-id]"; exit 2 ;;
 esac
