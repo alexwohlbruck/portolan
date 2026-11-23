@@ -5,6 +5,38 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### Ferries ride OSM's ferry lanes pier to pier
+
+Ferries were map-matched sample by sample against shapes that are often a
+few straight chords between piers, and came out looping: NYC Ferry's
+St. George route drew 315 km for a 28 km trip. Each trip is now routed
+stop to stop over the ferry lanes, with lane ends that OSM leaves a few
+metres apart at a terminal joined first, and a walk that tours round
+piers the boat skips is refused. In NYC Ferry, NY Waterway and Seastreak,
+90 of 92 trips ride lanes pier to pier; the other two, New Bedford to
+Vineyard Haven, have no lane in OSM and follow their shapes.
+
+### Bus lines stay on the streets their shapes drive
+
+Matched against the production NYC extracts, 62 of 275 MTA Bus paths and
+124 of 284 MTA NYCT paths stayed within 40 m of their own GTFS shape end
+to end. Three causes: the rail convergence pull dragged express buses off
+the expressway onto a service road beside it; nothing priced a step
+between samples by the street distance it covered, so a side street a
+few metres nearer the shape could win; and whole-piece matching ran past
+terminals and backed up pieces after a gap. Street matching now has no
+convergence pull and charges each step the difference between street
+distance and shape distance, and bus lines are cut at their terminal
+stops, have out-and-back spurs removed, and have any stretch more than
+40 m off the shape replaced by the shape itself. Now 206 of 275 MTA Bus
+and 232 of 284 MTA NYCT paths stay within 40 m end to end. Rail matching
+is unchanged.
+
+`tools/match_audit.py` measures all of this from the build's paths dump,
+the feed and the extract, trusting nothing in the pipeline.
+
 ## 0.5.4
 
 ### `sync check` fetches the zips a feed actually reads
