@@ -33,7 +33,8 @@ if "--stops" in sys.argv:
     STOP_TAGS = ("name", "name:en", "alt_name", "short_name", "official_name",
                  "railway", "aerialway", "amenity", "public_transport",
                  "station", "subway", "light_rail", "tram", "train", "monorail",
-                 "funicular", "ferry", "operator", "network", "wikidata", "ref")
+                 "funicular", "ferry", "bus", "trolleybus", "highway",
+                 "operator", "network", "wikidata", "ref")
     data = json.load(sys.stdin)
     feats = []
     for el in data.get("elements", []):

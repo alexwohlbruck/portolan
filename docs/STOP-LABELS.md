@@ -256,10 +256,11 @@ and quietly stop tracking upstream.
 
 **OSM matching** is automatic, and fills in the rest of the world.
 `tools/feed.sh stops <city>` fetches the window's named transit stops
-(`railway=station|halt|tram_stop`, `public_transport=station|stop_position`,
-`aerialway=station`, `amenity=ferry_terminal`) and `internal/pipeline/
-osmstops.go` pairs each drawn station with the one that is really the same
-place. Three signals must agree, because a wrong rename is worse than no
+(`railway=station|halt|tram_stop`, `public_transport=station|stop_position|platform`,
+`highway=bus_stop`, `aerialway=station`, `amenity=ferry_terminal`, with the
+`bus`, `trolleybus`, `ferry` and `highway` tags that say what stops there)
+and `internal/pipeline/osmstops.go` pairs each drawn station — and each bus
+stop, below — with the one that is really the same place. Three signals must agree, because a wrong rename is worse than no
 rename:
 
 - **proximity** — a 250 m ceiling, and the primary tell. Inside 45 m a
@@ -269,10 +270,17 @@ rename:
   names rather than any stopword list, so the words a city repeats weigh
   nothing whatever language they are in. Tokens pair one-to-one, exact
   spellings first and abbreviations after, an abbreviation being a token
-  that is a prefix of the other ("wash"/"washington", "4"/"4th"). A prefix
+  that is a prefix of the other ("wash"/"washington", "4"/"4th") or a
+  contraction of it (same first letter, its letters in order, at least two
+  letters dropped, and past two letters the same last letter:
+  "blvd"/"boulevard", "pkwy"/"parkway", "rd"/"road"). A number abbreviates
+  only its own ordinal: "4" is "4th", never "42nd". An abbreviation
   pairing is credited the lesser of the two words' weights and counts for
   less than agreeing outright.
-- **class** — a tram stop may not claim the bus pole beside it. `metro`,
+- **class** — a tram stop may not claim the bus pole beside it. A stop's
+  class comes from its tags (`highway=bus_stop` or `bus=yes` is bus,
+  `ferry=yes` is ferry); a stop position or platform that says nothing
+  about what stops there has no class and matches nothing. `metro`,
   `regional` and `tram` count as agreement that it is rail, at a ranking
   penalty, because feeds and OSM disagree about which one a line is and
   neither is wrong: the Staten Island Railway is `route_type` 2 to the MTA
@@ -327,6 +335,40 @@ was either a name the MTA abbreviates and OSM spells out (no token in
 common, so the name signal read zero) or the Staten Island Railway
 disagreeing with OSM about its own class. Both were matcher bugs, not data
 gaps, and both stations and nodes were sitting metres apart the whole time.
+
+### Bus stops
+
+Buses draw no stations, but their stops are named everywhere a rider
+looks, so every stop a bus pattern calls at (and no other mode does) is
+matched on its own, one GTFS stop to one pole. Proximity proves nothing
+there: a corner has two to eight poles metres apart, each named for a
+different street or block, and matched by distance 5 Av/E 81 St took the
+name of the pole on 80th. So a bus pairing must agree by name on both
+sides — at least 85% of each name's weight pairs with the other, every
+word counted including repeats — and no word may be left over on both
+sides at once, which is a different street ("147 Av" is not "147th
+Street"; OSM adding "South" is detail). An abbreviation may only expand to
+a spelling the city's OSM names commonly use, so "st" reads as "street"
+and not as one pole's "Sreet". A pole may name several stops (the feed
+files both directions of a corner, OSM often one pole), and an unmatched
+direction takes its same-named sibling's name within 150 m, but the OSM
+id stays one-to-one.
+
+Measured against the NYC-region extract: MTA Bus 1,934 of 2,754 stops
+renamed, MTA NYCT 3,892 of 4,575, NJ Transit 2,746 of 9,240, with every
+rename the same street once USPS abbreviations are expanded. The rail
+renames of eleven cities are unchanged.
+
+### Where the names go
+
+The map labels were the only place an OSM name ever reached. The
+corrected GTFS export now carries it: once stations and bus stops are
+named, `renameExportStops` rewrites `stop_name` in each exported zip's
+stops.txt for every stop whose station took its OSM name. Barrelman
+imports those zips and rebuilds MOTIS from them, so trip itineraries,
+departure boards, route stop lists, Ask and offline timetables name a
+stop exactly as the map does. A station that kept its feed name changes
+nothing.
 
 **Transitland onestop ids are reachable but not wired.** `GET /stops?
 feed_onestop_id=…` returns `onestop_id` alongside the feed's own

@@ -16,7 +16,8 @@ import json, sys
 TAGS = ['name', 'name:en', 'alt_name', 'short_name', 'official_name',
         'railway', 'aerialway', 'amenity', 'public_transport', 'station',
         'subway', 'light_rail', 'tram', 'train', 'monorail', 'funicular',
-        'ferry', 'operator', 'network', 'wikidata', 'ref']
+        'ferry', 'bus', 'trolleybus', 'highway',
+        'operator', 'network', 'wikidata', 'ref']
 KIND = {'n': 'node', 'w': 'way', 'r': 'relation'}
 
 
