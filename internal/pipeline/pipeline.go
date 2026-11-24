@@ -101,7 +101,7 @@ func (d Dials) yardParams() yards.Params {
 	return yards.Params{
 		ParReach: d.YardParReach, ParNear: d.YardParNear, Hot: d.YardHot,
 		MinTagM: d.YardMinTagM, MinMassM: d.YardMinMassM, PeakUntag: d.YardPeakUntag,
-		PadM:    d.YardPadM,
+		PadM: d.YardPadM,
 	}
 }
 
@@ -278,6 +278,44 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		frameWays = sways
 	}
 	frame := FrameOf(frameWays)
+	var (
+		feed *gtfs.Feed
+		rail []gtfs.Pattern
+	)
+	if o.GTFS != "" {
+		loadCover := d.Cover
+		if o.Scenario != "" {
+			loadCover = 1.01 // scenario selection replaces union pruning
+		}
+		// rail filter at the load: the stop_times sweep (5.8M rows on Chicago,
+		// ~95% bus) skips foreign trips with one map miss, and bus shapes never
+		// parse. The kept patterns are identical — the same predicate re-runs
+		// below on what used to be the full set.
+		drawable := func(r gtfs.Route) bool {
+			c := mode.Of(r.Type)
+			if c.Hidden() {
+				return false
+			}
+			if c == mode.Bus {
+				return o.Streets != ""
+			}
+			return c.Drawable()
+		}
+		if feed, err = loadFeeds(o, o.GTFS, loadCover, drawable); err != nil {
+			return err
+		}
+		for _, pat := range feed.Patterns {
+			if drawable(pat.Route) {
+				rail = append(rail, pat)
+			}
+		}
+		logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
+		// Nothing to draw (an intercity bus feed with no street layer) means
+		// nothing can match: skip the yards and strands of a national extract.
+		if len(rail) == 0 {
+			ways, svcWays, sways = nil, nil, nil
+		}
+	}
 	if len(o.BBox) == 4 {
 		ways = windowWays(ways, o.BBox)
 		svcWays = windowWays(svcWays, o.BBox)
@@ -386,35 +424,6 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		logf("chart: no GTFS — strands dump only")
 		return nil
 	}
-	loadCover := d.Cover
-	if o.Scenario != "" {
-		loadCover = 1.01 // scenario selection replaces union pruning
-	}
-	// rail filter at the load: the stop_times sweep (5.8M rows on Chicago,
-	// ~95% bus) skips foreign trips with one map miss, and bus shapes never
-	// parse. The kept patterns are identical — the same predicate re-runs
-	// below on what used to be the full set.
-	drawable := func(r gtfs.Route) bool {
-		c := mode.Of(r.Type)
-		if c.Hidden() {
-			return false
-		}
-		if c == mode.Bus {
-			return o.Streets != ""
-		}
-		return c.Drawable()
-	}
-	feed, err := loadFeeds(o, o.GTFS, loadCover, drawable)
-	if err != nil {
-		return err
-	}
-	var rail []gtfs.Pattern
-	for _, pat := range feed.Patterns {
-		if drawable(pat.Route) {
-			rail = append(rail, pat)
-		}
-	}
-	logf("chart: %d drawable patterns of %d total", len(rail), len(feed.Patterns))
 	// One parse for the whole build: LoadServiceInfo reads stop_times end
 	// to end (a gigabyte on the big feeds), and two sites below need it.
 	var (

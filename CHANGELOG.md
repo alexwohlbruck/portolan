@@ -5,6 +5,16 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.6.3
+
+### Builds with nothing to draw skip the rail pool
+
+An intercity bus feed without a street layer (FlixBus, Megabus) draws
+nothing, yet its build still loaded a nationwide rail extract and
+detected yards across the country, peaking above 8 GB. The feed now loads
+first, and a build with no drawable patterns drops its rail, yard and
+street ways: FlixBus builds in 6 seconds at 1.1 GB, exporting the same zip.
+
 ## 0.6.2
 
 ### Windowed builds load only the track near their window
