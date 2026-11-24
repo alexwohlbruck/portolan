@@ -5,7 +5,7 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
-## Unreleased
+## 0.6.3
 
 ### Builds with nothing to draw skip the rail pool
 
