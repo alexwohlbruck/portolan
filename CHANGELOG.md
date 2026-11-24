@@ -5,6 +5,17 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### Bus lines keep their own vertices
+
+0.6.0's excursion mending measured every bus line at 5 m and then drew
+the measuring samples, so every bus shape came out five to twelve times
+its size: Capital Metro's exported shapes.txt grew from 121 MB to 629 MB,
+importing it took barrelman past 9 GB, and regional group builds peaked
+at 8–12 GB. A line now keeps its own vertices and only a mended detour
+takes the shape's.
+
 ## 0.6.0
 
 ### Ferries ride OSM's ferry lanes pier to pier
