@@ -2,6 +2,7 @@ package tiles
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -74,6 +75,9 @@ type featureCollection struct {
 // world maps WGS84 to [0,1)² Web-Mercator world coordinates. The engine's
 // local tangent frame never appears here — tiling consumes the emitted
 // lat/lon, so it is projection-consistent with any basemap.
+// ErrNoLines: the build drew nothing, so there is no pyramid to cut.
+var ErrNoLines = errors.New("tiles: no line features")
+
 func world(lon, lat float64) (float64, float64) {
 	x := (lon + 180) / 360
 	s := math.Sin(lat * math.Pi / 180)
@@ -160,7 +164,7 @@ func Build(o Opts) (Stats, error) {
 		maxx, maxy = math.Max(maxx, l.maxx), math.Max(maxy, l.maxy)
 	}
 	if len(lines) == 0 {
-		return Stats{}, fmt.Errorf("tiles: no line features in %s", o.Build)
+		return Stats{}, fmt.Errorf("%w in %s", ErrNoLines, o.Build)
 	}
 	// EXTENT CAP. The work in a pyramid grows with the feed's SPAN, not
 	// its ink: Amtrak's 53 degrees of longitude is 39,000 tiles wide at

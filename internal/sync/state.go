@@ -28,6 +28,7 @@ type FeedState struct {
 	Built    string `json:"built,omitempty"`    // content hash at last successful build
 	Tiled    string `json:"tiled,omitempty"`    // content hash at last successful tiling
 	Exported string `json:"exported,omitempty"` // content hash at last successful export
+	Undrawn  bool   `json:"undrawn,omitempty"`  // the last build drew no lines, so it has no pyramid
 }
 
 // State is the sync manifest. It is written after each feed completes, so

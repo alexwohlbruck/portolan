@@ -82,6 +82,11 @@ type microStop struct {
 // three trips over one shape, timed stops.
 func writeMicroGTFS(t *testing.T, path, route string, stops []microStop, shape [][2]float64) {
 	t.Helper()
+	writeMicroGTFSType(t, path, route, 2, stops, shape)
+}
+
+func writeMicroGTFSType(t *testing.T, path, route string, routeType int, stops []microStop, shape [][2]float64) {
+	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	add := func(name, body string) {
@@ -94,7 +99,7 @@ func writeMicroGTFS(t *testing.T, path, route string, stops []microStop, shape [
 		}
 	}
 	add("agency.txt", "agency_id,agency_name,agency_url,agency_timezone\na1,Micro,https://example.com,America/New_York\n")
-	add("routes.txt", fmt.Sprintf("route_id,agency_id,route_short_name,route_long_name,route_type\n%s,a1,%s,%s Line,2\n", route, route, route))
+	add("routes.txt", fmt.Sprintf("route_id,agency_id,route_short_name,route_long_name,route_type\n%s,a1,%s,%s Line,%d\n", route, route, route, routeType))
 	add("calendar.txt", "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nwk,1,1,1,1,1,0,0,20250101,20261231\n")
 	var sb strings.Builder
 	sb.WriteString("stop_id,stop_name,stop_lat,stop_lon\n")
