@@ -278,6 +278,11 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		frameWays = sways
 	}
 	frame := FrameOf(frameWays)
+	if len(o.BBox) == 4 {
+		ways = windowWays(ways, o.BBox)
+		svcWays = windowWays(svcWays, o.BBox)
+		sways = windowWays(sways, o.BBox)
+	}
 	xover := map[string]bool{}
 	for _, w := range ways {
 		if w.Tags["service"] == "crossover" {
@@ -1422,6 +1427,32 @@ func routeSetOf(routes map[string]gtfs.Route, c mode.Class) map[string]bool {
 // in-window run ≥1 km becomes its own pattern piece, ending at the window
 // edge the way Apple draws a line running off the map. Without this a
 // national feed (Amtrak) chords across the continent as gap bridges.
+// trackMargin is how far past the window track is kept: wider than the
+// pattern clip's 2 km, so a clipped piece's ends still have steel to match.
+const trackMargin = 0.05
+
+// windowWays keeps the ways whose extent comes within trackMargin of the
+// window. The frame is taken before this runs, so geometry is unchanged.
+func windowWays(ways []osm.Way, bbox []float64) []osm.Way {
+	w, s, e, n := bbox[0]-trackMargin, bbox[1]-trackMargin, bbox[2]+trackMargin, bbox[3]+trackMargin
+	out := ways[:0:0]
+	for _, way := range ways {
+		if len(way.Coords) == 0 {
+			continue
+		}
+		minLon, minLat := way.Coords[0].Lon, way.Coords[0].Lat
+		maxLon, maxLat := minLon, minLat
+		for _, ll := range way.Coords[1:] {
+			minLon, maxLon = math.Min(minLon, ll.Lon), math.Max(maxLon, ll.Lon)
+			minLat, maxLat = math.Min(minLat, ll.Lat), math.Max(maxLat, ll.Lat)
+		}
+		if maxLon >= w && minLon <= e && maxLat >= s && minLat <= n {
+			out = append(out, way)
+		}
+	}
+	return out
+}
+
 func clipPatterns(pats []gtfs.Pattern, bbox []float64) []gtfs.Pattern {
 	const margin = 0.02 // ~2 km
 	w, s, e, n := bbox[0]-margin, bbox[1]-margin, bbox[2]+margin, bbox[3]+margin
