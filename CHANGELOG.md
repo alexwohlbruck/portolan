@@ -5,7 +5,7 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
-## 0.6.1
+## 0.6.2
 
 ### Windowed builds load only the track near their window
 
