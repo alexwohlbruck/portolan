@@ -5,6 +5,18 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## 0.6.2
+
+### Windowed builds load only the track near their window
+
+A build with a window kept every rail, yard and street way in its extract,
+however far away. A group that overlays Amtrak inherits Amtrak's
+nationwide rail extract, so the Atlanta group detected 7,194 yards across
+the country to draw a 0.12 deg² window: it peaked at 7.2 GB and took five
+minutes. Ways more than about 5 km outside the window are now dropped
+after the projection frame is taken, so the drawn output is byte-identical
+and the same build peaks at 1.1 GB in 31 seconds.
+
 ## 0.6.1
 
 ### Bus lines keep their own vertices
