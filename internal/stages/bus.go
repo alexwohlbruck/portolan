@@ -321,14 +321,38 @@ func mendExcursions(pts []geo.Pt, shape *geo.Line) []geo.Pt {
 		}
 		i = j
 	}
+	if len(splice) == 0 {
+		return pts
+	}
+	// The dense samples only measure the line; what is drawn keeps the
+	// line's own vertices. Emitting the 5 m samples made every bus shape
+	// five to twelve times its size, in the tiles and in the GTFS export.
+	darc := make([]float64, len(dense))
+	for k := 1; k < len(dense); k++ {
+		darc[k] = darc[k-1] + dense[k].Dist(dense[k-1])
+	}
 	var out []geo.Pt
-	for k, q := range dense {
+	add := func(seg []geo.Pt) {
+		for _, q := range seg {
+			if len(out) == 0 || out[len(out)-1].Dist(q) > 1e-6 {
+				out = append(out, q)
+			}
+		}
+	}
+	for k := 0; k < len(dense); {
 		if sp, ok := splice[k]; ok {
-			out = append(out, sp...)
+			add(sp)
 		}
-		if keep[k] {
-			out = append(out, q)
+		if !keep[k] {
+			k++
+			continue
 		}
+		j := k
+		for j+1 < len(dense) && keep[j+1] && splice[j+1] == nil {
+			j++
+		}
+		add(subPts(line, darc[k], darc[j]))
+		k = j + 1
 	}
 	if len(out) < 2 {
 		return pts

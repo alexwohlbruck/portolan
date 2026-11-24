@@ -86,3 +86,17 @@ func TestCutKeepsATailOnTheShape(t *testing.T) {
 		t.Errorf("cut into the shape's own turnaround: %.0f m left", geo.NewLine(out).Len())
 	}
 }
+
+// A mend redraws the detour; everything else keeps the vertices it had.
+// Emitting the 5 m measuring samples grew every bus shape fivefold.
+func TestMendKeepsTheLinesOwnVertices(t *testing.T) {
+	shape := line(geo.Pt{X: 0, Y: 0}, geo.Pt{X: 1000, Y: 0}, geo.Pt{X: 3000, Y: 0})
+	straight := []geo.Pt{{X: 0, Y: 0}, {X: 1000, Y: 0}, {X: 3000, Y: 0}}
+	if out := mendExcursions(straight, shape); len(out) != 3 {
+		t.Errorf("an unmended line came back with %d vertices, not its 3", len(out))
+	}
+	detour := []geo.Pt{{X: 0, Y: 0}, {X: 400, Y: 0}, {X: 400, Y: 150}, {X: 600, Y: 150}, {X: 600, Y: 0}, {X: 3000, Y: 0}}
+	if out := mendExcursions(detour, shape); len(out) > 12 {
+		t.Errorf("a mended line came back with %d vertices", len(out))
+	}
+}
