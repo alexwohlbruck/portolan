@@ -264,7 +264,10 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 			return err
 		}
 	}
-	if len(ways) == 0 && len(sways) == 0 {
+	// With only stops, a bus-only feed still names its signs; the window
+	// stands in for the pools it would otherwise be centered on.
+	stopsOnly := len(ways) == 0 && len(sways) == 0
+	if stopsOnly && (o.Stops == "" || len(o.BBox) != 4) {
 		return fmt.Errorf("no regular-service rail ways in %s and no street extract", o.Rail)
 	}
 	// The projection center comes from the REGULAR pool only — service
@@ -278,6 +281,9 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 		frameWays = sways
 	}
 	frame := FrameOf(frameWays)
+	if stopsOnly {
+		frame = geo.NewFrame(geo.LL{Lon: (o.BBox[0] + o.BBox[2]) / 2, Lat: (o.BBox[1] + o.BBox[3]) / 2})
+	}
 	var (
 		feed *gtfs.Feed
 		rail []gtfs.Pattern
@@ -301,7 +307,12 @@ func ChartCtx(ctx context.Context, o ChartOpts, logf func(string, ...any)) error
 			}
 			return c.Drawable()
 		}
-		if feed, err = loadFeeds(o, o.GTFS, loadCover, drawable); err != nil {
+		// Buses that cannot be drawn still load when there are stops to
+		// name: their signs take OSM names whether or not their lines draw.
+		load := func(r gtfs.Route) bool {
+			return drawable(r) || o.Stops != "" && mode.Of(r.Type) == mode.Bus
+		}
+		if feed, err = loadFeeds(o, o.GTFS, loadCover, load); err != nil {
 			return err
 		}
 		for _, pat := range feed.Patterns {
