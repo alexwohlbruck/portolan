@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -244,8 +245,8 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 		mu.Unlock()
 		if row.Built == fp && row.Tiled == fp &&
 			(exportDir == "" || row.Exported == fp) &&
-			exists(spec.Out) && exists(filepath.Join(tileDir, "tiles.json")) &&
-			exists(filepath.Join(tileDir, "style.json")) {
+			exists(spec.Out) && (row.Undrawn || exists(filepath.Join(tileDir, "tiles.json")) &&
+			exists(filepath.Join(tileDir, "style.json"))) {
 			logf("%s: clean (built, tiled%s) — skipped", t.key,
 				map[bool]string{true: ", exported", false: ""}[exportDir != ""])
 			return
@@ -317,6 +318,21 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 			return
 		}
 		stats, err := tiles.Build(tiles.Opts{Build: spec.Out, Out: next, Prev: tileDir, Name: t.key})
+		if errors.Is(err, tiles.ErrNoLines) {
+			os.RemoveAll(next)
+			if err := os.RemoveAll(tileDir); err != nil {
+				oops(t.key, "removing pyramid", err)
+				return
+			}
+			mu.Lock()
+			row = st.Feeds[t.key]
+			row.Tiled, row.Undrawn = fp, true
+			st.Feeds[t.key] = row
+			saveState()
+			mu.Unlock()
+			logf("%s: draws no lines — no pyramid", t.key)
+			return
+		}
 		if err != nil {
 			os.RemoveAll(next)
 			oops(t.key, "tiles", err)
@@ -348,7 +364,7 @@ func Run(plan *Plan, o RunOpts) (*RunResult, error) {
 		res.Tiles.Unchanged += stats.Unchanged
 		res.Tiles.Removed += stats.Removed
 		row = st.Feeds[t.key]
-		row.Tiled = fp
+		row.Tiled, row.Undrawn = fp, false
 		st.Feeds[t.key] = row
 		saveState()
 		mu.Unlock()

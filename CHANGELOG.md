@@ -5,6 +5,17 @@ still allowed to move between minor versions, and when it does it is said
 here plainly — a downstream renderer that pins pixel diffs cares about
 that more than it cares about the API.
 
+## Unreleased
+
+### Bus stops take OSM names without a street layer
+
+Bus stop names came from OSM only in feeds with a street layer, because
+buses that cannot be drawn were never loaded: 505 bus feeds kept their
+GTFS names, and bus-only feeds with an empty rail extract failed to build
+at all. With a stops extract, buses now load for naming whether or not
+they draw. A build that draws no lines is stamped `undrawn` in the sync
+state instead of failing at tiles, so it is not rebuilt every run.
+
 ## 0.6.3
 
 ### Builds with nothing to draw skip the rail pool
